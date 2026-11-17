@@ -46,7 +46,9 @@ env:
 
 jobs:
   build:
-    runs-on: macos-26
+    # Apple-silicon Macs (macos-26) are sometimes scarce on GitHub ("job was not acquired"). Set the
+    # repository variable MACOS_RUNNER (e.g. to macos-26-intel) to build on another Mac type.
+    runs-on: ${{ vars.MACOS_RUNNER || 'macos-26' }}
     timeout-minutes: 300
 
     env:
