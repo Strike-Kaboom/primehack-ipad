@@ -555,7 +555,12 @@ static bool RepairTouchscreenMicrophone(int port)
   const int port = (int)portOneBased - 1;
   auto* pad = cfg->GetController(port);
   if (!pad) return;
-  pad->SetDefaultDevice([qualified UTF8String]);
+  {
+    // PrimeHack for iPad: the CPU thread reads the bound device under this lock
+    // (prime::EnforceIOSControllerLayout), so write it under the lock too.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    pad->SetDefaultDevice([qualified UTF8String]);
+  }
   pad->UpdateReferences(g_controller_interface);
   Pad::GetConfig()->SaveConfig();
 }
@@ -578,7 +583,12 @@ static bool RepairTouchscreenMicrophone(int port)
   const int idx = (int)indexOneBased - 1;
   auto* wm = cfg->GetController(idx);
   if (!wm) return;
-  wm->SetDefaultDevice([qualified UTF8String]);
+  {
+    // PrimeHack for iPad: the CPU thread reads the bound device under this lock
+    // (prime::EnforceIOSControllerLayout), so write it under the lock too.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    wm->SetDefaultDevice([qualified UTF8String]);
+  }
   wm->UpdateReferences(g_controller_interface);
   Wiimote::GetConfig()->SaveConfig();
 }

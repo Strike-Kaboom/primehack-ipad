@@ -250,9 +250,15 @@ void InputConfig::SaveOwnMapping(ControllerEmu::EmulatedController* controller,
     if (i < m_game_profile_active.size() && m_game_profile_active[i] &&
         i < m_own_sections.size() && controller->GetDefaultDevice().source == "MFi")
     {
-      const std::string name = section->name;
-      *section = m_own_sections[i];
-      section->name = name;
+      // Copy keys rather than the Section itself: the target keeps its own name ([GCPad1],
+      // [Profile] for the app's stash).
+      std::vector<std::string> old_keys;
+      for (const auto& [key, value] : section->GetValues())
+        old_keys.push_back(key);
+      for (const std::string& key : old_keys)
+        section->Delete(key);
+      for (const auto& [key, value] : m_own_sections[i].GetValues())
+        section->Set(key, value);
       section->Set("Device", controller->GetDefaultDevice().ToString());
       return;
     }
