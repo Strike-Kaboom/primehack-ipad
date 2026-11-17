@@ -276,6 +276,14 @@ const Info<bool> PRIMEHACK_UNLOCK_HYPERMODE{{System::Main, "Core", "PrimeUnlockH
 const Info<bool> PRIMEHACK_ANYBEAM_DOOR{{System::Main, "Core", "PrimeAnybeamDoor"}, false};
 const Info<bool> PRIMEHACK_MODLOADER_ENABLED{{System::Main, "Core", "PrimeModLoader"}, false};
 
+// Defaults match the controller defaults (Camera Control: 45 horizontal, 35 vertical).
+const Info<int> PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY{
+    {System::Main, "PrimeHack", "StickHorizontalSensitivity"}, 45};
+const Info<int> PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY{
+    {System::Main, "PrimeHack", "StickVerticalSensitivity"}, 35};
+const Info<bool> PRIMEHACK_IOS_INVERT_X{{System::Main, "PrimeHack", "InvertX"}, false};
+const Info<bool> PRIMEHACK_IOS_INVERT_Y{{System::Main, "PrimeHack", "InvertY"}, false};
+
 GPUDeterminismMode GetGPUDeterminismMode()
 {
   auto mode = Config::Get(Config::MAIN_GPU_DETERMINISM_MODE);

@@ -422,6 +422,13 @@ extern const Info<bool> PRIMEHACK_UNLOCK_HYPERMODE;
 extern const Info<bool> PRIMEHACK_ANYBEAM_DOOR;
 extern const Info<bool> PRIMEHACK_MODLOADER_ENABLED;
 
+// PrimeHack for iPad: camera settings from the app's PrimeHack settings screen. On iOS these
+// replace the per-controller values, so loading a per-game controller profile cannot reset them.
+extern const Info<int> PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY;
+extern const Info<int> PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY;
+extern const Info<bool> PRIMEHACK_IOS_INVERT_X;
+extern const Info<bool> PRIMEHACK_IOS_INVERT_Y;
+
 // GameCube path utility functions
 
 // Replaces NTSC-K with some other region, and doesn't replace non-NTSC-K regions

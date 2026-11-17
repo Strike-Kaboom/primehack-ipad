@@ -33,6 +33,7 @@
 
 // SwiftUI tvOS bridges
 #import "DOLConfigBridge.h"
+#import "DOLPrimeHackBridge.h"
 #import "DOLControllerInputLease.h"
 #import "DOLControllerSettingsBridge.h"
 #import "DOLDebugBridge.h"

@@ -93,6 +93,14 @@ enum SettingsRootModelBuilder {
       ])
     }
     return [
+      // PrimeHack for iPad: first, since it is what this build is for.
+      SettingsRootSection(id: "primehack", header: L("PrimeHack"), entries: [
+        SettingsLeafEntry(id: "primehack", title: L("PrimeHack"), icon: "scope",
+                          description: L("Metroid Prime camera controls, sensitivity, field of view and extras."),
+                          keywords: ["metroid", "prime", "fov", "sensitivity", "camera", "beam", "visor"],
+                          hostsMenuScreen: true,
+                          makeModel: { PrimeHackSettingsModelBuilder.make(state: PrimeHackSettingsState(), apply: { _ in }) }) { PrimeHackSettingsView() },
+      ]),
       SettingsRootSection(id: "general", header: L("General"), entries: [
         SettingsLeafEntry(id: "general", title: L("General"), icon: "gear", description: L("Dual core, cheats, speed limit and other core options."),
                           hostsMenuScreen: true,

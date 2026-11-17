@@ -1256,7 +1256,15 @@ std::tuple<double, double> Wiimote::GetPrimeStickXY()
 {
   const auto stick_state = m_primehack_stick->GetState();
 
-  return std::make_tuple(stick_state.x * m_primehack_horizontal_sensitivity.GetValue(), stick_state.y * -m_primehack_vertical_sensitivity.GetValue());
+#ifdef IPHONEOS
+  // PrimeHack for iPad: the app's settings screen owns the camera stick sensitivity.
+  const double horizontal = Config::Get(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
+  const double vertical = Config::Get(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
+#else
+  const double horizontal = m_primehack_horizontal_sensitivity.GetValue();
+  const double vertical = m_primehack_vertical_sensitivity.GetValue();
+#endif
+  return std::make_tuple(stick_state.x * horizontal, stick_state.y * -vertical);
 }
 
 bool Wiimote::CheckPitchRecentre()
@@ -1279,7 +1287,13 @@ std::tuple<double, double, bool, bool, bool, bool, bool> Wiimote::GetPrimeSettin
   std::tuple t =
       std::make_tuple(m_primehack_camera_sensitivity.GetValue(),
                       m_primehack_cursor_sensitivity.GetValue(),
+#ifdef IPHONEOS
+                      // PrimeHack for iPad: the app's settings screen owns camera inversion.
+                      Config::Get(Config::PRIMEHACK_IOS_INVERT_X),
+                      Config::Get(Config::PRIMEHACK_IOS_INVERT_Y),
+#else
                       m_primehack_invert_x.GetValue(), m_primehack_invert_y.GetValue(),
+#endif
                       m_primehack_scalesens.GetValue(),
                       m_primehack_movereticle.GetValue(),
                       m_primehack_remap_map_controls.GetValue());
