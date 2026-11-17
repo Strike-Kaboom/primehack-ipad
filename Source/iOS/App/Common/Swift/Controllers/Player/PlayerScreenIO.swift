@@ -220,6 +220,14 @@ struct LivePlayerScreenIO: PlayerScreenIO {
     let loaded = slot.kind == .gameCube
       ? TVControllerMappingBridge.loadProfile(name, forGCPort: slot.port, restoreDevice: true)
       : TVControllerMappingBridge.loadProfile(name, forWiimote: slot.port, restoreDevice: true)
+    // PrimeHack for iPad: a profile picked here mid-game wins over the game's per-game layout.
+    if loaded {
+      if slot.kind == .gameCube {
+        TVControllerMappingBridge.markUserMapping(forGCPort: slot.port)
+      } else {
+        TVControllerMappingBridge.markUserMapping(forWiimote: slot.port)
+      }
+    }
     // autoAssign: false — loading a profile for THIS port must not re-decide every other port's
     // device (the "profiles loading weird" bug).
     ControllerManager.shared.reconcile(autoAssign: false)

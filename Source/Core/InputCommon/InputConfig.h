@@ -8,6 +8,7 @@
 #include <utility>
 #include <vector>
 
+#include "Common/IniFile.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/DynamicInputTextureManager.h"
 
@@ -40,6 +41,11 @@ public:
   void SetUserOverride(int index);
   // Forget SetUserOverride choices (called when a game ends).
   void ClearUserOverrides();
+  // Writes the mapping that belongs on disk for `controller` into `section`: its own mapping while a
+  // game's per-game profile is loaded on a game controller (with the current device), otherwise its
+  // live mapping. For anything that persists a mapping (SaveConfig, the app's mapping stash).
+  void SaveOwnMapping(ControllerEmu::EmulatedController* controller,
+                      Common::IniFile::Section* section) const;
 
   template <typename T, typename... Args>
   void CreateController(Args&&... args)
@@ -73,6 +79,8 @@ private:
   std::vector<bool> m_game_profile_active;
   // Per controller: the user loaded their own mapping during this game (SetUserOverride).
   std::vector<bool> m_user_override;
+  // Per controller: its own config section from disk, kept while a per-game profile replaces it.
+  std::vector<Common::IniFile::Section> m_own_sections;
   const std::string m_ini_name;
   const std::string m_gui_name;
   const std::string m_profile_directory_name;

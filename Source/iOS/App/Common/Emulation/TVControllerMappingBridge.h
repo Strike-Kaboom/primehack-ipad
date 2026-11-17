@@ -168,6 +168,10 @@ NS_SWIFT_NAME(ProfileKeyInfo)
     NS_SWIFT_NAME(allProfiles(forWiimote:));
 + (BOOL)loadProfile:(NSString*)name forGCPort:(NSInteger)portOneBased restoreDevice:(BOOL)restore;
 + (BOOL)loadProfile:(NSString*)name forWiimote:(NSInteger)indexOneBased restoreDevice:(BOOL)restore;
+/// PrimeHack for iPad: the user chose this slot's mapping during the running game, so the game's
+/// per-game layout no longer applies to it (no-op when no game runs).
++ (void)markUserMappingForGCPort:(NSInteger)portOneBased NS_SWIFT_NAME(markUserMapping(forGCPort:));
++ (void)markUserMappingForWiimote:(NSInteger)indexOneBased NS_SWIFT_NAME(markUserMapping(forWiimote:));
 
 /// Profiles (saving). Writes the live pad/Wiimote config to
 /// `<user profile dir>/<name>.ini` — always the user directory, never the sys

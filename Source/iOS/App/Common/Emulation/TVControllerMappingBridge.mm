@@ -779,9 +779,6 @@ static void ApplyProfileToWiimote(int idx, ControllerEmu::EmulatedController* wm
   Common::IniFile ini;
   if (!ini.Load(loadPath)) return NO;
   ApplyProfileToPad(pad, ini, restore);
-  // PrimeHack for iPad: a profile loaded mid-game is the user's choice; the game's per-game
-  // layout must not replace it (InputConfig::SetUserOverride; no-op when no game runs).
-  cfg->SetUserOverride(port);
   return YES;
 }
 
@@ -804,8 +801,23 @@ static void ApplyProfileToWiimote(int idx, ControllerEmu::EmulatedController* wm
   Common::IniFile ini;
   if (!ini.Load(loadPath)) return NO;
   ApplyProfileToWiimote(idx, wm, ini, restore);
-  cfg->SetUserOverride(idx);  // see loadProfile:forGCPort:
   return YES;
+}
+
+// PrimeHack for iPad: a mapping the user chose during a game (profile picker, profile editor)
+// wins over that game's per-game layout for the rest of the game (InputConfig::SetUserOverride;
+// a no-op when no game runs). Not called from the automatic assign/reconnect paths, whose default
+// profile loads the per-game layout is meant to replace again.
++ (void)markUserMappingForGCPort:(NSInteger)portOneBased
+{
+  if (auto* cfg = Pad::GetConfig())
+    cfg->SetUserOverride((int)portOneBased - 1);
+}
+
++ (void)markUserMappingForWiimote:(NSInteger)indexOneBased
+{
+  if (auto* cfg = Wiimote::GetConfig())
+    cfg->SetUserOverride((int)indexOneBased - 1);
 }
 
 // Mirror of loadProfile:… in reverse. `SaveConfig` (ControllerEmu.h:245) writes the
@@ -955,7 +967,7 @@ static NSArray<DOLProfileKey*>* ProfileKeys(ControllerEmu::EmulatedController* c
   Common::IniFile ini;
   if (!pad || !LoadProfileText(text, &ini)) return NO;
   ApplyProfileToPad(pad, ini, restore);
-  cfg->SetUserOverride((int)portOneBased - 1);  // see loadProfile:forGCPort:
+  cfg->SetUserOverride((int)portOneBased - 1);  // the profile editor is a user choice
   return YES;
 }
 
@@ -967,7 +979,7 @@ static NSArray<DOLProfileKey*>* ProfileKeys(ControllerEmu::EmulatedController* c
   Common::IniFile ini;
   if (!wm || !LoadProfileText(text, &ini)) return NO;
   ApplyProfileToWiimote(idx, wm, ini, restore);
-  cfg->SetUserOverride(idx);  // see loadProfile:forGCPort:
+  cfg->SetUserOverride(idx);  // the profile editor is a user choice
   return YES;
 }
 
@@ -1069,7 +1081,9 @@ static BOOL StashMapping(ControllerEmu::EmulatedController* controller, NSString
     return NO;
   Common::IniFile ini;
   auto* section = ini.GetOrCreateSection("Profile");
-  controller->SaveConfig(section);
+  // PrimeHack for iPad: the slot's own mapping, never a game's per-game layout (which the stash
+  // would otherwise hand back to this controller in any later game).
+  controller->GetConfig()->SaveOwnMapping(controller, section);
   // The mapping is `qualifier`'s whatever the slot is bound to by now.
   section->Set("Device", q);
   return ini.Save(path) ? YES : NO;

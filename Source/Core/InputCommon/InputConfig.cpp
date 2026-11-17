@@ -98,6 +98,7 @@ bool InputConfig::LoadConfig()
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   m_user_override.resize(m_controllers.size(), false);
   std::vector<bool> profile_active(m_controllers.size(), false);
+  std::vector<Common::IniFile::Section> own_sections(m_controllers.size());
 
   if (inifile.Load(File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini") &&
       !inifile.GetSections().empty())
@@ -157,16 +158,20 @@ bool InputConfig::LoadConfig()
         controller->SetDefaultDevice(keep_device);
       controller->UpdateReferences(g_controller_interface);
       profile_active[n] = useProfile[n];
+      if (useProfile[n])
+        own_sections[n] = own_config;
 
       // Next profile
       n++;
     }
     m_game_profile_active = std::move(profile_active);
+    m_own_sections = std::move(own_sections);
     return true;
   }
   else
   {
     m_game_profile_active = std::move(profile_active);
+    m_own_sections = std::move(own_sections);
     // Only load the default profile for the first controller and clear the others,
     // otherwise they would all share the same mappings on the same (default) device
     if (m_controllers.size() > 0)
@@ -192,26 +197,8 @@ void InputConfig::SaveConfig()
   Common::IniFile inifile;
   inifile.Load(ini_filename);
 
-  for (size_t i = 0; i < m_controllers.size(); ++i)
-  {
-    auto& controller = m_controllers[i];
-    auto* section = inifile.GetOrCreateSection(controller->GetName());
-    if (i < m_game_profile_active.size() && m_game_profile_active[i])
-    {
-      if (controller->GetDefaultDevice().source == "MFi")
-      {
-        // A game-specific profile (e.g. the PrimeHack layout) is loaded for this game only. Keep
-        // the controller's own mapping on disk, so the next game does not inherit the per-game
-        // layout; only follow a change between game controllers.
-        section->Set("Device", controller->GetDefaultDevice().ToString());
-        continue;
-      }
-      // The slot moved off the game controller mid-game (e.g. to the touchscreen, which loads its
-      // own profile): the per-game layout no longer applies, so save what is there now.
-      m_game_profile_active[i] = false;
-    }
-    controller->SaveConfig(section);
-  }
+  for (auto& controller : m_controllers)
+    SaveOwnMapping(controller.get(), inifile.GetOrCreateSection(controller->GetName()));
 
   inifile.Save(ini_filename);
 }
@@ -232,9 +219,11 @@ bool InputConfig::IsGameProfileActive(int index) const
 
 void InputConfig::SetUserOverride(int index)
 {
-  // Only a choice made while a game runs overrides that game's profile. Before boot the app loads
-  // default profiles for newly assigned controllers; those must not block the per-game layout.
-  if (!Core::IsRunning(Core::System::GetInstance()))
+  // Only a choice made while a game runs (or is paused, e.g. from the app's pause menu) overrides
+  // that game's profile. Before boot the app loads default profiles for newly assigned
+  // controllers; those must not block the per-game layout.
+  const Core::State state = Core::GetState(Core::System::GetInstance());
+  if (state != Core::State::Running && state != Core::State::Paused)
     return;
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   if (index < 0 || static_cast<size_t>(index) >= m_controllers.size())
@@ -243,6 +232,33 @@ void InputConfig::SetUserOverride(int index)
   m_user_override[index] = true;
   if (static_cast<size_t>(index) < m_game_profile_active.size())
     m_game_profile_active[index] = false;
+}
+
+void InputConfig::SaveOwnMapping(ControllerEmu::EmulatedController* controller,
+                                 Common::IniFile::Section* section) const
+{
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  for (size_t i = 0; i < m_controllers.size(); ++i)
+  {
+    if (m_controllers[i].get() != controller)
+      continue;
+    // A game-specific profile (e.g. the PrimeHack layout) applies to this game only: while it is
+    // loaded on a game controller, persist the controller's own mapping, following only a change
+    // of game controller, so other games (and the app's mapping stash) never inherit the layout.
+    // On any other device (e.g. the touchscreen the app switched to mid-game) the live mapping is
+    // the user's, so it is saved as is.
+    if (i < m_game_profile_active.size() && m_game_profile_active[i] &&
+        i < m_own_sections.size() && controller->GetDefaultDevice().source == "MFi")
+    {
+      const std::string name = section->name;
+      *section = m_own_sections[i];
+      section->name = name;
+      section->Set("Device", controller->GetDefaultDevice().ToString());
+      return;
+    }
+    break;
+  }
+  controller->SaveConfig(section);
 }
 
 void InputConfig::ClearUserOverrides()

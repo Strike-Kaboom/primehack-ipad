@@ -83,6 +83,10 @@ void EnforceIOSControllerLayout(Game game) {
   using Clock = std::chrono::steady_clock;
   static Clock::time_point s_next_check{};
   static Clock::time_point s_next_reload{};
+  // Consecutive checks that found the PrimeHack layout missing. The app rebinds a controller in a
+  // few quick main-thread steps (set device, restore mapping, save); reloading in the middle would
+  // read the config file before that save, so act only once the layout stays missing.
+  static int s_unbound_checks = 0;
   const auto now = Clock::now();
   if (now < s_next_check)
     return;
@@ -93,39 +97,49 @@ void EnforceIOSControllerLayout(Game game) {
 
   const bool is_gamecube = game >= Game::PRIME_1_GCN;
   InputConfig* config = is_gamecube ? Pad::GetConfig() : ::Wiimote::GetConfig();
-  // The host thread edits and saves mappings under this lock; reading them without it races.
-  // (Recursive: Pad/Wiimote::LoadConfig below take it again.)
-  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
-  // Only while the game's PrimeHack profile is in effect for player 1: not on a touchscreen slot,
-  // not on a release PrimeHack does not drive, and not after the user loaded their own mapping.
-  if (!config->IsGameProfileActive(0) || !BoundToGameController(config))
-    return;
+  bool reload = false;
+  {
+    // The host thread edits and saves mappings under this lock; reading them without it races.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    // Only while the game's PrimeHack profile is in effect for player 1: not on a touchscreen
+    // slot, not on a release PrimeHack does not drive, not after the user loaded their own mapping.
+    if (!config->IsGameProfileActive(0) || !BoundToGameController(config))
+      return;
 
-  ControllerEmu::ControlGroup* stick =
-      is_gamecube ? Pad::GetGroup(0, PadGroup::ControlStick) :
-                    ::Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::ControlStick);
-  if (CameraStickUnbound(stick)) {
-    // Something reloaded the slot's own mapping mid-game. Reload the config, which re-applies the
-    // game's PrimeHack profile. Rate-limited so a profile that cannot apply never reloads in a loop.
-    if (now >= s_next_reload) {
-      s_next_reload = now + std::chrono::seconds(10);
-      if (is_gamecube)
-        Pad::LoadConfig();
-      else
-        ::Wiimote::LoadConfig();
+    ControllerEmu::ControlGroup* stick =
+        is_gamecube ? Pad::GetGroup(0, PadGroup::ControlStick) :
+                      ::Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::ControlStick);
+    if (!CameraStickUnbound(stick)) {
+      s_unbound_checks = 0;
+    } else if (++s_unbound_checks >= 2) {
+      // Something reloaded the slot's own mapping mid-game (e.g. the app's reconnect handling).
+      // Reloading the config re-applies the game's PrimeHack profile. Rate-limited so a profile
+      // that cannot apply never reloads in a loop.
+      s_unbound_checks = 0;
+      if (now >= s_next_reload) {
+        s_next_reload = now + std::chrono::seconds(10);
+        reload = true;
+      }
     }
-    return;
+    if (!is_gamecube && !CameraStickUnbound(stick)) {
+      // The Wii Prime games need the Nunchuk; a reload without an "Extension =" line selects
+      // None, which stops the game at "Connect the Nunchuk".
+      auto* attachments = static_cast<ControllerEmu::Attachments*>(
+          ::Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
+      if (attachments != nullptr &&
+          attachments->GetSelectedAttachment() != WiimoteEmu::ExtensionNumber::NUNCHUK) {
+        attachments->SetSelectedAttachment(WiimoteEmu::ExtensionNumber::NUNCHUK);
+      }
+    }
   }
 
-  if (!is_gamecube) {
-    // The Wii Prime games need the Nunchuk; a reload without an "Extension =" line selects None,
-    // which stops the game at "Connect the Nunchuk".
-    auto* attachments = static_cast<ControllerEmu::Attachments*>(
-        ::Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
-    if (attachments != nullptr &&
-        attachments->GetSelectedAttachment() != WiimoteEmu::ExtensionNumber::NUNCHUK) {
-      attachments->SetSelectedAttachment(WiimoteEmu::ExtensionNumber::NUNCHUK);
-    }
+  // Outside the lock: LoadConfig looks up the profile first, which can raise a panic alert that
+  // waits on the main thread, and only then takes the lock itself.
+  if (reload) {
+    if (is_gamecube)
+      Pad::LoadConfig();
+    else
+      ::Wiimote::LoadConfig();
   }
 }
 #endif
