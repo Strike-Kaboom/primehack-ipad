@@ -19,6 +19,15 @@
 #include "InputCommon/ControllerEmu/ControlGroup/PrimeHackAltProfile.h"
 #include "InputCommon/InputConfig.h"
 
+#ifdef IPHONEOS
+#include <chrono>
+
+#include "Core/HW/GCPadEmu.h"
+#include "Core/HW/WiimoteEmu/ExtensionPort.h"
+#include "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
+#endif
+
 constexpr const char* PROFILES_DIR = "Profiles/";
 
 namespace prime {
@@ -52,6 +61,71 @@ void InitializeHack() {
   init_db(*GetAddressDB());
   EnableDefaultMods();
 }
+
+#ifdef IPHONEOS
+namespace {
+// True when the PrimeHack camera stick of this controller has no binding: the per-game
+// "PrimeHack Controller" profile is not (or no longer) loaded.
+bool CameraStickUnbound(ControllerEmu::ControlGroup* stick) {
+  if (stick == nullptr || stick->controls.empty() || !stick->controls[0]->control_ref)
+    return false;
+  return stick->controls[0]->control_ref->GetExpression().empty();
+}
+
+bool BoundToGameController(InputConfig* config) {
+  if (config == nullptr || config->GetControllerCount() == 0)
+    return false;
+  return config->GetController(0)->GetDefaultDevice().source == "MFi";
+}
+}  // namespace
+
+void EnforceIOSControllerLayout(Game game) {
+  using Clock = std::chrono::steady_clock;
+  static Clock::time_point s_next_check{};
+  static Clock::time_point s_next_reload{};
+  const auto now = Clock::now();
+  if (now < s_next_check)
+    return;
+  s_next_check = now + std::chrono::milliseconds(500);
+
+  if (!Config::Get(Config::PRIMEHACK_ENABLE) || game == Game::INVALID_GAME)
+    return;
+
+  const bool is_gamecube = game >= Game::PRIME_1_GCN;
+  InputConfig* config = is_gamecube ? Pad::GetConfig() : ::Wiimote::GetConfig();
+  // Touchscreen and other slots keep their own mapping (see InputConfig::LoadConfig).
+  if (!BoundToGameController(config))
+    return;
+
+  ControllerEmu::ControlGroup* stick =
+      is_gamecube ? Pad::GetGroup(0, PadGroup::ControlStick) :
+                    ::Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::ControlStick);
+  if (CameraStickUnbound(stick)) {
+    // Something reloaded the slot's own mapping mid-game. Reload the config, which re-applies the
+    // game's PrimeHack profile. Rate-limited so a profile that cannot apply never reloads in a loop.
+    if (now >= s_next_reload) {
+      s_next_reload = now + std::chrono::seconds(10);
+      if (is_gamecube)
+        Pad::LoadConfig();
+      else
+        ::Wiimote::LoadConfig();
+    }
+    return;
+  }
+
+  if (!is_gamecube) {
+    // The Wii Prime games need the Nunchuk; a reload without an "Extension =" line selects None,
+    // which stops the game at "Connect the Nunchuk".
+    auto* attachments = static_cast<ControllerEmu::Attachments*>(
+        ::Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
+    if (attachments != nullptr &&
+        attachments->GetSelectedAttachment() != WiimoteEmu::ExtensionNumber::NUNCHUK) {
+      const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+      attachments->SetSelectedAttachment(WiimoteEmu::ExtensionNumber::NUNCHUK);
+    }
+  }
+}
+#endif
 
 void EnableDefaultMods() {
   EnableMod<SkipCutscene>(false);

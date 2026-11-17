@@ -355,6 +355,10 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
 
   update_active_game_region(cpu_guard);
 
+#ifdef IPHONEOS
+  EnforceIOSControllerLayout(sActiveGame);
+#endif
+
   // Before doing any mod-related code, set the cpu guard
   foreach_mod([&cpu_guard](PrimeMod& mod) { mod.set_temporary_cpu_guard(&cpu_guard); });
 

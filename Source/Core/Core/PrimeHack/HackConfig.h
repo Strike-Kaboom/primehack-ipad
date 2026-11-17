@@ -12,6 +12,12 @@
 // Naming scheme will match dolphin as this place acts as an interface between the hack & dolphin proper
 namespace prime {
 void InitializeHack();
+
+#ifdef IPHONEOS
+// PrimeHack for iPad: during a Metroid Prime game, keeps player 1's PrimeHack controller layout
+// (and, on Wii, the Nunchuk) in place when something reloads the controller config mid-game.
+void EnforceIOSControllerLayout(Game game);
+#endif
 void EnableDefaultMods();
 
 bool CheckBeamCtl(int beam_num);
