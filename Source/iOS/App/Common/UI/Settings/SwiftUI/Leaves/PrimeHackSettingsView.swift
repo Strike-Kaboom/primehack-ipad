@@ -71,7 +71,7 @@ enum PrimeHackSettingsModelBuilder {
     let degrees: (Double) -> String = { "\(Int($0.rounded()))°" }
 
     let controls = MenuSection(id: "primehack-controls", header: L("Controls"),
-                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. GameCube: hold L1 and push the right stick for beams. Wii: D-Pad picks a beam, L1 + D-Pad picks a visor."),
+                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam, L1 + D-Pad picks a visor. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map."),
                                items: [
       SettingsRow.toggle("primehack-enabled", L("PrimeHack Controls"), s.enabled,
                          L("FPS-style camera control and quick beam and visor selection in the Metroid Prime games. Takes effect when a game starts."),
