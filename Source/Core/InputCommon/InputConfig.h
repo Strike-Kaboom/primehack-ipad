@@ -33,6 +33,13 @@ public:
   void SaveConfig();
   // True while a game INI's [Controls] profile replaced at least one controller's own mapping.
   bool IsGameProfileActive() const;
+  // True while a game INI's [Controls] profile replaced controller `index`'s own mapping.
+  bool IsGameProfileActive(int index) const;
+  // The user explicitly loaded a mapping for controller `index` (e.g. picked a profile): for the
+  // rest of this game, the game INI's profile no longer applies to it and its mapping is saved.
+  void SetUserOverride(int index);
+  // Forget SetUserOverride choices (called when a game ends).
+  void ClearUserOverrides();
 
   template <typename T, typename... Args>
   void CreateController(Args&&... args)
@@ -64,6 +71,8 @@ private:
   std::vector<std::unique_ptr<ControllerEmu::EmulatedController>> m_controllers;
   // Per controller: its mapping comes from a game-specific profile, not its own config section.
   std::vector<bool> m_game_profile_active;
+  // Per controller: the user loaded their own mapping during this game (SetUserOverride).
+  std::vector<bool> m_user_override;
   const std::string m_ini_name;
   const std::string m_gui_name;
   const std::string m_profile_directory_name;

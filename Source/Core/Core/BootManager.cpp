@@ -249,7 +249,10 @@ void RestoreConfig()
 
   // A game INI's [Controls] profile (e.g. the PrimeHack layout) replaces a controller's mapping for
   // that game only. Now that no game is running, load each controller's own mapping again, so the
-  // per-game layout does not stay active in the menus or the next game.
+  // per-game layout does not stay active in the menus or the next game. Mappings the user loaded
+  // during the game (SetUserOverride) were saved as theirs and stay.
+  Pad::GetConfig()->ClearUserOverrides();
+  Wiimote::GetConfig()->ClearUserOverrides();
   if (Pad::GetConfig()->IsGameProfileActive())
     Pad::LoadConfig();
   if (Wiimote::GetConfig()->IsGameProfileActive())

@@ -4,6 +4,7 @@
 #include "InputCommon/InputConfig.h"
 
 #include <algorithm>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -14,6 +15,7 @@
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/HW/Wiimote.h"
+#include "Core/System.h"
 #include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/InputProfile.h"
@@ -57,6 +59,15 @@ bool InputConfig::LoadConfig()
         std::string profile_setting;
         if (control_section->Get(profile_name, &profile_setting))
         {
+          // PrimeHack for iPad: the Prime game INIs cover every release of a game, but PrimeHack
+          // only drives the ones it supports (e.g. not the Japanese discs). Elsewhere its layout
+          // would leave the right stick and pointer dead, so keep the user's own mapping.
+          if (std::string_view(profile_setting).starts_with("PrimeHack") &&
+              !prime::IsSupportedGameID(SConfig::GetInstance().GetGameID()))
+          {
+            continue;
+          }
+
           auto profiles = InputProfile::GetProfilesFromSetting(profile_setting, profile_directory);
           // PrimeHack for iPad: game INIs in Data/Sys name profiles that ship in Data/Sys too
           // (e.g. "PrimeHack Controller"), so fall back to the bundled profile directory.
@@ -81,11 +92,17 @@ bool InputConfig::LoadConfig()
     }
   }
 
+  // Serialise with SaveConfig and with the host thread, which edits and saves mappings under the
+  // same lock (TVControllerMappingBridge), so a save never sees a half-loaded mapping or stale
+  // per-game flags. Taken after the profile lookup above, which can raise a panic alert.
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  m_user_override.resize(m_controllers.size(), false);
+  std::vector<bool> profile_active(m_controllers.size(), false);
+
   if (inifile.Load(File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini") &&
       !inifile.GetSections().empty())
   {
     int n = 0;
-    m_game_profile_active.assign(m_controllers.size(), false);
 
     for (auto& controller : m_controllers)
     {
@@ -96,6 +113,10 @@ bool InputConfig::LoadConfig()
       std::string own_device;
       own_config.Get("Device", &own_device);
       std::string keep_device;
+
+      // The user picked their own mapping for this slot during this game.
+      if (m_user_override[n])
+        useProfile[n] = false;
 
       if (useProfile[n])
       {
@@ -135,16 +156,17 @@ bool InputConfig::LoadConfig()
       if (!keep_device.empty())
         controller->SetDefaultDevice(keep_device);
       controller->UpdateReferences(g_controller_interface);
-      m_game_profile_active[n] = useProfile[n];
+      profile_active[n] = useProfile[n];
 
       // Next profile
       n++;
     }
+    m_game_profile_active = std::move(profile_active);
     return true;
   }
   else
   {
-    m_game_profile_active.assign(m_controllers.size(), false);
+    m_game_profile_active = std::move(profile_active);
     // Only load the default profile for the first controller and clear the others,
     // otherwise they would all share the same mappings on the same (default) device
     if (m_controllers.size() > 0)
@@ -166,6 +188,7 @@ void InputConfig::SaveConfig()
 {
   std::string ini_filename = File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini";
 
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   Common::IniFile inifile;
   inifile.Load(ini_filename);
 
@@ -175,11 +198,17 @@ void InputConfig::SaveConfig()
     auto* section = inifile.GetOrCreateSection(controller->GetName());
     if (i < m_game_profile_active.size() && m_game_profile_active[i])
     {
-      // A game-specific profile (e.g. the PrimeHack layout) is loaded for this game only. Keep the
-      // controller's own mapping on disk, so the next game does not inherit the per-game layout;
-      // only follow a change of device (a controller reassigned mid-game).
-      section->Set("Device", controller->GetDefaultDevice().ToString());
-      continue;
+      if (controller->GetDefaultDevice().source == "MFi")
+      {
+        // A game-specific profile (e.g. the PrimeHack layout) is loaded for this game only. Keep
+        // the controller's own mapping on disk, so the next game does not inherit the per-game
+        // layout; only follow a change between game controllers.
+        section->Set("Device", controller->GetDefaultDevice().ToString());
+        continue;
+      }
+      // The slot moved off the game controller mid-game (e.g. to the touchscreen, which loads its
+      // own profile): the per-game layout no longer applies, so save what is there now.
+      m_game_profile_active[i] = false;
     }
     controller->SaveConfig(section);
   }
@@ -189,8 +218,37 @@ void InputConfig::SaveConfig()
 
 bool InputConfig::IsGameProfileActive() const
 {
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   return std::find(m_game_profile_active.begin(), m_game_profile_active.end(), true) !=
          m_game_profile_active.end();
+}
+
+bool InputConfig::IsGameProfileActive(int index) const
+{
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  return index >= 0 && static_cast<size_t>(index) < m_game_profile_active.size() &&
+         m_game_profile_active[index];
+}
+
+void InputConfig::SetUserOverride(int index)
+{
+  // Only a choice made while a game runs overrides that game's profile. Before boot the app loads
+  // default profiles for newly assigned controllers; those must not block the per-game layout.
+  if (!Core::IsRunning(Core::System::GetInstance()))
+    return;
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  if (index < 0 || static_cast<size_t>(index) >= m_controllers.size())
+    return;
+  m_user_override.resize(m_controllers.size(), false);
+  m_user_override[index] = true;
+  if (static_cast<size_t>(index) < m_game_profile_active.size())
+    m_game_profile_active[index] = false;
+}
+
+void InputConfig::ClearUserOverrides()
+{
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  m_user_override.assign(m_controllers.size(), false);
 }
 
 ControllerEmu::EmulatedController* InputConfig::GetController(int index) const

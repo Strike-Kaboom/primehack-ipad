@@ -779,6 +779,9 @@ static void ApplyProfileToWiimote(int idx, ControllerEmu::EmulatedController* wm
   Common::IniFile ini;
   if (!ini.Load(loadPath)) return NO;
   ApplyProfileToPad(pad, ini, restore);
+  // PrimeHack for iPad: a profile loaded mid-game is the user's choice; the game's per-game
+  // layout must not replace it (InputConfig::SetUserOverride; no-op when no game runs).
+  cfg->SetUserOverride(port);
   return YES;
 }
 
@@ -801,6 +804,7 @@ static void ApplyProfileToWiimote(int idx, ControllerEmu::EmulatedController* wm
   Common::IniFile ini;
   if (!ini.Load(loadPath)) return NO;
   ApplyProfileToWiimote(idx, wm, ini, restore);
+  cfg->SetUserOverride(idx);  // see loadProfile:forGCPort:
   return YES;
 }
 
@@ -951,6 +955,7 @@ static NSArray<DOLProfileKey*>* ProfileKeys(ControllerEmu::EmulatedController* c
   Common::IniFile ini;
   if (!pad || !LoadProfileText(text, &ini)) return NO;
   ApplyProfileToPad(pad, ini, restore);
+  cfg->SetUserOverride((int)portOneBased - 1);  // see loadProfile:forGCPort:
   return YES;
 }
 
@@ -962,6 +967,7 @@ static NSArray<DOLProfileKey*>* ProfileKeys(ControllerEmu::EmulatedController* c
   Common::IniFile ini;
   if (!wm || !LoadProfileText(text, &ini)) return NO;
   ApplyProfileToWiimote(idx, wm, ini, restore);
+  cfg->SetUserOverride(idx);  // see loadProfile:forGCPort:
   return YES;
 }
 

@@ -222,13 +222,22 @@ bool ElfReader::LoadIntoMemory(Core::System& system, u32 slide, bool only_in_mem
 
     if (p->p_type == PT_LOAD)
     {
-      // Check LMA (paddr) first - some are nonsense, so fall back to VMA (vaddr) if invalid
-      u32 writeAddr = p->p_paddr;
-      if (writeAddr)
-        writeAddr |= 0x80000000;  // map to virtual address
+      u32 writeAddr;
+      if (slide != 0)
+      {
+        // PrimeHack mod loader: segments are relocated by `slide` from their VMA, which is also
+        // what MappedSize() and the symbol table use.
+        writeAddr = p->p_vaddr + slide;
+      }
       else
-        writeAddr = p->p_vaddr;  // LMA is empty, fall back to VMA
-      writeAddr += slide;  // PrimeHack mod loader relocation (0 for normal boots)
+      {
+        // Check LMA (paddr) first - some are nonsense, so fall back to VMA (vaddr) if invalid
+        writeAddr = p->p_paddr;
+        if (writeAddr)
+          writeAddr |= 0x80000000;  // map to virtual address
+        else
+          writeAddr = p->p_vaddr;  // LMA is empty, fall back to VMA
+      }
 
       const u8* src = GetSegmentPtr(i);
       u32 srcSize = p->p_filesz;

@@ -299,6 +299,7 @@ std::array<std::string_view, 14> kKnownTitles = {
   "R3MP", // MPT [PAL]
 };
 
+
 std::array<std::string_view, 8> kSupportedTitles = {
   "GM8E", // MP1 GCN [NTSC] (all revisions)
   "GM8P", // MP1 GCN [PAL]
@@ -309,6 +310,17 @@ std::array<std::string_view, 8> kSupportedTitles = {
   "R3ME", // MPT [NTSC]
   "R3MP", // MPT [PAL]
 };
+
+bool IsSupportedGameID(std::string_view game_id) {
+  if (game_id.size() < 4)
+    return false;
+  const std::string_view title = game_id.substr(0, 4);
+  for (std::string_view supported : kSupportedTitles) {
+    if (title == supported)
+      return true;
+  }
+  return false;
+}
 
 GameSupportLevel GetGameSupportLevel(UICommon::GameFile const& file)
 {

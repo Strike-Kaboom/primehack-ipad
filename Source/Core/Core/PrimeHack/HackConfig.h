@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <string_view>
 #include <vector>
 
 #include "Core/PrimeHack/HackManager.h"
@@ -12,6 +13,9 @@
 // Naming scheme will match dolphin as this place acts as an interface between the hack & dolphin proper
 namespace prime {
 void InitializeHack();
+
+// True for the game IDs PrimeHack drives (its kSupportedTitles: the NTSC-U and PAL releases).
+bool IsSupportedGameID(std::string_view game_id);
 
 #ifdef IPHONEOS
 // PrimeHack for iPad: during a Metroid Prime game, keeps player 1's PrimeHack controller layout

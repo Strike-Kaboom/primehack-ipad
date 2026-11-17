@@ -93,8 +93,12 @@ void EnforceIOSControllerLayout(Game game) {
 
   const bool is_gamecube = game >= Game::PRIME_1_GCN;
   InputConfig* config = is_gamecube ? Pad::GetConfig() : ::Wiimote::GetConfig();
-  // Touchscreen and other slots keep their own mapping (see InputConfig::LoadConfig).
-  if (!BoundToGameController(config))
+  // The host thread edits and saves mappings under this lock; reading them without it races.
+  // (Recursive: Pad/Wiimote::LoadConfig below take it again.)
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+  // Only while the game's PrimeHack profile is in effect for player 1: not on a touchscreen slot,
+  // not on a release PrimeHack does not drive, and not after the user loaded their own mapping.
+  if (!config->IsGameProfileActive(0) || !BoundToGameController(config))
     return;
 
   ControllerEmu::ControlGroup* stick =
@@ -120,7 +124,6 @@ void EnforceIOSControllerLayout(Game game) {
         ::Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::Attachments));
     if (attachments != nullptr &&
         attachments->GetSelectedAttachment() != WiimoteEmu::ExtensionNumber::NUNCHUK) {
-      const auto lock = ControllerEmu::EmulatedController::GetStateLock();
       attachments->SetSelectedAttachment(WiimoteEmu::ExtensionNumber::NUNCHUK);
     }
   }
