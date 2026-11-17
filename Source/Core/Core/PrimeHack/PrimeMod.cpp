@@ -29,8 +29,14 @@ void PrimeMod::apply_instruction_changes(bool invalidate)  {
     return;
   }
 
-  auto active_changes = get_changes_to_apply();
+  const auto& active_changes = get_changes_to_apply();
   for (CodeChange const& change : active_changes) {
+    // Only touch instructions that differ. Rewriting (and invalidating) every patched address
+    // whenever one of them changed forces the CPU core to rebuild those code blocks for nothing,
+    // which is costly without a JIT (iCube's Cached Interpreter).
+    if (read32(change.address) == change.var) {
+      continue;
+    }
     write32(change.var, change.address);
     if (invalidate) {
       Core::System::GetInstance().GetPowerPC().ScheduleInvalidateCacheThreadSafe(change.address);
