@@ -57,6 +57,13 @@ bool InputConfig::LoadConfig()
         if (control_section->Get(profile_name, &profile_setting))
         {
           auto profiles = InputProfile::GetProfilesFromSetting(profile_setting, profile_directory);
+          // PrimeHack for iPad: game INIs in Data/Sys name profiles that ship in Data/Sys too
+          // (e.g. "PrimeHack Controller"), so fall back to the bundled profile directory.
+          if (profiles.empty())
+          {
+            profiles = InputProfile::GetProfilesFromSetting(profile_setting,
+                                                            GetSysProfileDirectoryPath());
+          }
 
           if (profiles.empty())
           {
@@ -82,22 +89,49 @@ bool InputConfig::LoadConfig()
     {
       Common::IniFile::Section config;
       // Load settings from ini
+      // The slot's own mapping, including the device the app bound to it.
+      const Common::IniFile::Section own_config = *inifile.GetOrCreateSection(controller->GetName());
+      std::string own_device;
+      own_config.Get("Device", &own_device);
+      std::string keep_device;
+
       if (useProfile[n])
       {
-        std::string base;
-        SplitPath(profile[n], nullptr, &base, nullptr);
-        Core::DisplayMessage("Loading game specific input profile '" + base + "' for device '" +
-                                 controller->GetName() + "'",
-                             6000);
+        // Load the profile from its own file: reusing `inifile` would replace the controller
+        // config every later slot reads its mapping from.
+        Common::IniFile profile_ini;
+        profile_ini.Load(profile[n]);
+        const Common::IniFile::Section profile_config = *profile_ini.GetOrCreateSection("Profile");
+        std::string profile_device;
+        profile_config.Get("Device", &profile_device);
 
-        inifile.Load(profile[n]);
-        config = *inifile.GetOrCreateSection("Profile");
+        // Bundled gamepad profiles name a placeholder device ("MFi/0/Select Device"): they describe
+        // a layout, not a controller. Apply one only to a slot bound to a game controller (MFi),
+        // and keep that controller; a touchscreen or other slot keeps its own mapping.
+        const bool placeholder = profile_device.find("Select Device") != std::string::npos;
+        if (placeholder && !own_device.starts_with("MFi/"))
+        {
+          useProfile[n] = false;
+        }
+        else
+        {
+          std::string base;
+          SplitPath(profile[n], nullptr, &base, nullptr);
+          Core::DisplayMessage("Loading game specific input profile '" + base + "' for device '" +
+                                   controller->GetName() + "'",
+                               6000);
+          config = profile_config;
+          if (placeholder)
+            keep_device = own_device;
+        }
       }
-      else
+      if (!useProfile[n])
       {
-        config = *inifile.GetOrCreateSection(controller->GetName());
+        config = own_config;
       }
       controller->LoadConfig(&config);
+      if (!keep_device.empty())
+        controller->SetDefaultDevice(keep_device);
       controller->UpdateReferences(g_controller_interface);
 
       // Next profile
