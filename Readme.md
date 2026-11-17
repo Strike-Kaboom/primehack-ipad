@@ -1,3 +1,13 @@
+# PrimeHack for iPad
+
+This fork adds [PrimeHack](https://github.com/shiiion/dolphin)'s Metroid Prime controls (FPS camera look, FOV, beam and visor
+shortcuts and its other quality-of-life mods) to [iCube](https://github.com/Provenance-Emu/iCube), the iOS/iPadOS build of
+Dolphin. It is a personal, non-commercial project. It contains no game files, BIOS, keys or ROM links: you need
+your own disc dumps.
+
+Credits: PrimeHack by shiiion (vyuuui), SirMangler and the PrimeHack contributors; iCube by Joe Mattiello and the
+Provenance team; DolphiniOS by OatmealDome; Dolphin by the Dolphin Emulator Project. Licensed GPLv2+, like Dolphin.
+
 # DolphiniOS
 
 DolphiniOS is a port of the Dolphin Emulator to iOS and iPadOS. For installation instructions and downloads, check [our website](https://dolphinios.oatmealdome.me).

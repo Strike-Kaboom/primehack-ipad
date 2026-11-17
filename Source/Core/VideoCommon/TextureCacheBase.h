@@ -318,6 +318,7 @@ public:
                                  AbstractTexture* texture, TLUTFormat tlutfmt);
   static void RenderReinterpretEntry(const RcTcacheEntry& entry, AbstractTexture* texture,
                                      TextureFormat old_format, TextureFormat new_format);
+  void ClearBufferCorners(u8* buffer, u32 width, u32 height);
 
 protected:
   // Decodes the specified data to the GPU texture specified by entry.

@@ -222,7 +222,7 @@ constexpr std::array<GekkoOPTemplate, 4> s_table4_3{{
      FL_IN_FLOAT_S | FL_OUT_A | FL_IN_AB | FL_USE_FPU | FL_LOADSTORE},
 }};
 
-constexpr std::array<GekkoOPTemplate, 13> s_table19{{
+constexpr std::array<GekkoOPTemplate, 14> s_table19{{
     {528, "bcctrx", OpType::Branch, 1, FL_ENDBLOCK | FL_READ_CR_BI},
     {16, "bclrx", OpType::Branch, 1, FL_ENDBLOCK | FL_READ_CR_BI},
     {257, "crand", OpType::CR, 1, 0},
@@ -239,6 +239,10 @@ constexpr std::array<GekkoOPTemplate, 13> s_table19{{
 
     {50, "rfi", OpType::System, 2,
      FL_ENDBLOCK | FL_CHECKEXCEPTIONS | FL_PROGRAMEXCEPTION | FL_SET_MSR},
+
+    // PrimeHack: host callback into the emulator (see Interpreter::vmcall). Ends the block so the
+    // JIT and Cached Interpreter fall back to the interpreter handler and re-read PC afterwards.
+    {51, "vmcall", OpType::System, 1, FL_ENDBLOCK},
 }};
 
 constexpr std::array<GekkoOPTemplate, 107> s_table31{{

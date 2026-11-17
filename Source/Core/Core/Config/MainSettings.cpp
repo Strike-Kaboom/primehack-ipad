@@ -260,6 +260,22 @@ const Info<std::string> MAIN_GPU_DETERMINISM_MODE{{System::Main, "Core", "GPUDet
                                                   "auto"};
 const Info<s32> MAIN_OVERRIDE_BOOT_IOS{{System::Main, "Core", "OverrideBootIOS"}, -1};
 
+// PrimeHack
+const Info<bool> PRIMEHACK_ENABLE{{System::Main, "Core", "EnablePrimeHack"}, true};
+const Info<bool> PRIMEHACK_INITIAL_RUN{{System::Main, "Core", "InitialPrimeHackRun"}, false};
+const Info<bool> PRIMEHACK_PROMPT_TAB{{System::Main, "Core", "PromptPrimeHackTab"}, false};
+
+const Info<bool> PRIMEHACK_NOCLIP{{System::Main, "Core", "PrimeNoclip"}, false};
+const Info<bool> PRIMEHACK_INVULNERABILITY{{System::Main, "Core", "PrimeInvulnerability"}, false};
+const Info<bool> PRIMEHACK_SKIPMP2_PORTAL{{System::Main, "Core", "PrimeSkipMP2Portal"}, false};
+const Info<bool> PRIMEHACK_SKIPPABLE_CUTSCENES{{System::Main, "Core", "PrimeSkippableCutscenes"}, false};
+const Info<bool> PRIMEHACK_RESTORE_SCANDASH{{System::Main, "Core", "PrimeRestoreDashing"}, false};
+const Info<bool> PRIMEHACK_FRIENDVOUCHERS{{System::Main, "Core", "PrimeFriendVouchers"}, false};
+const Info<bool> PRIMEHACK_DISABLE_HUDMEMO{{System::Main, "Core", "PrimeDisableHudMemo"}, false};
+const Info<bool> PRIMEHACK_UNLOCK_HYPERMODE{{System::Main, "Core", "PrimeUnlockHypermode"}, true};
+const Info<bool> PRIMEHACK_ANYBEAM_DOOR{{System::Main, "Core", "PrimeAnybeamDoor"}, false};
+const Info<bool> PRIMEHACK_MODLOADER_ENABLED{{System::Main, "Core", "PrimeModLoader"}, false};
+
 GPUDeterminismMode GetGPUDeterminismMode()
 {
   auto mode = Config::Get(Config::MAIN_GPU_DETERMINISM_MODE);
@@ -505,6 +521,8 @@ const Info<bool> MAIN_GAMELIST_COLUMN_COMPRESSION{{System::Main, "GameList", "Co
 const Info<bool> MAIN_GAMELIST_COLUMN_TIME_PLAYED{{System::Main, "GameList", "ColumnTimePlayed"},
                                                   true};
 const Info<bool> MAIN_GAMELIST_COLUMN_TAGS{{System::Main, "GameList", "ColumnTags"}, false};
+const Info<bool> MAIN_GAMELIST_COLUMN_PHSUPPORT{{System::Main, "GameList", "ColumnPHSupport"},
+                                                true};
 
 // Main.FifoPlayer
 

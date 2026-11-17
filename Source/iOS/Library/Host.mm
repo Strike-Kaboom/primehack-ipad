@@ -106,6 +106,12 @@ bool Host_RendererHasFullFocus()
   return true;
 }
 
+// PrimeHack: desktop mouse backends lock/unlock the cursor through this. iPadOS has no cursor to
+// lock in the emulation view, so it is a no-op here.
+void Host_RendererUpdateCursor(bool locked)
+{
+}
+
 bool Host_RendererIsFullscreen()
 {
   return true;

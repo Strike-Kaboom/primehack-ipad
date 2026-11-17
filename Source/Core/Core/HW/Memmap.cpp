@@ -96,6 +96,9 @@ void MemoryManager::InitMMIO(Core::System& system)
 void MemoryManager::Init()
 {
   const auto get_mem1_size = [this] {
+    // PrimeHack: the mod loader wants 32 MiB of RAM, so override this automatically.
+    if (Config::Get(Config::PRIMEHACK_MODLOADER_ENABLED))
+      return 0x02000000U;
     if (Config::Get(Config::MAIN_RAM_OVERRIDE_ENABLE))
       return Config::Get(Config::MAIN_MEM1_SIZE);
     // The simulated memory size in the game's header was originally used to ask the Apploader to
