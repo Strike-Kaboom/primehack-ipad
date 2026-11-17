@@ -278,6 +278,11 @@ void GCPad::LoadDefaults(const ControllerInterface& ciface)
   m_dpad->SetControlExpression(2, "`F`");  // Left
   m_dpad->SetControlExpression(3, "`H`");  // Right
 
+  // Triforce
+  m_triforce->SetControlExpression(0, "`1`");  // Test
+  m_triforce->SetControlExpression(1, "`2`");  // Service
+  m_triforce->SetControlExpression(2, "`3`");  // Coin
+
   // C Stick
   m_c_stick->SetControlExpression(0, "`I`");  // Up
   m_c_stick->SetControlExpression(1, "`K`");  // Down

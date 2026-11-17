@@ -320,7 +320,7 @@ Wiimote::Wiimote(const unsigned int index) : m_index(index), m_bt_device_index(i
                         {_trans("Battery"),
                          // i18n: The percent symbol.
                          _trans("%")},
-                        100, 0, 100);
+                        95, 0, 100);
 
   // Note: "Upright" and "Sideways" options can be enabled at the same time which produces an
   // orientation where the wiimote points towards the left with the buttons towards you.
@@ -568,9 +568,6 @@ bool Wiimote::ProcessExtensionPortEvent()
 void Wiimote::UpdateButtonsStatus(const DesiredWiimoteState& target_state)
 {
   m_status.buttons.hex = target_state.buttons.hex & ButtonData::BUTTON_MASK;
-
-  m_buttons->GetState(&m_status.buttons.hex, using_metroid_ui ? metroid_button_bitmasks : button_bitmasks);
-  m_dpad->GetState(&m_status.buttons.hex, IsSideways() ? dpad_sideways_bitmasks : dpad_bitmasks);
 }
 
 static std::array<CameraPoint, CameraLogic::NUM_POINTS>

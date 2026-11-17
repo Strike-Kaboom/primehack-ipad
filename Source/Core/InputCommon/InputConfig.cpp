@@ -3,6 +3,7 @@
 
 #include "InputCommon/InputConfig.h"
 
+#include <algorithm>
 #include <utility>
 #include <vector>
 
@@ -84,6 +85,7 @@ bool InputConfig::LoadConfig()
       !inifile.GetSections().empty())
   {
     int n = 0;
+    m_game_profile_active.assign(m_controllers.size(), false);
 
     for (auto& controller : m_controllers)
     {
@@ -133,6 +135,7 @@ bool InputConfig::LoadConfig()
       if (!keep_device.empty())
         controller->SetDefaultDevice(keep_device);
       controller->UpdateReferences(g_controller_interface);
+      m_game_profile_active[n] = useProfile[n];
 
       // Next profile
       n++;
@@ -141,6 +144,7 @@ bool InputConfig::LoadConfig()
   }
   else
   {
+    m_game_profile_active.assign(m_controllers.size(), false);
     // Only load the default profile for the first controller and clear the others,
     // otherwise they would all share the same mappings on the same (default) device
     if (m_controllers.size() > 0)
@@ -165,12 +169,28 @@ void InputConfig::SaveConfig()
   Common::IniFile inifile;
   inifile.Load(ini_filename);
 
-  for (auto& controller : m_controllers)
+  for (size_t i = 0; i < m_controllers.size(); ++i)
   {
-    controller->SaveConfig(inifile.GetOrCreateSection(controller->GetName()));
+    auto& controller = m_controllers[i];
+    auto* section = inifile.GetOrCreateSection(controller->GetName());
+    if (i < m_game_profile_active.size() && m_game_profile_active[i])
+    {
+      // A game-specific profile (e.g. the PrimeHack layout) is loaded for this game only. Keep the
+      // controller's own mapping on disk, so the next game does not inherit the per-game layout;
+      // only follow a change of device (a controller reassigned mid-game).
+      section->Set("Device", controller->GetDefaultDevice().ToString());
+      continue;
+    }
+    controller->SaveConfig(section);
   }
 
   inifile.Save(ini_filename);
+}
+
+bool InputConfig::IsGameProfileActive() const
+{
+  return std::find(m_game_profile_active.begin(), m_game_profile_active.end(), true) !=
+         m_game_profile_active.end();
 }
 
 ControllerEmu::EmulatedController* InputConfig::GetController(int index) const

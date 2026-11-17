@@ -187,27 +187,39 @@ void Nunchuk::ChangeUIPrimeHack(bool useMetroidUI)
   using_metroid_ui = useMetroidUI;
 }
 
-// Button Defaults
 void Nunchuk::LoadDefaults()
 {
-  // Movement
-  m_stick->SetControlExpression(0, "W | UP");     // Push
-  m_stick->SetControlExpression(1, "S | DOWN");   // Pull
-  m_stick->SetControlExpression(2, "A | LEFT");   // Tilt left
-  m_stick->SetControlExpression(3, "D | RIGHT");  // Tilt right
+#ifndef ANDROID
+  // Stick
+  m_stick->SetControlExpression(0, "W");  // up
+  m_stick->SetControlExpression(1, "S");  // down
+  m_stick->SetControlExpression(2, "A");  // left
+  m_stick->SetControlExpression(3, "D");  // right
 
   // Because our defaults use keyboard input, set calibration shape to a square.
   m_stick->SetCalibrationFromGate(ControllerEmu::SquareStickGate(1.0));
 
+// Buttons
 #ifdef _WIN32
-  m_buttons->SetControlExpression(1, "`Click 1`"); // Lock-On
+  m_buttons->SetControlExpression(0, "LCONTROL");  // C
+  m_buttons->SetControlExpression(1, "LSHIFT");    // Z
+#elif __APPLE__
+  m_buttons->SetControlExpression(0, "`Left Control`");  // C
+  m_buttons->SetControlExpression(1, "`Left Shift`");    // Z
 #else
-  m_buttons->SetControlExpression(1, "`Click 3`"); // Lock-On
+  m_buttons->SetControlExpression(0, "Control_L");  // C
+  m_buttons->SetControlExpression(1, "Shift_L");    // Z
 #endif
 
-  m_buttons->SetControlExpression(0, "Ctrl"); // Morph
-
-  // Shake (Only used in Prime 3, may need revision
-  m_shake->SetControlExpression(1, "LSHIFT & (`Axis Y-` | `Axis Y+` | `Axis X-` | `Axis X+`)");
+  // Shake
+  for (int i = 0; i < 3; ++i)
+  {
+#ifdef __APPLE__
+    m_shake->SetControlExpression(i, "`Middle Click`");
+#else
+    m_shake->SetControlExpression(i, "`Click 2`");
+#endif
+  }
+#endif
 }
 }  // namespace WiimoteEmu

@@ -31,6 +31,8 @@ public:
 
   bool LoadConfig();
   void SaveConfig();
+  // True while a game INI's [Controls] profile replaced at least one controller's own mapping.
+  bool IsGameProfileActive() const;
 
   template <typename T, typename... Args>
   void CreateController(Args&&... args)
@@ -60,6 +62,8 @@ public:
 private:
   Common::EventHook m_hotplug_event_hook;
   std::vector<std::unique_ptr<ControllerEmu::EmulatedController>> m_controllers;
+  // Per controller: its mapping comes from a game-specific profile, not its own config section.
+  std::vector<bool> m_game_profile_active;
   const std::string m_ini_name;
   const std::string m_gui_name;
   const std::string m_profile_directory_name;

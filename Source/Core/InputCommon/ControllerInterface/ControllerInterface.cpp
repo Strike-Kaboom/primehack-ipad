@@ -166,7 +166,15 @@ void ControllerInterface::RefreshDevices(RefreshReason reason)
   // device.
 
   // An empty mouse class for when no platform specific one exists.
+#ifdef IPHONEOS
+  // PrimeHack for iPad: iPadOS has no PrimeHack mouse backend, so create the empty one once. This
+  // function runs again on every controller hot-plug; replacing the object here would free it while
+  // the CPU thread is using it (SI polling, HackManager), crashing on a mid-game reconnect.
+  if (!prime::g_mouse_input)
+    prime::g_mouse_input.reset(new prime::NullMouse());
+#else
   prime::g_mouse_input.reset(new prime::NullMouse());
+#endif
 
   for (auto& backend : m_input_backends)
     backend->PopulateDevices();

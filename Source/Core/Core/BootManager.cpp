@@ -35,11 +35,15 @@
 #include "Core/HW/EXI/EXI.h"
 #include "Core/HW/SI/SI.h"
 #include "Core/HW/SI/SI_Device.h"
+#include "Core/HW/GCPad.h"
 #include "Core/HW/Sram.h"
+#include "Core/HW/Wiimote.h"
 #include "Core/Movie.h"
 #include "Core/NetPlayProto.h"
 #include "Core/System.h"
 #include "Core/WiiRoot.h"
+
+#include "InputCommon/InputConfig.h"
 
 #include "DiscIO/Enums.h"
 
@@ -242,6 +246,14 @@ void RestoreConfig()
   Config::RemoveLayer(Config::LayerType::GlobalGame);
   Config::RemoveLayer(Config::LayerType::LocalGame);
   SConfig::GetInstance().ResetRunningGameMetadata();
+
+  // A game INI's [Controls] profile (e.g. the PrimeHack layout) replaces a controller's mapping for
+  // that game only. Now that no game is running, load each controller's own mapping again, so the
+  // per-game layout does not stay active in the menus or the next game.
+  if (Pad::GetConfig()->IsGameProfileActive())
+    Pad::LoadConfig();
+  if (Wiimote::GetConfig()->IsGameProfileActive())
+    Wiimote::LoadConfig();
 }
 
 }  // namespace BootManager
