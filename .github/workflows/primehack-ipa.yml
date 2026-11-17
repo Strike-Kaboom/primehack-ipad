@@ -1,0 +1,186 @@
+# PrimeHack for iPad: build an UNSIGNED .ipa on GitHub's macOS runners.
+#
+# Where this file goes: in your fork of iCube, at
+#   .github/workflows/primehack-ipa.yml
+#
+# What it does, in plain terms:
+#   1. Rents a Mac from GitHub (free for public repos) with Xcode 26.3.
+#   2. Downloads the source and its helper libraries ("submodules").
+#   3. Builds the Dolphin emulator core for iPhone/iPad (the slow bit, 30-90 min
+#      the first time; later runs reuse a cache).
+#   4. Builds the iCube app around it and packs it into an .ipa without signing it.
+#   5. Attaches the .ipa to the run as a downloadable "artifact".
+#      SideStore signs it with your Apple account when you install it.
+#
+# It's a trimmed copy of iCube's own .github/workflows/build.yml (credit: the
+# Provenance team). It builds only the iOS device slice and only the non-jailbroken
+# .ipa, and it never publishes releases or uploads crash symbols anywhere.
+#
+# Never add game files, BIOS, keys or ROM links to this repo or this workflow.
+
+name: PrimeHack iPad build (unsigned IPA)
+
+on:
+  # Manual: Actions tab -> "PrimeHack iPad build (unsigned IPA)" -> "Run workflow".
+  workflow_dispatch:
+  # Automatic: any push to the `primehack` branch (used from Phase 2 onwards).
+  push:
+    branches: [ primehack ]
+    paths-ignore:
+      - 'docs/**'
+      - '**/*.md'
+
+# If you push twice quickly, cancel the older build instead of running both.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  HOMEBREW_NO_AUTO_UPDATE: 1
+  HOMEBREW_NO_INSTALL_CLEANUP: 1
+  XCODE_VERSION: '26.3'      # same as iCube's own CI
+  TUIST_VERSION: '4.200.0'   # same as iCube's own CI
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 300
+
+    env:
+      # The core is built in its own step below; this stops Xcode building it a second time.
+      DOL_SKIP_CORE_BUILD: '1'
+      XCODE_ARGS: >-
+        -workspace Source/iOS/App/iCube.xcworkspace
+        -derivedDataPath ${{ github.workspace }}/build-Xcode
+        -sdk iphoneos
+        -destination generic/platform=iOS
+        DOL_BUILD_SOURCE=development
+        CURRENT_PROJECT_VERSION=${{ github.run_number }}
+        CODE_SIGNING_ALLOWED=NO
+        CODE_SIGNING_REQUIRED=NO
+
+    steps:
+      - name: Check out the source (without submodules yet)
+        uses: actions/checkout@v4
+
+      - name: Check out submodules (skipping Windows-only ones)
+        run: |
+          set -euo pipefail
+          git submodule init
+          # Qt and FFmpeg-bin here are prebuilt Windows binaries (well over 1 GB).
+          # iOS never uses them. If the core build ever complains that they're
+          # missing, delete these two lines.
+          git config submodule.Externals/Qt.update none
+          git config submodule.Externals/FFmpeg-bin.update none
+          # Shallow first (faster); if a pinned commit can't be fetched shallowly, retry in full.
+          git submodule update --recursive --depth 1 --jobs 8 \
+            || git submodule update --recursive --jobs 8
+
+      - name: Select Xcode ${{ env.XCODE_VERSION }}
+        uses: maxim-lobanov/setup-xcode@v1.6.0
+        with:
+          xcode-version: ${{ env.XCODE_VERSION }}
+
+      - name: Free disk space (remove other Xcode versions and the Android SDK)
+        run: |
+          set -uo pipefail
+          df -h .
+          find /Applications -maxdepth 1 -name 'Xcode_*.app' ! -name "Xcode_${XCODE_VERSION}.app" \
+            -exec sudo rm -rf {} + 2>/dev/null || true
+          sudo rm -rf "$HOME/Library/Android/sdk" /usr/local/share/android-sdk 2>/dev/null || true
+          df -h .
+
+      - name: Install build tools
+        run: |
+          set -euo pipefail
+          command -v cmake >/dev/null || brew install cmake
+          command -v ninja >/dev/null || brew install ninja
+          cmake --version | head -1
+          ninja --version
+
+      - name: Make sure the Metal toolchain is installed
+        run: |
+          if ! xcodebuild -showComponent MetalToolchain 2>/dev/null | grep -q 'Status: installed'; then
+            xcodebuild -downloadComponent MetalToolchain
+          fi
+
+      # The core build directory is cached between runs, so rebuilds after small
+      # changes take minutes instead of an hour.
+      - name: Restore Dolphin core cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build
+          key: dolphin-core-ios-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            dolphin-core-ios-${{ runner.os }}-
+
+      - name: Build the Dolphin core (iOS device slice)
+        id: core
+        run: |
+          set -euo pipefail
+          python3 BuildiOSXCFramework.py --platforms OS64
+          ls -d build/xcframework/* || { echo "::error::No xcframework produced"; exit 1; }
+
+      - name: Save Dolphin core cache
+        if: always() && steps.core.outcome == 'success'
+        uses: actions/cache/save@v4
+        with:
+          path: build
+          key: dolphin-core-ios-${{ runner.os }}-${{ github.sha }}
+
+      - name: Install Tuist ${{ env.TUIST_VERSION }}
+        run: |
+          set -euo pipefail
+          curl -fsSL https://mise.run | sh
+          "$HOME/.local/bin/mise" use -g "tuist@${TUIST_VERSION}"
+          echo "$HOME/.local/share/mise/shims" >> "$GITHUB_PATH"
+
+      - name: Generate the Xcode project
+        working-directory: Source/iOS/App
+        run: |
+          set -euo pipefail
+          tuist install
+          tuist generate --no-open
+          ls -d iCube.xcworkspace
+
+      - name: Build the app (non-jailbroken, unsigned)
+        run: |
+          set -o pipefail
+          mkdir -p archives
+          xcodebuild archive \
+            -archivePath "$GITHUB_WORKSPACE/archives/NonJailbroken.xcarchive" \
+            -scheme "iCube (NJB)" \
+            -configuration "Release (Non-Jailbroken)" \
+            $XCODE_ARGS 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Pack the .ipa
+        run: |
+          set -euo pipefail
+          mkdir -p products
+          # "-" means ad-hoc signing only. SideStore re-signs it with your account on install.
+          Source/iOS/App/Project/Scripts/CreateIpa.sh \
+            "$GITHUB_WORKSPACE/archives/NonJailbroken.xcarchive/Products/Applications/iCube.app" \
+            "-" \
+            "$GITHUB_WORKSPACE/Source/iOS/App/Project/Entitlements/Public.entitlements" \
+            "$GITHUB_WORKSPACE/products/PrimeHack-iPad-build${{ github.run_number }}-${GITHUB_SHA::7}.ipa"
+          ls -lh products
+
+      - name: Upload the .ipa
+        uses: actions/upload-artifact@v4
+        with:
+          name: PrimeHack-iPad-build${{ github.run_number }}
+          path: products/*.ipa
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload the build log (only if something failed)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: xcodebuild-log-${{ github.run_number }}
+          path: ${{ runner.temp }}/xcodebuild.log
+          if-no-files-found: ignore
+          retention-days: 14
