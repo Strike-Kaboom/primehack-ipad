@@ -147,7 +147,7 @@ jobs:
           xcrun llvm-profdata merge -o pgo/icube.profdata "${raws[@]}"
           # Count only interpreter functions that actually ran (a function listed with a zero count
           # was instrumented but never called, e.g. a recording made only in the menus).
-          xcrun llvm-profdata show --function=CachedInterpreter pgo/icube.profdata \
+          xcrun llvm-profdata show --counts --function=CachedInterpreter pgo/icube.profdata \
             > "$RUNNER_TEMP/pgo-functions.txt" || true
           n=$(grep -cE "Function count: [1-9]" "$RUNNER_TEMP/pgo-functions.txt" || true)
           echo "CachedInterpreter functions that ran in the recording: $n"
