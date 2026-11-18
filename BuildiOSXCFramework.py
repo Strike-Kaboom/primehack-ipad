@@ -420,7 +420,10 @@ class DolphinBuilder:
         pgo_cflags = ""
         pgo_ldflags = ""
         if pgo_mode == "generate":
-            pgo_cflags = "-fprofile-generate"
+            # PrimeHack for iPad: ICUBE_PGO_GENERATE compiles the exported PGO wrappers in UICommon.cpp
+            # (the runtime's own __llvm_profile_* symbols are private extern in the dylib, so the
+            # app's dlsym never found them and the recording build never wrote a profile).
+            pgo_cflags = "-fprofile-generate -DICUBE_PGO_GENERATE=1"
             pgo_ldflags = ("-fprofile-generate "
                            "-Wl,-u,___llvm_profile_write_file "
                            "-Wl,-u,___llvm_profile_set_filename")

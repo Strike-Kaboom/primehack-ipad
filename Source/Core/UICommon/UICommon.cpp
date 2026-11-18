@@ -556,3 +556,23 @@ std::string FormatSize(u64 bytes, int decimals)
 }
 
 }  // namespace UICommon
+
+#ifdef ICUBE_PGO_GENERATE
+// PrimeHack for iPad: exported entry points for the app's PGO shim (Source/iOS/App/Common/PGOFlush.c).
+// The profile runtime's __llvm_profile_* functions come from a static archive and are private extern
+// in the core dylib, so dlsym(RTLD_DEFAULT, "__llvm_profile_write_file") never found them: the
+// recording build ran but never set the profile path or wrote a .profraw. These wrappers are only
+// compiled into the instrumented (DOL_PGO=generate) core; normal builds are unchanged.
+extern "C" int __llvm_profile_write_file(void);
+extern "C" void __llvm_profile_set_filename(const char*);
+
+extern "C" __attribute__((visibility("default"), used)) int ICubeCorePGOWriteFile(void)
+{
+  return __llvm_profile_write_file();
+}
+
+extern "C" __attribute__((visibility("default"), used)) void ICubeCorePGOSetFilename(const char* path)
+{
+  __llvm_profile_set_filename(path);
+}
+#endif

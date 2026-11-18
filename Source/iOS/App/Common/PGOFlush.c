@@ -22,20 +22,30 @@
 typedef int (*icube_llvm_write_file_fn)(void);
 typedef void (*icube_llvm_set_filename_fn)(const char*);
 
+// PrimeHack for iPad: the runtime's own __llvm_profile_* symbols are private extern in the core
+// dylib (they come from a static archive), so dlsym never finds them. The instrumented core exports
+// ICubeCorePGOWriteFile / ICubeCorePGOSetFilename (UICommon.cpp, ICUBE_PGO_GENERATE) for this shim;
+// the old names stay as a fallback.
+static void* ICubePGOLookup(const char* exported_name, const char* runtime_name)
+{
+  void* sym = dlsym(RTLD_DEFAULT, exported_name);
+  return sym ? sym : dlsym(RTLD_DEFAULT, runtime_name);
+}
+
 void ICubePGOSetPath(const char* path)
 {
   if (!path)
     return;
-  icube_llvm_set_filename_fn set_filename =
-      (icube_llvm_set_filename_fn)dlsym(RTLD_DEFAULT, "__llvm_profile_set_filename");
+  icube_llvm_set_filename_fn set_filename = (icube_llvm_set_filename_fn)ICubePGOLookup(
+      "ICubeCorePGOSetFilename", "__llvm_profile_set_filename");
   if (set_filename)
     set_filename(path);
 }
 
 int ICubePGOFlush(void)
 {
-  icube_llvm_write_file_fn write_file =
-      (icube_llvm_write_file_fn)dlsym(RTLD_DEFAULT, "__llvm_profile_write_file");
+  icube_llvm_write_file_fn write_file = (icube_llvm_write_file_fn)ICubePGOLookup(
+      "ICubeCorePGOWriteFile", "__llvm_profile_write_file");
   if (!write_file)
     return -1;  // not an instrumented build
   return write_file();
@@ -43,5 +53,5 @@ int ICubePGOFlush(void)
 
 int ICubePGOAvailable(void)
 {
-  return dlsym(RTLD_DEFAULT, "__llvm_profile_write_file") != 0;
+  return ICubePGOLookup("ICubeCorePGOWriteFile", "__llvm_profile_write_file") != 0;
 }
