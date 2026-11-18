@@ -651,13 +651,14 @@ final class ControllerManager: NSObject, ObservableObject {
     let controllerOnly = Self.controllerOnly()
     guard Self.connectTakesPlayer1() || controllerOnly, TVEmulationBridge.isRunning() else { return }
     let qualifier = TVControllerMappingBridge.qualifiedName(for: controller) as String
+    let state = ControllerStateStore.shared.snapshot()
     guard let takeover = AssignmentEngine.player1Takeover(
-      of: qualifier, in: ControllerStateStore.shared.snapshot(), pinned: pinnedSlots,
-      controllerOnly: controllerOnly) else { return }
-    if let vacated = takeover.vacatedPlayerZeroBased {
-      assignmentService.clear(player: vacated, system: takeover.system)
-      if controllerOnly {
-        // Controller only: the slot the pad left stops playing, so the game sees one controller.
+      of: qualifier, in: state, pinned: pinnedSlots, controllerOnly: controllerOnly) else { return }
+    if controllerOnly {
+      // Controller only: every other slot the pad held stops playing, so the game sees one controller.
+      let slots = takeover.system == .wii ? state.wiimoteAssignments : state.portAssignments
+      for vacated in AssignmentEngine.duplicateSlots(of: qualifier, in: slots) {
+        assignmentService.clear(player: vacated, system: takeover.system)
         unpin(takeover.system, player: vacated)
         if takeover.system == .gamecube {
           DOLConfigBridge.setGCPortDeviceForPort(vacated + 1, device: 0)
@@ -665,6 +666,8 @@ final class ControllerManager: NSObject, ObservableObject {
           DOLConfigBridge.setWiimoteSourceFor(vacated + 1, source: 0)
         }
       }
+    } else if let vacated = takeover.vacatedPlayerZeroBased {
+      assignmentService.clear(player: vacated, system: takeover.system)
     }
     assignmentService.assign(qualifier: qualifier, toPlayer: 0, system: takeover.system)
     unpin(takeover.system, player: 0)

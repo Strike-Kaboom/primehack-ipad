@@ -112,15 +112,21 @@ final class ControllerAssignmentService {
     for port in boot.deactivatedWiimotes {
       writer.setWiimoteSource(emulated: false, port: port)
     }
-    apply(AssignmentDecision(assignments: boot.assignments))
-    // Controller only (PrimeHack for iPad): the pad leaves its other slot (its mapping is stashed and
-    // comes back with it on Player 1), then takes Player 1.
-    if let pad = boot.player1Pad {
-      if let vacated = pad.vacatedPlayerZeroBased { clear(player: vacated, system: pad.system) }
-      assign(qualifier: pad.qualifier, toPlayer: 0, system: pad.system)
-    }
     for port in boot.deactivatedGCPorts {
       writer.setGCPortActive(false, port: port)
+    }
+    apply(AssignmentDecision(assignments: boot.assignments))
+    // Controller only (PrimeHack for iPad): the Player 1 pad leaves its other slots (its mapping is
+    // stashed and comes back with it on Player 1), then takes Player 1. Each clear and assign saves,
+    // which also writes the switch-offs above to disk.
+    for slot in boot.vacatedSlots {
+      clear(player: slot.playerZeroBased, system: slot.system)
+    }
+    if let pad = boot.player1Pad {
+      assign(qualifier: pad.qualifier, toPlayer: 0, system: pad.system)
+    }
+    if boot.player1Pad == nil, boot.vacatedSlots.isEmpty, !boot.deactivatedGCPorts.isEmpty {
+      writer.saveConfig(system: .gamecube)
     }
   }
 
@@ -166,9 +172,11 @@ final class ControllerAssignmentService {
   func prepareForBoot(_ state: ControllerStateStore.State, pinned: Set<PinnedSlot>,
                       controllerOnly: Bool = false) -> [PinnedSlot] {
     let cleared = clearMenuRemotes(in: state)
-    apply(AssignmentEngine().decideBoot(from: Self.removingMenuRemotes(from: state), pinned: pinned.subtracting(cleared),
-                                        controllerOnly: controllerOnly))
-    return cleared
+    let boot = AssignmentEngine().decideBoot(from: Self.removingMenuRemotes(from: state), pinned: pinned.subtracting(cleared),
+                                             controllerOnly: controllerOnly)
+    apply(boot)
+    // Controller only: the slots the Player 1 pad left are empty now, so they stop being pinned too.
+    return cleared + boot.vacatedSlots
   }
 
   // MARK: Private

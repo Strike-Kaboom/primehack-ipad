@@ -55,6 +55,10 @@ struct BootDecision: Equatable {
   /// PrimeHack for iPad, controller only: 0-based GameCube ports 2-4 unplugged because they were
   /// left on the on-screen controls.
   var deactivatedGCPorts: [Int] = []
+  /// PrimeHack for iPad, controller only: the other slots of the booting system that held the Player
+  /// 1 pad. They are cleared (the pad's mapping is stashed, then restored on Player 1), switched off
+  /// (they are in `deactivatedWiimotes` / `deactivatedGCPorts`) and unpinned.
+  var vacatedSlots: [PinnedSlot] = []
 }
 
 /// Controller only (PrimeHack for iPad): a connected pad taking Player 1 at boot.
@@ -62,9 +66,6 @@ struct BootPlayer1Pad: Equatable {
   let qualifier: String
   /// GameCube port 1 in a GameCube title, Wii Remote 1 in a Wii title.
   let system: EmulatedSystem
-  /// The 0-based slot of the same system the pad held before, cleared and switched off so one
-  /// press does not reach two players.
-  let vacatedPlayerZeroBased: Int?
 }
 
 /// The **only** policy that chooses which controller owns which port.
@@ -188,11 +189,15 @@ final class AssignmentEngine {
   }
 
   /// Controller only (PrimeHack for iPad): the connected pad that becomes Player 1 of the title about
-  /// to boot, or nil when Player 1 already is a connected pad or no pad is connected. Prefers the pad
-  /// the user put on Player 1 of the other system (choosing the DualSense for GameCube Player 1 then
-  /// also covers Wii Remote 1), then a pad not yet on this system's slots, then any pad.
+  /// to boot, or nil when Player 1 already is a connected pad or no pad is connected. Game controllers
+  /// (`MFi/`, which the PrimeHack layout needs) win over other sources such as a DSU phone. Among them
+  /// it prefers the pad the user put on Player 1 of the other system (choosing the DualSense for
+  /// GameCube Player 1 then also covers Wii Remote 1), then a pad not yet on this system's slots, then
+  /// any pad.
   static func bootPlayer1Pad(for state: ControllerStateStore.State) -> BootPlayer1Pad? {
-    let pads = playable(state).filter(isPhysical)
+    let allPads = playable(state).filter(isPhysical)
+    let gamepads = allPads.filter { $0.hasPrefix("MFi/") }
+    let pads = gamepads.isEmpty ? allPads : gamepads
     guard !pads.isEmpty else { return nil }
     let system: EmulatedSystem = state.isWiiSystem ? .wii : .gamecube
     let own = (state.isWiiSystem ? state.wiimoteAssignments : state.portAssignments)
@@ -200,12 +205,18 @@ final class AssignmentEngine {
     let other = (state.isWiiSystem ? state.portAssignments : state.wiimoteAssignments)
       .sorted { $0.portOneBased < $1.portOneBased }
     guard let player1 = own.first, player1.portOneBased == 1,
-          !pads.contains(player1.defaultDeviceQualifier) else { return nil }
+          !allPads.contains(player1.defaultDeviceQualifier) else { return nil }
     let preferred = other.first.map(\.defaultDeviceQualifier).flatMap { pads.contains($0) ? $0 : nil }
     let unplaced = pads.first { pad in !own.contains { $0.defaultDeviceQualifier == pad } }
     guard let pad = preferred ?? unplaced ?? pads.first else { return nil }
-    let held = own.firstIndex { $0.defaultDeviceQualifier == pad }
-    return BootPlayer1Pad(qualifier: pad, system: system, vacatedPlayerZeroBased: held)
+    return BootPlayer1Pad(qualifier: pad, system: system)
+  }
+
+  /// Controller only: the 0-based slots after the first of `slots` that also hold `qualifier`, which
+  /// is (or is becoming) Player 1. They are cleared and switched off so one press reaches one player.
+  static func duplicateSlots(of qualifier: String, in slots: [ControllerStateStore.PortAssignment]) -> [Int] {
+    let sorted = slots.sorted { $0.portOneBased < $1.portOneBased }
+    return sorted.indices.dropFirst().filter { sorted[$0].defaultDeviceQualifier == qualifier }
   }
 
   /// `pinned` without the slots pinned to the on-screen controls: in controller-only mode those
@@ -284,22 +295,30 @@ final class AssignmentEngine {
     let gc = state.portAssignments.sorted { $0.portOneBased < $1.portOneBased }
     let wii = state.wiimoteAssignments.sorted { $0.portOneBased < $1.portOneBased }
     let pad = Self.bootPlayer1Pad(for: state)
-    let vacatedWii = pad?.system == .wii ? pad?.vacatedPlayerZeroBased : nil
-    let vacatedGC = pad?.system == .gamecube ? pad?.vacatedPlayerZeroBased : nil
+    // The pad that will be Player 1 of the booting system: the one taking it now, or the connected
+    // pad already there. Any other slot of that system holding it is cleared and switched off.
+    let own = state.isWiiSystem ? wii : gc
+    let player1Qualifier = pad?.qualifier
+      ?? own.first.map(\.defaultDeviceQualifier).flatMap { heldByConnectedPad(own[0]) ? $0 : nil }
+    let vacated = player1Qualifier.map { Self.duplicateSlots(of: $0, in: own) } ?? []
+    let system: EmulatedSystem = state.isWiiSystem ? .wii : .gamecube
+    let vacatedWii: Set<Int> = system == .wii ? Set(vacated) : []
+    let vacatedGC: Set<Int> = system == .gamecube ? Set(vacated) : []
 
     // Wii Remotes 2-4 play only when a connected pad holds them (or the user pinned a pad there);
     // in a Wii title Wii Remote 1 is the pad's.
     let deactivatedWiimotes = wii.indices.dropFirst().filter { index in
-      index == vacatedWii || (!heldByConnectedPad(wii[index]) && !pinnedWii.contains(index))
+      vacatedWii.contains(index) || (!heldByConnectedPad(wii[index]) && !pinnedWii.contains(index))
     }
-    // GameCube ports 2-4 left on the on-screen controls are unplugged, and the port the pad leaves.
+    // GameCube ports 2-4 left on the on-screen controls are unplugged, and the ports the pad leaves.
     let deactivatedGCPorts = gc.indices.dropFirst().filter { index in
-      index == vacatedGC || (gc[index].isActive && Self.isVirtual(gc[index].defaultDeviceQualifier))
+      vacatedGC.contains(index) || (gc[index].isActive && Self.isVirtual(gc[index].defaultDeviceQualifier))
     }
     return BootDecision(
       activatesGCPort1: !state.isWiiSystem, activatesWiimote1: state.isWiiSystem,
       deactivatedWiimotes: deactivatedWiimotes, assignments: [], player1Pad: pad,
-      deactivatedGCPorts: deactivatedGCPorts)
+      deactivatedGCPorts: deactivatedGCPorts,
+      vacatedSlots: vacated.map { PinnedSlot(system: system, playerZeroBased: $0) })
   }
 
   /// Device qualifiers are `source/id/name`. The only virtual source the app
