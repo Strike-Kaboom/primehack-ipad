@@ -113,6 +113,15 @@ final class ControllerAssignmentService {
       writer.setWiimoteSource(emulated: false, port: port)
     }
     apply(AssignmentDecision(assignments: boot.assignments))
+    // Controller only (PrimeHack for iPad): the pad leaves its other slot (its mapping is stashed and
+    // comes back with it on Player 1), then takes Player 1.
+    if let pad = boot.player1Pad {
+      if let vacated = pad.vacatedPlayerZeroBased { clear(player: vacated, system: pad.system) }
+      assign(qualifier: pad.qualifier, toPlayer: 0, system: pad.system)
+    }
+    for port in boot.deactivatedGCPorts {
+      writer.setGCPortActive(false, port: port)
+    }
   }
 
   /// The writes of one `ControllerManager.reconcile()` pass over `state`: with
@@ -127,11 +136,12 @@ final class ControllerAssignmentService {
   /// remote before it became a menu device still has it saved. Those slots stop being pinned, so a
   /// pad can take them in the same pass. Returns the slots cleared, for the caller to unpin.
   @discardableResult
-  func reconcile(_ state: ControllerStateStore.State, pinned: Set<PinnedSlot>, autoAssign: Bool) -> [PinnedSlot] {
+  func reconcile(_ state: ControllerStateStore.State, pinned: Set<PinnedSlot>, autoAssign: Bool,
+                 controllerOnly: Bool = false) -> [PinnedSlot] {
     let cleared = clearMenuRemotes(in: state)
     let state = Self.removingMenuRemotes(from: state)
     if autoAssign {
-      apply(AssignmentEngine().decide(from: state, pinned: pinned.subtracting(cleared)))
+      apply(AssignmentEngine().decide(from: state, pinned: pinned.subtracting(cleared), controllerOnly: controllerOnly))
     }
     let connected = Set(state.connectedQualifiers)
     func isConnectedPad(_ qualifier: String) -> Bool {
@@ -153,9 +163,11 @@ final class ControllerAssignmentService {
   /// keep the touchscreen fallback away), then `AssignmentEngine.decideBoot` runs on the cleaned state
   /// with those slots unpinned. Returns the slots cleared, for the caller to unpin.
   @discardableResult
-  func prepareForBoot(_ state: ControllerStateStore.State, pinned: Set<PinnedSlot>) -> [PinnedSlot] {
+  func prepareForBoot(_ state: ControllerStateStore.State, pinned: Set<PinnedSlot>,
+                      controllerOnly: Bool = false) -> [PinnedSlot] {
     let cleared = clearMenuRemotes(in: state)
-    apply(AssignmentEngine().decideBoot(from: Self.removingMenuRemotes(from: state), pinned: pinned.subtracting(cleared)))
+    apply(AssignmentEngine().decideBoot(from: Self.removingMenuRemotes(from: state), pinned: pinned.subtracting(cleared),
+                                        controllerOnly: controllerOnly))
     return cleared
   }
 

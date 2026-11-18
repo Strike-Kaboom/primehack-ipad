@@ -78,7 +78,9 @@ final class ControllerStateStore: NSObject, Sendable {
     let connected = TVControllerMappingBridge.allQualifiedDevices().filter { !remotes.contains($0) }
     let isWii = isWiiSystem ?? TVEmulationBridge.isCurrentSystemWii()
     #if os(iOS)
-    let touchscreenHoldsWiimote1 = ControllerManager.shared.overlayVisible
+    // Controller only (PrimeHack for iPad): the on-screen controls never hold Wii Remote 1.
+    let touchscreenHoldsWiimote1 = !ControllerManager.controllerOnly()
+      && ControllerManager.shared.overlayVisible
       && DOLConfigBridge.wiimoteSource(for: 1) == 1
       && (wiiAssigns.first?.defaultDeviceQualifier ?? "").hasPrefix("iOS/")
     #else

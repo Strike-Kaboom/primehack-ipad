@@ -927,8 +927,10 @@ struct EmulationScreen: View {
 
     // Banner shown while a disconnect-induced pause is active (reconnect resumes).
     if controllerManager.disconnectPause != nil {
+      // Controller only (PrimeHack for iPad): no "Use Touch Controls"; reconnecting the pad resumes.
       ControllerDisconnectBanner(
-        onUseTouchControls: { controllerManager.useTouchControlsForDisconnectedSlot() }
+        onUseTouchControls: ControllerManager.controllerOnly()
+          ? nil : { controllerManager.useTouchControlsForDisconnectedSlot() }
       )
       .zIndex(5)
     }

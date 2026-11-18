@@ -49,6 +49,22 @@ struct BootDecision: Equatable {
   let deactivatedWiimotes: [Int]
   /// Touchscreen fallbacks (`qualifier == nil`) for Player 1 and Wii Remote 1.
   let assignments: [ControllerAssignment]
+  /// PrimeHack for iPad, controller only: the connected pad that becomes Player 1 of the title
+  /// about to boot (`AssignmentEngine.bootPlayer1Pad`).
+  var player1Pad: BootPlayer1Pad? = nil
+  /// PrimeHack for iPad, controller only: 0-based GameCube ports 2-4 unplugged because they were
+  /// left on the on-screen controls.
+  var deactivatedGCPorts: [Int] = []
+}
+
+/// Controller only (PrimeHack for iPad): a connected pad taking Player 1 at boot.
+struct BootPlayer1Pad: Equatable {
+  let qualifier: String
+  /// GameCube port 1 in a GameCube title, Wii Remote 1 in a Wii title.
+  let system: EmulatedSystem
+  /// The 0-based slot of the same system the pad held before, cleared and switched off so one
+  /// press does not reach two players.
+  let vacatedPlayerZeroBased: Int?
 }
 
 /// The **only** policy that chooses which controller owns which port.
@@ -76,7 +92,11 @@ final class AssignmentEngine {
     state.touchscreenHoldsWiimote1 ? 2 : 1
   }
 
-  func decide(from state: ControllerStateStore.State, pinned: Set<PinnedSlot> = []) -> AssignmentDecision {
+  /// `controllerOnly` (PrimeHack for iPad): the on-screen controls never get a player. A slot the
+  /// user pinned to them no longer blocks a pad, and Wii Remote 1 is the first slot a pad takes.
+  func decide(from state: ControllerStateStore.State, pinned: Set<PinnedSlot> = [],
+              controllerOnly: Bool = false) -> AssignmentDecision {
+    let pinned = controllerOnly ? Self.droppingTouchscreenPins(pinned, in: state) : pinned
     let connectedQualifiers = Self.playable(state)
     let connected = Set(connectedQualifiers)
     let physical = connectedQualifiers.filter { !Self.isVirtual($0) }
@@ -108,7 +128,7 @@ final class AssignmentEngine {
     // there the binding simply waits for the pad. In a Wii title a Player 1 the
     // user switched off stays off: binding would plug it back in.
     let player1IsOff = state.portAssignments.contains { $0.portOneBased == 1 && !$0.isActive }
-    if physical.isEmpty, connectedQualifiers.contains(where: Self.isVirtual),
+    if !controllerOnly, physical.isEmpty, connectedQualifiers.contains(where: Self.isVirtual),
        let pad1 = gcSlots.first, !Self.isVirtual(pad1), !pinnedGC.contains(0),
        !(state.isWiiSystem && player1IsOff) {
       out.append(ControllerAssignment(qualifier: nil, playerZeroBased: 0, system: .gamecube))
@@ -123,7 +143,7 @@ final class AssignmentEngine {
     guard state.isWiiSystem else { return AssignmentDecision(assignments: out) }
 
     var wiiSlots = Self.slots(from: state.wiimoteAssignments)
-    let firstWiimoteSlot = Self.firstWiimoteSlotOneBased(for: state)
+    let firstWiimoteSlot = controllerOnly ? 1 : Self.firstWiimoteSlotOneBased(for: state)
     for qualifier in physical where !wiiSlots.contains(qualifier) {
       guard let slot = Self.firstFreeSlot(in: wiiSlots, connected: connected,
                                           startingAt: firstWiimoteSlot, pinned: pinnedWii) else { break }
@@ -142,18 +162,60 @@ final class AssignmentEngine {
   /// a Wii title with the controls shown, starts at Wii Remote 2. nil when Player 1 is not on the
   /// Touchscreen or is switched off, the pad already is Player 1, the user pinned the pad to the
   /// slot it holds, or the device is a menu remote (the Siri Remote never plays).
+  ///
+  /// `controllerOnly` (PrimeHack for iPad): Player 1 must be a controller, so the pad also takes a
+  /// Player 1 that is empty, switched off or bound to a pad that is not connected, and it leaves a
+  /// slot the user pinned it to.
   static func player1Takeover(
-    of qualifier: String, in state: ControllerStateStore.State, pinned: Set<PinnedSlot>
+    of qualifier: String, in state: ControllerStateStore.State, pinned: Set<PinnedSlot>,
+    controllerOnly: Bool = false
   ) -> Player1Takeover? {
     guard isPhysical(qualifier), !state.menuRemoteQualifiers.contains(qualifier) else { return nil }
     let system: EmulatedSystem = state.isWiiSystem ? .wii : .gamecube
     let slots = (state.isWiiSystem ? state.wiimoteAssignments : state.portAssignments)
       .sorted { $0.portOneBased < $1.portOneBased }
-    guard let player1 = slots.first, player1.portOneBased == 1, player1.isActive,
-          isVirtual(player1.defaultDeviceQualifier) else { return nil }
+    guard let player1 = slots.first, player1.portOneBased == 1 else { return nil }
+    if controllerOnly {
+      let p1 = player1.defaultDeviceQualifier
+      // Already this pad, or another pad that is connected and playing.
+      guard p1 != qualifier, !(isPhysical(p1) && Set(playable(state)).contains(p1)) else { return nil }
+    } else {
+      guard player1.isActive, isVirtual(player1.defaultDeviceQualifier) else { return nil }
+    }
     let held = slots.firstIndex { $0.defaultDeviceQualifier == qualifier }
-    if let held, pinned.contains(PinnedSlot(system: system, playerZeroBased: held)) { return nil }
+    if !controllerOnly, let held, pinned.contains(PinnedSlot(system: system, playerZeroBased: held)) { return nil }
     return Player1Takeover(system: system, vacatedPlayerZeroBased: held)
+  }
+
+  /// Controller only (PrimeHack for iPad): the connected pad that becomes Player 1 of the title about
+  /// to boot, or nil when Player 1 already is a connected pad or no pad is connected. Prefers the pad
+  /// the user put on Player 1 of the other system (choosing the DualSense for GameCube Player 1 then
+  /// also covers Wii Remote 1), then a pad not yet on this system's slots, then any pad.
+  static func bootPlayer1Pad(for state: ControllerStateStore.State) -> BootPlayer1Pad? {
+    let pads = playable(state).filter(isPhysical)
+    guard !pads.isEmpty else { return nil }
+    let system: EmulatedSystem = state.isWiiSystem ? .wii : .gamecube
+    let own = (state.isWiiSystem ? state.wiimoteAssignments : state.portAssignments)
+      .sorted { $0.portOneBased < $1.portOneBased }
+    let other = (state.isWiiSystem ? state.portAssignments : state.wiimoteAssignments)
+      .sorted { $0.portOneBased < $1.portOneBased }
+    guard let player1 = own.first, player1.portOneBased == 1,
+          !pads.contains(player1.defaultDeviceQualifier) else { return nil }
+    let preferred = other.first.map(\.defaultDeviceQualifier).flatMap { pads.contains($0) ? $0 : nil }
+    let unplaced = pads.first { pad in !own.contains { $0.defaultDeviceQualifier == pad } }
+    guard let pad = preferred ?? unplaced ?? pads.first else { return nil }
+    let held = own.firstIndex { $0.defaultDeviceQualifier == pad }
+    return BootPlayer1Pad(qualifier: pad, system: system, vacatedPlayerZeroBased: held)
+  }
+
+  /// `pinned` without the slots pinned to the on-screen controls: in controller-only mode those
+  /// choices no longer hold a slot.
+  static func droppingTouchscreenPins(_ pinned: Set<PinnedSlot>, in state: ControllerStateStore.State) -> Set<PinnedSlot> {
+    pinned.filter { pin in
+      let slots = pin.system == .wii ? state.wiimoteAssignments : state.portAssignments
+      guard let slot = slots.first(where: { $0.portOneBased == pin.playerZeroBased + 1 }) else { return true }
+      return !isVirtual(slot.defaultDeviceQualifier)
+    }
   }
 
   // MARK: Boot
@@ -169,7 +231,14 @@ final class AssignmentEngine {
   /// stashes it) and takes the slot back when it connects. Wii Remote 1 is emulated, and Wii
   /// Remotes 2-4 are switched off unless a connected pad holds them or the user pinned them.
   /// Without a Touchscreen (tvOS) only GameCube port 1 is written, as before.
-  func decideBoot(from state: ControllerStateStore.State, pinned: Set<PinnedSlot> = []) -> BootDecision {
+  ///
+  /// `controllerOnly` (PrimeHack for iPad): no Touchscreen fallback at all. Player 1 of the title
+  /// about to boot goes to a connected pad (`bootPlayer1Pad`), and the slots of that system left on
+  /// the on-screen controls are switched off, pinned or not. With no pad connected, Player 1 keeps
+  /// its binding and the pad takes it when it connects.
+  func decideBoot(from state: ControllerStateStore.State, pinned: Set<PinnedSlot> = [],
+                  controllerOnly: Bool = false) -> BootDecision {
+    if controllerOnly { return decideControllerOnlyBoot(from: state, pinned: pinned) }
     let connected = Set(Self.playable(state))
     func heldByConnectedPad(_ slot: ControllerStateStore.PortAssignment) -> Bool {
       Self.isPhysical(slot.defaultDeviceQualifier) && connected.contains(slot.defaultDeviceQualifier)
@@ -202,6 +271,35 @@ final class AssignmentEngine {
     return BootDecision(
       activatesGCPort1: activatesGCPort1, activatesWiimote1: hasTouchscreen, deactivatedWiimotes: deactivatedWiimotes,
       assignments: assignments)
+  }
+
+  /// `decideBoot` in controller-only mode (PrimeHack for iPad).
+  private func decideControllerOnlyBoot(from state: ControllerStateStore.State, pinned: Set<PinnedSlot>) -> BootDecision {
+    let pinned = Self.droppingTouchscreenPins(pinned, in: state)
+    let connected = Set(Self.playable(state))
+    func heldByConnectedPad(_ slot: ControllerStateStore.PortAssignment) -> Bool {
+      Self.isPhysical(slot.defaultDeviceQualifier) && connected.contains(slot.defaultDeviceQualifier)
+    }
+    let pinnedWii = Set(pinned.filter { $0.system == .wii }.map(\.playerZeroBased))
+    let gc = state.portAssignments.sorted { $0.portOneBased < $1.portOneBased }
+    let wii = state.wiimoteAssignments.sorted { $0.portOneBased < $1.portOneBased }
+    let pad = Self.bootPlayer1Pad(for: state)
+    let vacatedWii = pad?.system == .wii ? pad?.vacatedPlayerZeroBased : nil
+    let vacatedGC = pad?.system == .gamecube ? pad?.vacatedPlayerZeroBased : nil
+
+    // Wii Remotes 2-4 play only when a connected pad holds them (or the user pinned a pad there);
+    // in a Wii title Wii Remote 1 is the pad's.
+    let deactivatedWiimotes = wii.indices.dropFirst().filter { index in
+      index == vacatedWii || (!heldByConnectedPad(wii[index]) && !pinnedWii.contains(index))
+    }
+    // GameCube ports 2-4 left on the on-screen controls are unplugged, and the port the pad leaves.
+    let deactivatedGCPorts = gc.indices.dropFirst().filter { index in
+      index == vacatedGC || (gc[index].isActive && Self.isVirtual(gc[index].defaultDeviceQualifier))
+    }
+    return BootDecision(
+      activatesGCPort1: !state.isWiiSystem, activatesWiimote1: state.isWiiSystem,
+      deactivatedWiimotes: deactivatedWiimotes, assignments: [], player1Pad: pad,
+      deactivatedGCPorts: deactivatedGCPorts)
   }
 
   /// Device qualifiers are `source/id/name`. The only virtual source the app

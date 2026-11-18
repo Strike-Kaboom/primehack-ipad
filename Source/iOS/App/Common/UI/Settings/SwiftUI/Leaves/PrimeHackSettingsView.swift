@@ -6,6 +6,7 @@ import SwiftUI
 /// Snapshot of PrimeHack's settings. Defaults match the core's Config defaults.
 struct PrimeHackSettingsState: Equatable {
   var enabled = true
+  var controllerOnly = true
   var horizontalSensitivity = 45.0
   var verticalSensitivity = 35.0
   var invertX = false
@@ -39,6 +40,7 @@ struct PrimeHackSettingsState: Equatable {
 /// One user edit. The view applies it to its snapshot AND to Config; the builder only emits it.
 enum PrimeHackSettingsChange: Equatable {
   case enabled(Bool)
+  case controllerOnly(Bool)
   case horizontalSensitivity(Double)
   case verticalSensitivity(Double)
   case invertX(Bool)
@@ -71,11 +73,14 @@ enum PrimeHackSettingsModelBuilder {
     let degrees: (Double) -> String = { "\(Int($0.rounded()))°" }
 
     let controls = MenuSection(id: "primehack-controls", header: L("Controls"),
-                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam, L1 + D-Pad picks a visor. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map."),
+                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam. L1 + D-Pad picks a visor: Up Combat, Left Scan, Down Thermal/Dark, Right X-Ray/Echo. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map."),
                                items: [
       SettingsRow.toggle("primehack-enabled", L("PrimeHack Controls"), s.enabled,
                          L("FPS-style camera control and quick beam and visor selection in the Metroid Prime games. Takes effect when a game starts."),
                          defaultValue: true, set: { apply(.enabled($0)) }),
+      SettingsRow.toggle("primehack-controller-only", L("Controller Only"), s.controllerOnly,
+                         L("Your game controller is always Player 1, in every game, and the on-screen controls are never used. Takes effect when a game starts or a controller connects."),
+                         defaultValue: true, set: { apply(.controllerOnly($0)) }),
       SettingsRow.stepper("primehack-h-sens", L("Look Sensitivity (Horizontal)"), s.horizontalSensitivity,
                           range: PrimeHackSettingsState.sensitivityRange, step: 1, format: whole,
                           L("How fast the right stick turns the camera left and right."),
@@ -179,6 +184,7 @@ struct PrimeHackSettingsView: View {
   private func sync() {
     var s = PrimeHackSettingsState()
     s.enabled = PrimeHackBridge.enabled()
+    s.controllerOnly = ControllerManager.controllerOnly()
     s.horizontalSensitivity = Double(PrimeHackBridge.stickHorizontalSensitivity())
     s.verticalSensitivity = Double(PrimeHackBridge.stickVerticalSensitivity())
     s.invertX = PrimeHackBridge.invertX()
@@ -208,6 +214,7 @@ struct PrimeHackSettingsView: View {
   private func apply(_ change: PrimeHackSettingsChange) {
     switch change {
     case .enabled(let v): state.enabled = v; PrimeHackBridge.setEnabled(v)
+    case .controllerOnly(let v): state.controllerOnly = v; ControllerManager.setControllerOnly(v)
     case .horizontalSensitivity(let v): state.horizontalSensitivity = v; PrimeHackBridge.setStickHorizontalSensitivity(Int(v.rounded()))
     case .verticalSensitivity(let v): state.verticalSensitivity = v; PrimeHackBridge.setStickVerticalSensitivity(Int(v.rounded()))
     case .invertX(let v): state.invertX = v; PrimeHackBridge.setInvertX(v)

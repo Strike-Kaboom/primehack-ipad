@@ -28,6 +28,25 @@ final class ControllerManager: NSObject, ObservableObject {
     return defaults.bool(forKey: connectTakesPlayer1DefaultsKey)
   }
 
+  /// PrimeHack for iPad: "Controller Only" (Settings → PrimeHack), on unless turned off. A game
+  /// controller is the only input: Player 1 always goes to a connected pad (at boot and when one
+  /// connects), the on-screen controls never get a player, and the DualSense/DualShock touchpad no
+  /// longer adds a touch-driven Wii Remote 2. tvOS has no touchscreen, so it is always off there.
+  static let controllerOnlyDefaultsKey = "primehack_controller_only"
+
+  static func controllerOnly(in defaults: UserDefaults = .standard) -> Bool {
+    #if os(iOS)
+    defaults.register(defaults: [controllerOnlyDefaultsKey: true])
+    return defaults.bool(forKey: controllerOnlyDefaultsKey)
+    #else
+    return false
+    #endif
+  }
+
+  static func setControllerOnly(_ enabled: Bool, in defaults: UserDefaults = .standard) {
+    defaults.set(enabled, forKey: controllerOnlyDefaultsKey)
+  }
+
   /// The Touch Controls → Layout choice kept across launches; Auto when none was kept or the value is unknown.
   static func storedOverlayMode(in defaults: UserDefaults = .standard) -> OverlayMode {
     defaults.register(defaults: [overlayModeDefaultsKey: OverlayMode.auto.rawValue])
@@ -503,7 +522,8 @@ final class ControllerManager: NSObject, ObservableObject {
     defer { isReconciling = false }
 
     let clearedRemoteSlots = assignmentService.reconcile(
-      ControllerStateStore.shared.snapshot(), pinned: pinnedSlots, autoAssign: autoAssign)
+      ControllerStateStore.shared.snapshot(), pinned: pinnedSlots, autoAssign: autoAssign,
+      controllerOnly: Self.controllerOnly())
     for slot in clearedRemoteSlots { unpin(slot.system, player: slot.playerZeroBased) }
     // After every assign and profile load the pass may have made: a load clears the remote pointer's
     // IR binding, and binding it first would keep `assign` from loading a pad's default profile.
@@ -519,7 +539,8 @@ final class ControllerManager: NSObject, ObservableObject {
   /// mechanical work around it.
   func prepareForBoot(isWii: Bool) {
     let state = ControllerStateStore.shared.snapshot(isWiiSystem: isWii)
-    let clearedRemoteSlots = assignmentService.prepareForBoot(state, pinned: pinnedSlots)
+    let clearedRemoteSlots = assignmentService.prepareForBoot(state, pinned: pinnedSlots,
+                                                              controllerOnly: Self.controllerOnly())
     for slot in clearedRemoteSlots { unpin(slot.system, player: slot.playerZeroBased) }
     Self.refreshRemotePointer()
   }
@@ -627,12 +648,23 @@ final class ControllerManager: NSObject, ObservableObject {
     #if os(iOS)
     // Only in a running game: outside one the snapshot's system (`isCurrentSystemWii`) is stale,
     // and the boot pass places a pad connected beforehand.
-    guard Self.connectTakesPlayer1(), TVEmulationBridge.isRunning() else { return }
+    let controllerOnly = Self.controllerOnly()
+    guard Self.connectTakesPlayer1() || controllerOnly, TVEmulationBridge.isRunning() else { return }
     let qualifier = TVControllerMappingBridge.qualifiedName(for: controller) as String
     guard let takeover = AssignmentEngine.player1Takeover(
-      of: qualifier, in: ControllerStateStore.shared.snapshot(), pinned: pinnedSlots) else { return }
+      of: qualifier, in: ControllerStateStore.shared.snapshot(), pinned: pinnedSlots,
+      controllerOnly: controllerOnly) else { return }
     if let vacated = takeover.vacatedPlayerZeroBased {
       assignmentService.clear(player: vacated, system: takeover.system)
+      if controllerOnly {
+        // Controller only: the slot the pad left stops playing, so the game sees one controller.
+        unpin(takeover.system, player: vacated)
+        if takeover.system == .gamecube {
+          DOLConfigBridge.setGCPortDeviceForPort(vacated + 1, device: 0)
+        } else {
+          DOLConfigBridge.setWiimoteSourceFor(vacated + 1, source: 0)
+        }
+      }
     }
     assignmentService.assign(qualifier: qualifier, toPlayer: 0, system: takeover.system)
     unpin(takeover.system, player: 0)
@@ -679,6 +711,9 @@ final class ControllerManager: NSObject, ObservableObject {
     let connected = Set(TVControllerMappingBridge.allQualifiedDevices().filter { !$0.hasPrefix("iOS/") && !remotes.contains($0) })
     var slotForQualifier: [String: Int] = [:]
     var reserved = Set<Int>()
+    // Controller only (PrimeHack for iPad): no Wii Remote is driven by the touchscreen, so a slot
+    // pinned to it is not kept, and a touchpad pad gets no extra touch-driven Wii Remote below.
+    let controllerOnly = Self.controllerOnly()
     // Slot 1 is read too, so a touchpad pad the engine put on Wii Remote 1 keeps it rather than
     // also being given slot 2; it is never switched off here.
     for slot in 1 ... 4 {
@@ -686,7 +721,7 @@ final class ControllerManager: NSObject, ObservableObject {
       if connected.contains(qualifier) {
         reserved.insert(slot)
         slotForQualifier[qualifier] = slot
-      } else if isPinned(.wii, player: slot - 1) {
+      } else if isPinned(.wii, player: slot - 1), !(controllerOnly && AssignmentEngine.isVirtual(qualifier)) {
         // The user's choice (a touchscreen Wii Remote 2, a pad that is off): neither switched off
         // nor handed to a touchpad pad.
         reserved.insert(slot)
@@ -705,6 +740,7 @@ final class ControllerManager: NSObject, ObservableObject {
         wiimoteSlotByController[ObjectIdentifier(c)] = bound
         continue
       }
+      if controllerOnly { continue }
       while nextSlot <= 4, reserved.contains(nextSlot) { nextSlot += 1 }
       guard nextSlot <= 4 else { break }
       wiimoteSlotByController[ObjectIdentifier(c)] = nextSlot
