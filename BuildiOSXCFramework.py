@@ -28,7 +28,8 @@ CONFIG = {
     "platforms": {
         "OS64": {  # iOS device (arm64)
             "deployment_target": "17.0",
-            "arch_flags": "-mcpu=apple-a10 -mtune=apple-a15 -march=armv8-a+simd+crc+crypto",
+            # PrimeHack for iPad: chosen at build time by ios_device_cpu_flags (M-series).
+            "arch_flags": "",
             "suffix": "-ios",
             "xcode_platform": "iphoneos",
         },
@@ -105,6 +106,30 @@ def xcrun_find(tool: str) -> str:
     """Absolute path of a tool in the active Xcode toolchain (xcrun --find)."""
     import subprocess
     return subprocess.check_output(["xcrun", "--find", tool], text=True).strip()
+
+
+# PrimeHack for iPad: the iOS core is compiled for the owner's M-series iPad (M5), not iCube's
+# A10/A12 floor. The newest M-series CPU this clang knows wins (M5 runs everything an M4 build
+# uses). +nosve/+nosme: Apple cores have no non-streaming SVE, and streaming SME must never be
+# emitted for ordinary code. The resulting core will not run on older A-series devices.
+IOS_DEVICE_CPUS = ["apple-m4", "apple-m3", "apple-m2", "apple-m1"]
+
+
+def ios_device_cpu_flags(cc: str, deployment_target: str) -> str:
+    """-mcpu flags for the iOS device slice: the newest M-series CPU the compiler accepts."""
+    for cpu in IOS_DEVICE_CPUS:
+        mcpu = f"-mcpu={cpu}+nosve+nosme"
+        probe = [cc, "-target", f"arm64-apple-ios{deployment_target}", mcpu,
+                 "-x", "c", "-c", "-", "-o", os.devnull]
+        try:
+            result = subprocess.run(probe, input="int x;\n", text=True, capture_output=True)
+        except OSError:
+            continue
+        if result.returncode == 0:
+            print(f"[CPU] iOS device core compiled for {cpu} ({mcpu})")
+            return mcpu
+        print(f"[CPU] compiler rejected {mcpu}: {result.stderr.strip()[:200]}")
+    raise RuntimeError("No M-series -mcpu value accepted by the compiler")
 
 class BuildError(Exception):
     """Exception raised for build errors."""
@@ -475,7 +500,11 @@ class DolphinBuilder:
             cxx_flags += f" {arch_flags}"
 
         # Explicit ARM device tuning (mirror BuildCore.sh)
-        if platform in ["OS64", "TVOS"]:
+        if platform == "OS64":
+            tune_flags = ios_device_cpu_flags(self.cc, platform_config["deployment_target"])
+            c_flags += f" {tune_flags}"
+            cxx_flags += f" {tune_flags}"
+        elif platform == "TVOS":
             tune_flags = "-mcpu=apple-a10 -mtune=apple-a14 -march=armv8-a+simd+crc+crypto"
             c_flags += f" {tune_flags}"
             cxx_flags += f" {tune_flags}"

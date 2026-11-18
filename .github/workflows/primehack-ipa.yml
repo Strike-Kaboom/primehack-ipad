@@ -166,6 +166,22 @@ jobs:
           python3 BuildiOSXCFramework.py --platforms OS64
           ls -d build/xcframework/* || { echo "::error::No xcframework produced"; exit 1; }
 
+      # The core is compiled for M-series iPads (BuildiOSXCFramework.py, ios_device_cpu_flags). The
+      # single-instruction atomics (LSE: cas, ldadd, swp...) only appear when that target applied;
+      # iCube's old A10 target had none.
+      - name: Check the core is compiled for M-series chips
+        run: |
+          set -uo pipefail
+          bin=$(find build/xcframework -path '*ios-arm64*' -name PVlibDolphin -type f | head -1)
+          echo "Core binary: $bin"
+          n=$(xcrun llvm-objdump -d --no-show-raw-insn "$bin" \
+            | grep -cE '[[:space:]](cas|casp|ldadd|swp|ldset|ldclr|ldeor)(a|l|al)?(b|h)?[[:space:]]' || true)
+          echo "LSE atomic instructions in the core: $n"
+          if [ "${n:-0}" -eq 0 ]; then
+            echo "::warning::No LSE atomics found: the M-series CPU target may not have applied."
+          fi
+          exit 0
+
       - name: Save Dolphin core cache
         if: always() && steps.core.outcome == 'success' && inputs.pgo != 'generate'
         uses: actions/cache/save@v4

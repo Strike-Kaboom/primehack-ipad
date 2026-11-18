@@ -229,7 +229,11 @@ elseif(_ARCH_64 AND CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
   set(_M_ARM_64 1)
   add_definitions(-D_M_ARM_64=1)
   # CRC instruction set is used in the CRC32 hash function
-  check_and_add_flag(HAVE_ARCH_ARMV8 -march=armv8-a+crc)
+  # PrimeHack for iPad: on iOS the build script's -mcpu (M-series) sets the ISA; a later -march here
+  # would cut the front end back to plain ARMv8.0.
+  if(NOT IOS)
+    check_and_add_flag(HAVE_ARCH_ARMV8 -march=armv8-a+crc)
+  endif()
 else()
   message(FATAL_ERROR "You're building on an unsupported platform: "
       "'${CMAKE_SYSTEM_PROCESSOR}' with ${CMAKE_SIZEOF_VOID_P}-byte pointers."
