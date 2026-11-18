@@ -1,6 +1,7 @@
 #include "Core/PrimeHack/HackManager.h"
 
 #include "Common/Assembler/GekkoAssembler.h"
+#include "Common/Config/Config.h"
 #include "Core/AchievementManager.h"
 #include "Core/ConfigManager.h"
 #include "Core/Config/MainSettings.h"
@@ -343,6 +344,23 @@ void apply_cc_list(const Core::CPUThreadGuard& cpu_guard, std::vector<CodeChange
   }
 }
 
+#ifdef IPHONEOS
+// PrimeHack for iPad (no-JIT speed): R3M.ini turns SyncGPU on for all of Trilogy (a PrimeHack
+// addition; upstream Dolphin's R3M has none). It is kept for the Prime 2 part, whose engine upstream
+// runs single-core on GameCube for stability; Prime 1 and Prime 3 run with the GPU thread unsynced,
+// as upstream does, so the Cached Interpreter is not interrupted every 1000 ticks to wait for it.
+// The menu keeps whatever is current. Written to the CurrentRun layer, which ends with the game;
+// FifoManager re-reads it through its config callback.
+void UpdateTrilogyGpuSync(prime::Game game) {
+  if (!SConfig::GetInstance().GetGameID().starts_with("R3M"))
+    return;
+  if (game == prime::Game::PRIME_2)
+    Config::SetCurrent(Config::MAIN_SYNC_GPU, true);
+  else if (game == prime::Game::PRIME_1 || game == prime::Game::PRIME_3)
+    Config::SetCurrent(Config::MAIN_SYNC_GPU, false);
+}
+#endif
+
 } // namespace
 
 void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
@@ -364,6 +382,9 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
 
   if (sActiveGame != sLastGame || sActiveRegion != sLastRegion) {
     UpdateHackSettings();
+#ifdef IPHONEOS
+    UpdateTrilogyGpuSync(sActiveGame);
+#endif
     AllocSwitchGame(sActiveGame, sActiveRegion);
     foreach_mod([](PrimeMod& mod) { mod.reset_mod(); });
     GetVariableManager()->reset_variables();

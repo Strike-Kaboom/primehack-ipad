@@ -10,6 +10,7 @@
 #include "Common/CPUDetect.h"
 #include "Common/CommonTypes.h"
 #include "Common/FloatUtils.h"
+#include "Common/Inline.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/Interpreter/ExceptionUtils.h"
 #include "Core/PowerPC/PowerPC.h"
@@ -214,69 +215,91 @@ inline FPResult NI_div(PowerPC::PowerPCState& ppc_state, double a, double b)
   return result;
 }
 
-inline FPResult NI_add(PowerPC::PowerPCState& ppc_state, double a, double b)
+// PrimeHack for iPad (no-JIT speed): the NaN tail shared by NI_add and NI_sub (identical text in
+// both), moved out of line and marked cold so the common one-instruction case inlines into the
+// interpreter handlers. Before, clang emitted NI_add/NI_sub as ~400-byte out-of-line functions, so
+// every fadds/fsubs paid a call plus an FPResult round trip through integer registers.
+[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_add_sub_nan(PowerPC::PowerPCState& ppc_state,
+                                                                double a, double b)
 {
-  FPResult result{a + b};
+  FPResult result;
 
-  if (std::isnan(result.value))
+  if (Common::IsSNAN(a) || Common::IsSNAN(b))
+    result.SetException(ppc_state, FPSCR_VXSNAN);
+
+  ppc_state.fpscr.ClearFIFR();
+
+  if (std::isnan(a))
   {
-    if (Common::IsSNAN(a) || Common::IsSNAN(b))
-      result.SetException(ppc_state, FPSCR_VXSNAN);
-
-    ppc_state.fpscr.ClearFIFR();
-
-    if (std::isnan(a))
-    {
-      result.value = Common::MakeQuiet(a);
-      return result;
-    }
-    if (std::isnan(b))
-    {
-      result.value = Common::MakeQuiet(b);
-      return result;
-    }
-
-    result.SetException(ppc_state, FPSCR_VXISI);
-    result.value = PPC_NAN;
+    result.value = Common::MakeQuiet(a);
+    return result;
+  }
+  if (std::isnan(b))
+  {
+    result.value = Common::MakeQuiet(b);
     return result;
   }
 
-  if (std::isinf(a) || std::isinf(b))
+  result.SetException(ppc_state, FPSCR_VXISI);
+  result.value = PPC_NAN;
+  return result;
+}
+
+DOLPHIN_FORCE_INLINE FPResult NI_add(PowerPC::PowerPCState& ppc_state, double a, double b)
+{
+  FPResult result{a + b};
+
+  if (std::isnan(result.value)) [[unlikely]]
+    return NI_add_sub_nan(ppc_state, a, b);
+
+  if (std::isinf(a) || std::isinf(b)) [[unlikely]]
     ppc_state.fpscr.ClearFIFR();
 
   return result;
 }
 
-inline FPResult NI_sub(PowerPC::PowerPCState& ppc_state, double a, double b)
+DOLPHIN_FORCE_INLINE FPResult NI_sub(PowerPC::PowerPCState& ppc_state, double a, double b)
 {
   FPResult result{a - b};
 
-  if (std::isnan(result.value))
-  {
-    if (Common::IsSNAN(a) || Common::IsSNAN(b))
-      result.SetException(ppc_state, FPSCR_VXSNAN);
+  if (std::isnan(result.value)) [[unlikely]]
+    return NI_add_sub_nan(ppc_state, a, b);
 
+  if (std::isinf(a) || std::isinf(b)) [[unlikely]]
     ppc_state.fpscr.ClearFIFR();
 
-    if (std::isnan(a))
-    {
-      result.value = Common::MakeQuiet(a);
-      return result;
-    }
-    if (std::isnan(b))
-    {
-      result.value = Common::MakeQuiet(b);
-      return result;
-    }
+  return result;
+}
 
-    result.SetException(ppc_state, FPSCR_VXISI);
-    result.value = PPC_NAN;
+// PrimeHack for iPad: NaN tail of NI_madd_msub, moved out of line unchanged (a, c, b order kept).
+[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_madd_msub_nan(PowerPC::PowerPCState& ppc_state,
+                                                                  double a, double c, double b)
+{
+  FPResult result;
+
+  if (Common::IsSNAN(a) || Common::IsSNAN(b) || Common::IsSNAN(c))
+    result.SetException(ppc_state, FPSCR_VXSNAN);
+
+  ppc_state.fpscr.ClearFIFR();
+
+  if (std::isnan(a))
+  {
+    result.value = Common::MakeQuiet(a);
+    return result;
+  }
+  if (std::isnan(b))
+  {
+    result.value = Common::MakeQuiet(b);  // !
+    return result;
+  }
+  if (std::isnan(c))
+  {
+    result.value = Common::MakeQuiet(c);
     return result;
   }
 
-  if (std::isinf(a) || std::isinf(b))
-    ppc_state.fpscr.ClearFIFR();
-
+  result.SetException(ppc_state, std::isnan(a * c) ? FPSCR_VXIMZ : FPSCR_VXISI);
+  result.value = PPC_NAN;
   return result;
 }
 
@@ -491,35 +514,10 @@ inline FPResult NI_madd_msub(PowerPC::PowerPCState& ppc_state, double a, double 
     }
   }
 
-  if (std::isnan(result.value))
-  {
-    if (Common::IsSNAN(a) || Common::IsSNAN(b) || Common::IsSNAN(c))
-      result.SetException(ppc_state, FPSCR_VXSNAN);
+  if (std::isnan(result.value)) [[unlikely]]
+    return NI_madd_msub_nan(ppc_state, a, c, b);
 
-    ppc_state.fpscr.ClearFIFR();
-
-    if (std::isnan(a))
-    {
-      result.value = Common::MakeQuiet(a);
-      return result;
-    }
-    if (std::isnan(b))
-    {
-      result.value = Common::MakeQuiet(b);  // !
-      return result;
-    }
-    if (std::isnan(c))
-    {
-      result.value = Common::MakeQuiet(c);
-      return result;
-    }
-
-    result.SetException(ppc_state, std::isnan(a * c) ? FPSCR_VXIMZ : FPSCR_VXISI);
-    result.value = PPC_NAN;
-    return result;
-  }
-
-  if (std::isinf(a) || std::isinf(b) || std::isinf(c))
+  if (std::isinf(a) || std::isinf(b) || std::isinf(c)) [[unlikely]]
     ppc_state.fpscr.ClearFIFR();
 
   return result;

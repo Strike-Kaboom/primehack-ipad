@@ -23,6 +23,17 @@ name: PrimeHack iPad build (unsigned IPA)
 on:
   # Manual: Actions tab -> "PrimeHack iPad build (unsigned IPA)" -> "Run workflow".
   workflow_dispatch:
+    inputs:
+      pgo:
+        description: >-
+          use = normal build (optimised with pgo/raw/*.profraw when committed);
+          generate = SLOW recording build for profile-guided optimisation; off = ignore any profile
+        type: choice
+        default: use
+        options:
+          - use
+          - generate
+          - 'off'
   # Automatic: any push to the `primehack` branch (used from Phase 2 onwards).
   push:
     branches: [ primehack ]
@@ -119,15 +130,41 @@ jobs:
           restore-keys: |
             dolphin-core-ios-${{ runner.os }}-
 
+      # Profile-guided optimisation (iCube's own plumbing: BuildiOSXCFramework.py, docs/PGO.md).
+      # A recording build writes .profraw files into Files > On My iPad > iCube > Software > pgo
+      # when the app goes to the background; committed under pgo/raw/, they are merged here so
+      # every later build is compiled around how the Prime games actually run.
+      - name: Merge the recorded PGO profile (if one is committed)
+        if: ${{ inputs.pgo != 'generate' && inputs.pgo != 'off' }}
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          raws=(pgo/raw/*.profraw)
+          if [ ${#raws[@]} -eq 0 ]; then
+            echo "No pgo/raw/*.profraw in the repo: building without a profile."
+            exit 0
+          fi
+          xcrun llvm-profdata merge -o pgo/icube.profdata "${raws[@]}"
+          xcrun llvm-profdata show --all-functions pgo/icube.profdata > "$RUNNER_TEMP/pgo-functions.txt"
+          n=$(grep -c "CachedInterpreter" "$RUNNER_TEMP/pgo-functions.txt" || true)
+          echo "Profiled CachedInterpreter functions: $n"
+          if [ "$n" -eq 0 ]; then
+            echo "::error::The profile never ran the interpreter. Record while playing, not in the menus."
+            exit 1
+          fi
+
       - name: Build the Dolphin core (iOS device slice)
         id: core
+        env:
+          # generate = instrumented core; off = ignore pgo/icube.profdata; empty = automatic.
+          DOL_PGO: ${{ inputs.pgo == 'generate' && 'generate' || (inputs.pgo == 'off' && 'off' || '') }}
         run: |
           set -euo pipefail
           python3 BuildiOSXCFramework.py --platforms OS64
           ls -d build/xcframework/* || { echo "::error::No xcframework produced"; exit 1; }
 
       - name: Save Dolphin core cache
-        if: always() && steps.core.outcome == 'success'
+        if: always() && steps.core.outcome == 'success' && inputs.pgo != 'generate'
         uses: actions/cache/save@v4
         with:
           path: build
@@ -173,7 +210,7 @@ jobs:
       - name: Upload the .ipa
         uses: actions/upload-artifact@v4
         with:
-          name: PrimeHack-iPad-build${{ github.run_number }}
+          name: PrimeHack-iPad-build${{ github.run_number }}${{ inputs.pgo == 'generate' && '-PGO-RECORDING' || '' }}
           path: products/*.ipa
           if-no-files-found: error
           retention-days: 30
