@@ -136,11 +136,9 @@ Motor::Motor(CHHapticEngine* engine, const std::string name) : m_haptic_engine(e
 {
   std::lock_guard<std::mutex> guard(m_lock);
 
-  if (!StartEngine())
-  {
-    return;
-  }
-
+  // PrimeHack for iPad: install the handlers before the first start, and recover from any stop.
+  // Before, a first start that failed (the pad is enumerated while the app is still launching) or
+  // a stop for an unlisted reason left the motor dead for the rest of the session: no rumble.
   m_haptic_engine.resetHandler = ^{
     std::lock_guard<std::mutex> reset_guard(m_lock);
 
@@ -154,28 +152,31 @@ Motor::Motor(CHHapticEngine* engine, const std::string name) : m_haptic_engine(e
   m_haptic_engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
     std::lock_guard<std::mutex> stopped_guard(m_lock);
 
-    switch (reason)
+    if (reason != CHHapticEngineStoppedReasonAudioSessionInterrupt &&
+        reason != CHHapticEngineStoppedReasonApplicationSuspended &&
+        reason != CHHapticEngineStoppedReasonSystemError)
     {
-    case CHHapticEngineStoppedReasonAudioSessionInterrupt:
-    case CHHapticEngineStoppedReasonApplicationSuspended:
-    case CHHapticEngineStoppedReasonSystemError:
-      m_player_needs_restart = true;
-
-      break;
-    default:
       ERROR_LOG_FMT(CONTROLLERINTERFACE, "Motor received unexpected stopped reason: {}", (NSInteger)reason);
-
-      // This error is probably unrecoverable.
-      m_player_created = false;
-
-      break;
     }
+    // Restarted on the next rumble request (SetState), rate-limited.
+    m_player_needs_restart = true;
   };
+
+  // Haptics only: no audio resources, so an audio-session interruption can't stop the rumble.
+  m_haptic_engine.playsHapticsOnly = YES;
+
+  StartEngine();
 }
 
 Motor::~Motor()
 {
   std::lock_guard<std::mutex> guard(m_lock);
+
+  // The blocks capture `this`; make sure a late callback can't reach a destroyed Motor.
+  m_haptic_engine.resetHandler = ^{
+  };
+  m_haptic_engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {
+  };
 
   if (m_player_created)
   {
@@ -195,12 +196,16 @@ bool Motor::StartEngine()
   }
   
   CHHapticEventParameter* intensity_param = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f];
+  // PrimeHack for iPad: low sharpness. The default (0.5) plays as a faint high buzz on the
+  // DualSense's voice-coil actuators; a low value gives a deep rumble you can feel in the grips.
+  CHHapticEventParameter* sharpness_param = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.1f];
 
-  CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous 
-                                                       parameters:@[intensity_param]
+  CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+                                                       parameters:@[intensity_param, sharpness_param]
                                                      relativeTime:0.0f
                                                          duration:1.0f];
-  
+
+  error = nil;
   CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
 
   if (error != nil)
@@ -259,19 +264,26 @@ void Motor::SetState(ControlState state)
   }
 #endif
 
-  if (!m_player_created)
+  // PrimeHack for iPad: (re)start the engine when rumble is wanted and it isn't running, at most once
+  // a second. On failure, forget the state so the next rumble request tries again.
+  if (!m_player_created || m_player_needs_restart)
   {
-    return;
-  }
-
-  if (m_player_needs_restart)
-  {
+    if (state <= 0)
+      return;
+    const double now = CFAbsoluteTimeGetCurrent();
+    if (now < m_next_start_attempt)
+    {
+      m_last_state = 0.0;
+      return;
+    }
     if (!StartEngine())
     {
+      m_next_start_attempt = now + 1.0;
+      m_last_state = 0.0;
       return;
     }
   }
-  
+
   bool result;
   NSError* error;
   
