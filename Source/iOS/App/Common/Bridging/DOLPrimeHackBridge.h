@@ -10,6 +10,9 @@ NS_ASSUME_NONNULL_BEGIN
 NS_SWIFT_NAME(PrimeHackBridge)
 @interface DOLPrimeHackBridge : NSObject
 
+// PrimeHack for iPad: current emulation state.
++ (BOOL)inGameplay;
+
 // Controls
 + (BOOL)enabled;
 + (void)setEnabled:(BOOL)value;

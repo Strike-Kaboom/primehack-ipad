@@ -6,6 +6,11 @@
 #include <Foundation/Foundation.h>
 #include <TargetConditionals.h>
 
+#include <chrono>
+#include <mutex>
+#include <optional>
+#include <utility>
+
 #include "Common/Logging/Log.h"
 
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
@@ -132,25 +137,52 @@ int RumbleDestination()
 
 namespace ciface::iOS
 {
-Motor::Motor(CHHapticEngine* engine, const std::string name) : m_haptic_engine(engine), m_name(std::move(name))
+struct Motor::State
 {
-  std::lock_guard<std::mutex> guard(m_lock);
+  using Clock = std::chrono::steady_clock;
 
-  // PrimeHack for iPad: install the handlers before the first start, and recover from any stop.
-  // Before, a first start that failed (the pad is enumerated while the app is still launching) or
-  // a stop for an unlisted reason left the motor dead for the rest of the session: no rumble.
-  m_haptic_engine.resetHandler = ^{
-    std::lock_guard<std::mutex> reset_guard(m_lock);
+  explicit State(CHHapticEngine* engine) : haptic_engine(engine) {}
 
-    m_player_created = false;
+  bool StartEngineLocked();
 
-    m_haptic_player = nil;
+  void InvalidatePlayer()
+  {
+    haptic_player = nil;
+    controller_on.reset();
+  }
 
-    StartEngine();
+  std::mutex lock;
+  bool closed = false;
+  CHHapticEngine* const haptic_engine;
+  id<CHHapticAdvancedPatternPlayer> haptic_player = nil;
+  bool recreate_player = false;
+  std::optional<bool> controller_on;
+  bool device_on = false;
+  Clock::time_point next_start_attempt = Clock::time_point::min();
+};
+
+Motor::Motor(CHHapticEngine* engine, const std::string name)
+    : m_state(std::make_shared<State>(engine)), m_name(std::move(name))
+{
+  // PrimeHack for iPad: an in-flight callback can outlive the Motor during disconnect.
+  const std::weak_ptr<State> weak_state = m_state;
+  engine.resetHandler = ^{
+    const auto state = weak_state.lock();
+    if (!state)
+      return;
+    std::lock_guard<std::mutex> guard(state->lock);
+    if (state->closed)
+      return;
+    state->InvalidatePlayer();
   };
 
-  m_haptic_engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
-    std::lock_guard<std::mutex> stopped_guard(m_lock);
+  engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
+    const auto state = weak_state.lock();
+    if (!state)
+      return;
+    std::lock_guard<std::mutex> guard(state->lock);
+    if (state->closed)
+      return;
 
     if (reason != CHHapticEngineStoppedReasonAudioSessionInterrupt &&
         reason != CHHapticEngineStoppedReasonApplicationSuspended &&
@@ -158,37 +190,54 @@ Motor::Motor(CHHapticEngine* engine, const std::string name) : m_haptic_engine(e
     {
       ERROR_LOG_FMT(CONTROLLERINTERFACE, "Motor received unexpected stopped reason: {}", (NSInteger)reason);
     }
-    // Restarted on the next rumble request (SetState), rate-limited.
-    m_player_needs_restart = true;
+    state->InvalidatePlayer();
   };
 
-  // Haptics only: no audio resources, so an audio-session interruption can't stop the rumble.
-  m_haptic_engine.playsHapticsOnly = YES;
-
-  StartEngine();
+  // PrimeHack for iPad: configure haptics-only playback before the first start.
+  engine.playsHapticsOnly = YES;
+  std::lock_guard<std::mutex> guard(m_state->lock);
+  if (m_state->StartEngineLocked())
+  {
+    // PrimeHack for iPad: a successful initial start leaves the first recovery attempt available.
+    m_state->next_start_attempt = State::Clock::time_point::min();
+  }
 }
 
 Motor::~Motor()
 {
-  std::lock_guard<std::mutex> guard(m_lock);
-
-  // The blocks capture `this`; make sure a late callback can't reach a destroyed Motor.
-  m_haptic_engine.resetHandler = ^{
-  };
-  m_haptic_engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {
-  };
-
-  if (m_player_created)
   {
-    [m_haptic_engine stopWithCompletionHandler:nil];
+    std::lock_guard<std::mutex> guard(m_state->lock);
+    m_state->closed = true;
   }
+
+  // PrimeHack for iPad: a callback waiting for the lock can now finish during teardown.
+  CHHapticEngine* engine = m_state->haptic_engine;
+  engine.resetHandler = ^{
+  };
+  engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {
+  };
+  [engine stopWithCompletionHandler:nil];
 }
 
 bool Motor::StartEngine()
 {
-  NSError* error;
-  
-  if (![m_haptic_engine startAndReturnError:&error])
+  std::lock_guard<std::mutex> guard(m_state->lock);
+  return m_state->StartEngineLocked();
+}
+
+bool Motor::State::StartEngineLocked()
+{
+  if (haptic_player && !recreate_player)
+    return true;
+
+  // PrimeHack for iPad: share one monotonic cooldown across startup and lazy restarts.
+  const auto now = Clock::now();
+  if (now < next_start_attempt)
+    return false;
+  next_start_attempt = now + std::chrono::seconds(1);
+
+  NSError* error = nil;
+  if (![haptic_engine startAndReturnError:&error])
   {
     MOTOR_ERROR_LOG("Motor failed to start CHHapticEngine: {}", error);
 
@@ -208,27 +257,29 @@ bool Motor::StartEngine()
   error = nil;
   CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
 
-  if (error != nil)
+  if (!pattern)
   {
     MOTOR_ERROR_LOG("Motor failed to create CHHapticPattern: {}", error);
 
     return false;
   }
   
-  m_haptic_player = [m_haptic_engine createAdvancedPlayerWithPattern:pattern error:&error];
+  id<CHHapticAdvancedPatternPlayer> player =
+      [haptic_engine createAdvancedPlayerWithPattern:pattern error:&error];
 
-  if (error != nil)
+  if (!player)
   {
     MOTOR_ERROR_LOG("Motor failed to create CHHapticAdvancedPatternPlayer: {}", error);
 
     return false;
   }
 
-  [m_haptic_player setLoopEnabled:true];
-  [m_haptic_player setLoopEnd:0.0f];
+  [player setLoopEnabled:true];
+  [player setLoopEnd:0.0f];
 
-  m_player_created = true;
-  m_player_needs_restart = false;
+  haptic_player = player;
+  recreate_player = false;
+  controller_on.reset();
 
   return true;
 }
@@ -240,64 +291,55 @@ std::string Motor::GetName() const
 
 void Motor::SetState(ControlState state)
 {
-  std::lock_guard<std::mutex> guard(m_lock);
+  std::lock_guard<std::mutex> guard(m_state->lock);
 
-  if (state == m_last_state)
-  {
-    return;
-  }
-
-  m_last_state = state;
-
+  const bool on = state > 0;
   const int destination = RumbleDestination();
 
 #if !TARGET_OS_TV
-  if (destination == 0 || destination == 2)
+  // PrimeHack for iPad: route device transitions even while controller recovery is pending.
+  const bool device_on = (destination == 0 || destination == 2) && on;
+  if (device_on != m_state->device_on)
   {
-    [[DOLDeviceHaptics shared] setState:(state > 0)];
-  }
-
-  // Device-only: leave the controller motor untouched.
-  if (destination == 0)
-  {
-    return;
+    [[DOLDeviceHaptics shared] setState:device_on];
+    m_state->device_on = device_on;
   }
 #endif
 
-  // PrimeHack for iPad: (re)start the engine when rumble is wanted and it isn't running, at most once
-  // a second. On failure, forget the state so the next rumble request tries again.
-  if (!m_player_created || m_player_needs_restart)
-  {
-    if (state <= 0)
-      return;
-    const double now = CFAbsoluteTimeGetCurrent();
-    if (now < m_next_start_attempt)
-    {
-      m_last_state = 0.0;
-      return;
-    }
-    if (!StartEngine())
-    {
-      m_next_start_attempt = now + 1.0;
-      m_last_state = 0.0;
-      return;
-    }
-  }
+  if (destination == 0)
+    return;
+
+  if (on && !m_state->StartEngineLocked())
+    return;
+  if (!m_state->haptic_player || m_state->controller_on == on)
+    return;
 
   bool result;
-  NSError* error;
-  
-  if (state > 0)
+  NSError* error = nil;
+  if (on)
   {
-    result = [m_haptic_player startAtTime:CHHapticTimeImmediate error:&error];
+    result = [m_state->haptic_player startAtTime:CHHapticTimeImmediate error:&error];
   }
   else
   {
-    result = [m_haptic_player stopAtTime:CHHapticTimeImmediate error:&error];
+    result = [m_state->haptic_player stopAtTime:CHHapticTimeImmediate error:&error];
   }
 
-  if (!result)
+  if (result)
   {
+    m_state->controller_on = on;
+  }
+  else
+  {
+    m_state->controller_on.reset();
+    if ([error.domain isEqualToString:CoreHapticsErrorDomain] &&
+        (error.code == CHHapticErrorCodeInvalidPatternPlayer ||
+         error.code == CHHapticErrorCodeEngineNotRunning ||
+         error.code == CHHapticErrorCodeServerInterrupted))
+    {
+      // PrimeHack for iPad: rebuild on demand, but allow another stop on the existing player.
+      m_state->recreate_player = true;
+    }
     MOTOR_ERROR_LOG("Motor failed to start/stop haptics: {}", error);
   }
 }

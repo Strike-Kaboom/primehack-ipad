@@ -8,6 +8,7 @@
 #include "Common/Config/Config.h"
 #include "Core/Config/GraphicsSettings.h"
 #include "Core/Config/MainSettings.h"
+#include "Core/PrimeHack/HackManager.h"
 
 #define PH_BOOL(getter, setter, info)                                                              \
   +(BOOL)getter { return Config::Get(Config::info); }                                              \
@@ -21,6 +22,26 @@
   }
 
 @implementation DOLPrimeHackBridge
+
++ (BOOL)inGameplay
+{
+  // PrimeHack for iPad: reading the active game on the main thread is a benign race with
+  // game changes on the CPU thread. The next poll picks up the change, so no lock is needed.
+  switch (prime::GetActiveGame())
+  {
+  case prime::Game::PRIME_1:
+  case prime::Game::PRIME_2:
+  case prime::Game::PRIME_3:
+  case prime::Game::PRIME_3_STANDALONE:
+  case prime::Game::PRIME_1_GCN:
+  case prime::Game::PRIME_2_GCN:
+  case prime::Game::PRIME_1_GCN_R1:
+  case prime::Game::PRIME_1_GCN_R2:
+    return YES;
+  default:
+    return NO;
+  }
+}
 
 // Controls
 PH_BOOL(enabled, setEnabled, PRIMEHACK_ENABLE)

@@ -11,7 +11,7 @@ import UIKit
 ///   powering up, then holds a steady hum once a charge would be full (~1 s, the games' charge time).
 /// - L2 (lock-on): light resistance.
 ///
-/// Active only while a Prime game runs unpaused with PrimeHack controls and "Adaptive Triggers" on.
+/// Active only for player 1 during unpaused Prime gameplay with PrimeHack controls and "Adaptive Triggers" on.
 /// Everywhere else (menus, the pause menu, other games, the app in the background) the triggers are
 /// switched off, so nothing leaks into other apps or games. Reads input by polling (30 Hz) rather
 /// than installing handlers, so the app's own controller handlers are never replaced.
@@ -40,8 +40,9 @@ final class PrimeHackAdaptiveTriggers {
   }
 
   private struct PadState {
-    var right: RightMode = .off
-    var leftOn = false
+    // A newly connected pad may already have a trigger effect applied.
+    var right: RightMode?
+    var leftOn: Bool?
     var pressStart: CFTimeInterval?
   }
 
@@ -63,8 +64,16 @@ final class PrimeHackAdaptiveTriggers {
     for name in [Notification.Name("DOLEmulationDidStartNotification"),
                  UIApplication.didBecomeActiveNotification,
                  Notification.Name.GCControllerDidConnect] {
-      center.addObserver(forName: name, object: nil, queue: .main) { _ in
-        MainActor.assumeIsolated { PrimeHackAdaptiveTriggers.shared.refreshTimer() }
+      center.addObserver(forName: name, object: nil, queue: .main) { notification in
+        let connectedID = (notification.object as? GCController).map { ObjectIdentifier($0) }
+        MainActor.assumeIsolated {
+          let triggers = PrimeHackAdaptiveTriggers.shared
+          // A disconnect and reconnect can occur between polls.
+          if let connectedID {
+            triggers.states.removeValue(forKey: connectedID)
+          }
+          triggers.refreshTimer()
+        }
       }
     }
     for name in [Notification.Name("DOLEmulationDidEndNotification"),
@@ -79,9 +88,9 @@ final class PrimeHackAdaptiveTriggers {
     refreshTimer()
   }
 
-  /// Runs the 30 Hz poll only while a Prime game is loaded.
+  /// Runs the 30 Hz poll only while the app is active and a Prime game is loaded.
   private func refreshTimer() {
-    guard Self.isPrimeGameRunning() else {
+    guard UIApplication.shared.applicationState == .active, Self.isPrimeGameRunning() else {
       switchAllOff()
       stopTimer()
       return
@@ -112,7 +121,7 @@ final class PrimeHackAdaptiveTriggers {
       return
     }
     let active = Self.isEnabled() && PrimeHackBridge.enabled() && !TVEmulationBridge.isPaused()
-      && UIApplication.shared.applicationState == .active
+      && UIApplication.shared.applicationState == .active && PrimeHackBridge.inGameplay()
     let now = CACurrentMediaTime()
     var seen = Set<ObjectIdentifier>()
     for controller in GCController.controllers() {
@@ -120,7 +129,7 @@ final class PrimeHackAdaptiveTriggers {
       let id = ObjectIdentifier(controller)
       seen.insert(id)
       var state = states[id] ?? PadState()
-      update(pad, state: &state, active: active, now: now)
+      update(pad, state: &state, active: active && controller.playerIndex == .index1, now: now)
       states[id] = state
     }
     states = states.filter { seen.contains($0.key) }
@@ -143,7 +152,7 @@ final class PrimeHackAdaptiveTriggers {
       let held = now - start
       if held < Self.chargeDelay {
         // Keep the weapon mode while the click happens.
-        return
+        apply(.ready, to: right, state: &state)
       } else if held < Self.chargeFull {
         let level = max(1, min(10, Int(((held - Self.chargeDelay) / (Self.chargeFull - Self.chargeDelay)) * 10) + 1))
         apply(.charging(level), to: right, state: &state)
