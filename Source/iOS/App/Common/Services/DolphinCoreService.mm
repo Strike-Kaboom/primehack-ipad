@@ -145,6 +145,21 @@ static inline void SetBaseIfUnspecified(const Config::Info<T>& info, const T& va
   // internal resolution several steps on high-density screens; keep it opt-in.
   // SetBaseIfUnspecified preserves the user's explicit resolution selection.
   SetBaseIfUnspecified(Config::GFX_EFB_SCALE, 1);
+
+  // PrimeHack for iPad: sharper graphics (3x resolution, 16x anisotropic filtering), applied once
+  // as the user's own Base values instead of game INI values, so Settings → Graphics still wins
+  // afterwards. The seed above wrote 1x on iCube's first run, so an untouched 1x is lifted once.
+  NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
+  if (![defaults boolForKey:@"primehack_graphics_defaults_v1"])
+  {
+    if (Config::GetBase(Config::GFX_EFB_SCALE) == 1)
+      Config::SetBase(Config::GFX_EFB_SCALE, 3);
+    const AnisotropicFilteringMode af = Config::GetBase(Config::GFX_ENHANCE_MAX_ANISOTROPY);
+    if (af == AnisotropicFilteringMode::Default || af == AnisotropicFilteringMode::Force1x)
+      Config::SetBase(Config::GFX_ENHANCE_MAX_ANISOTROPY, AnisotropicFilteringMode::Force16x);
+    Config::Save();
+    [defaults setBool:YES forKey:@"primehack_graphics_defaults_v1"];
+  }
 }
 
 - (BOOL)application:(UIApplication*)application didFinishLaunchingWithOptions:(NSDictionary<UIApplicationLaunchOptionsKey,id>*)launchOptions {

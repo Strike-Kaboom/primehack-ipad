@@ -221,6 +221,17 @@ final class ControllerManager: NSObject, ObservableObject {
     assignedSlot(forQualifier: TVControllerMappingBridge.qualifiedName(for: controller) as String)
   }
 
+  /// PrimeHack for iPad: true when `controller` is player 1 of the running system (Wii Remote 1 in a
+  /// Wii title, GameCube port 1 otherwise). Used by the adaptive triggers.
+  func isPlayer1OfRunningSystem(_ controller: GCController) -> Bool {
+    let qualifier = TVControllerMappingBridge.qualifiedName(for: controller) as String
+    guard !qualifier.isEmpty else { return false }
+    if TVEmulationBridge.isCurrentSystemWii() {
+      return TVControllerMappingBridge.defaultDevice(forWiimote: 1) as String == qualifier
+    }
+    return TVControllerMappingBridge.defaultDevice(forGCPort: 1) as String == qualifier
+  }
+
   /// `assignedSlot(for:)` by qualifier. `wiiFirst` looks at the Wii Remotes before the GameCube
   /// ports (a running Wii title), so a pad bound to both reports the slot the game actually reads.
   private func assignedSlot(forQualifier qualifier: String, wiiFirst: Bool = false) -> (port: Int, isWii: Bool)? {

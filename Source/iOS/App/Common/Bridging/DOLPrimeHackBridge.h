@@ -12,6 +12,7 @@ NS_SWIFT_NAME(PrimeHackBridge)
 
 // PrimeHack for iPad: current emulation state.
 + (BOOL)inGameplay;
++ (BOOL)inMorphBall;
 
 // Controls
 + (BOOL)enabled;

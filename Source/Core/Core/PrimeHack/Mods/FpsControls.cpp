@@ -79,6 +79,21 @@ void FpsControls::run_mod(Game game, Region region) {
     default:
       break;
   }
+
+  // PrimeHack for iPad: tell the app whether the player is in control (not on the pause menu, map
+  // or inventory) and whether they're in morph ball, for the DualSense adaptive triggers.
+  u32 player_state = 0;
+  if (game != Game::MENU && game != Game::INVALID_GAME) {
+    LOOKUP_DYN(player);
+    if (player != 0 && !input_disabled()) {
+      player_state |= kPlayerStateInControl;
+      LOOKUP_DYN(ball_state);
+      if (read32(ball_state) != 0) {
+        player_state |= kPlayerStateMorphBall;
+      }
+    }
+  }
+  PublishPlayerState(player_state);
 }
 
 bool FpsControls::input_disabled() const {

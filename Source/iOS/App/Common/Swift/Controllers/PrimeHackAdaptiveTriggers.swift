@@ -22,8 +22,8 @@ final class PrimeHackAdaptiveTriggers {
   static let enabledDefaultsKey = "primehack_adaptive_triggers"
 
   nonisolated static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
-    defaults.register(defaults: [enabledDefaultsKey: true])
-    return defaults.bool(forKey: enabledDefaultsKey)
+    // On by default. Read without register(defaults:), which the 30 Hz poll would repeat.
+    (defaults.object(forKey: enabledDefaultsKey) as? Bool) ?? true
   }
 
   nonisolated static func setEnabled(_ enabled: Bool, in defaults: UserDefaults = .standard) {
@@ -120,8 +120,11 @@ final class PrimeHackAdaptiveTriggers {
       stopTimer()
       return
     }
+    // PrimeHack for iPad: inGameplay is false on the pause menu, map and inventory; in morph ball R2
+    // lays bombs and L2 does nothing useful, so both triggers go slack there too.
     let active = Self.isEnabled() && PrimeHackBridge.enabled() && !TVEmulationBridge.isPaused()
       && UIApplication.shared.applicationState == .active && PrimeHackBridge.inGameplay()
+      && !PrimeHackBridge.inMorphBall()
     let now = CACurrentMediaTime()
     var seen = Set<ObjectIdentifier>()
     for controller in GCController.controllers() {
@@ -129,7 +132,10 @@ final class PrimeHackAdaptiveTriggers {
       let id = ObjectIdentifier(controller)
       seen.insert(id)
       var state = states[id] ?? PadState()
-      update(pad, state: &state, active: active && controller.playerIndex == .index1, now: now)
+      // Player 1 of the running system (Wii Remote 1 in Trilogy), not GCController.playerIndex,
+      // which reports the GameCube port first.
+      let player1 = active && ControllerManager.shared.isPlayer1OfRunningSystem(controller)
+      update(pad, state: &state, active: player1, now: now)
       states[id] = state
     }
     states = states.filter { seen.contains($0.key) }
@@ -145,8 +151,9 @@ final class PrimeHackAdaptiveTriggers {
     setLeft(true, pad: pad, state: &state)
 
     let right = pad.rightTrigger
-    // Past the weapon snap point: the shot has fired and the button is held.
-    if right.value > 0.6 {
+    // Past the fire point (the emulator's button threshold is 0.5, just after the weapon snap at
+    // 0.45): the shot has fired and the button is held.
+    if right.value > 0.5 {
       let start = state.pressStart ?? now
       state.pressStart = start
       let held = now - start
@@ -172,8 +179,9 @@ final class PrimeHackAdaptiveTriggers {
     case .off:
       trigger.setModeOff()
     case .ready:
-      // A short, firm wall between 25% and 55% of the travel that gives way with a click.
-      trigger.setModeWeaponWithStartPosition(0.25, endPosition: 0.55, resistiveStrength: 0.6)
+      // A short, firm wall between 25% and 45% of the travel that gives way with a click, so the
+      // snap carries the trigger past the 0.5 fire point.
+      trigger.setModeWeaponWithStartPosition(0.25, endPosition: 0.45, resistiveStrength: 0.6)
     case .charging(let level):
       let progress = Float(level) / 10
       trigger.setModeVibrationWithStartPosition(0.0, amplitude: 0.15 + 0.45 * progress,

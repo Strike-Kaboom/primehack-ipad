@@ -25,22 +25,14 @@
 
 + (BOOL)inGameplay
 {
-  // PrimeHack for iPad: reading the active game on the main thread is a benign race with
-  // game changes on the CPU thread. The next poll picks up the change, so no lock is needed.
-  switch (prime::GetActiveGame())
-  {
-  case prime::Game::PRIME_1:
-  case prime::Game::PRIME_2:
-  case prime::Game::PRIME_3:
-  case prime::Game::PRIME_3_STANDALONE:
-  case prime::Game::PRIME_1_GCN:
-  case prime::Game::PRIME_2_GCN:
-  case prime::Game::PRIME_1_GCN_R1:
-  case prime::Game::PRIME_1_GCN_R2:
-    return YES;
-  default:
-    return NO;
-  }
+  // PrimeHack for iPad: an atomic the CPU thread publishes each frame. False on the Trilogy menu,
+  // the pause menu, the map and the inventory.
+  return (prime::GetPublishedPlayerState() & prime::kPlayerStateInControl) != 0;
+}
+
++ (BOOL)inMorphBall
+{
+  return (prime::GetPublishedPlayerState() & prime::kPlayerStateMorphBall) != 0;
 }
 
 // Controls

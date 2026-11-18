@@ -1,5 +1,7 @@
 #include "Core/PrimeHack/HackManager.h"
 
+#include <atomic>
+
 #include "Common/Assembler/GekkoAssembler.h"
 #include "Common/Config/Config.h"
 #include "Core/AchievementManager.h"
@@ -37,6 +39,8 @@ Region sLastRegion = Region::INVALID_REGION;
 std::vector<GameChangeCallback> sGameChangeCbList;
 
 bool sHardcoreEnabled = false;
+// PrimeHack for iPad: see PublishPlayerState.
+std::atomic<u32> sPublishedPlayerState{0};
 bool sChangesStashed = false;
 
 // Dynalib tracking globals
@@ -381,6 +385,7 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
   foreach_mod([&cpu_guard](PrimeMod& mod) { mod.set_temporary_cpu_guard(&cpu_guard); });
 
   if (sActiveGame != sLastGame || sActiveRegion != sLastRegion) {
+    sPublishedPlayerState.store(0, std::memory_order_relaxed);
     UpdateHackSettings();
 #ifdef IPHONEOS
     UpdateTrilogyGpuSync(sActiveGame);
@@ -447,6 +452,14 @@ Game GetActiveGame() {
   return sActiveGame;
 }
 
+u32 GetPublishedPlayerState() {
+  return sPublishedPlayerState.load(std::memory_order_relaxed);
+}
+
+void PublishPlayerState(u32 state) {
+  sPublishedPlayerState.store(state, std::memory_order_relaxed);
+}
+
 Region GetActiveRegion() {
   return sActiveRegion;
 }
@@ -464,6 +477,7 @@ void Shutdown() {
   sModuleList.clear();
 
   sActiveGame = sLastGame = Game::INVALID_GAME;
+  sPublishedPlayerState.store(0, std::memory_order_relaxed);
   sActiveRegion = sLastRegion = Region::INVALID_REGION;
   for (auto& cb : sGameChangeCbList) {
     cb(Game::INVALID_GAME, Region::INVALID_REGION);

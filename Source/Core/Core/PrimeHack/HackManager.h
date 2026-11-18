@@ -56,6 +56,13 @@ void DisablePatches() {
 void RunActiveMods(const Core::CPUThreadGuard& cpu_guard);
 Game GetActiveGame();
 Region GetActiveRegion();
+
+// PrimeHack for iPad: the player's state, published by the CPU thread every frame for the app
+// (DualSense adaptive triggers). Safe to read from any thread.
+constexpr u32 kPlayerStateInControl = 1;  // in a Prime game, player loaded, no pause/map/inventory
+constexpr u32 kPlayerStateMorphBall = 2;
+u32 GetPublishedPlayerState();
+void PublishPlayerState(u32 state);
 void Shutdown();
 
 using GameChangeCallback = std::function<void(Game, Region)>;
