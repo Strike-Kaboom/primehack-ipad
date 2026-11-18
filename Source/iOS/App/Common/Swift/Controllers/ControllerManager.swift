@@ -218,19 +218,41 @@ final class ControllerManager: NSObject, ObservableObject {
   /// a physical device, or nil if it is not bound to any port (touchscreen-only /
   /// unassigned). Matches by bridge qualifier across GC ports then Wiimotes.
   private func assignedSlot(for controller: GCController) -> (port: Int, isWii: Bool)? {
-    let qualifier = TVControllerMappingBridge.qualifiedName(for: controller)
+    assignedSlot(forQualifier: TVControllerMappingBridge.qualifiedName(for: controller) as String)
+  }
+
+  /// `assignedSlot(for:)` by qualifier. `wiiFirst` looks at the Wii Remotes before the GameCube
+  /// ports (a running Wii title), so a pad bound to both reports the slot the game actually reads.
+  private func assignedSlot(forQualifier qualifier: String, wiiFirst: Bool = false) -> (port: Int, isWii: Bool)? {
     guard !qualifier.isEmpty else { return nil }
-    for portOneBased in 1 ... 4 {
-      if TVControllerMappingBridge.defaultDevice(forGCPort: portOneBased) as String == qualifier {
+    func gcSlot() -> (port: Int, isWii: Bool)? {
+      for portOneBased in 1 ... 4
+        where TVControllerMappingBridge.defaultDevice(forGCPort: portOneBased) as String == qualifier {
         return (portOneBased - 1, false)
       }
+      return nil
     }
-    for indexOneBased in 1 ... 4 {
-      if TVControllerMappingBridge.defaultDevice(forWiimote: indexOneBased) as String == qualifier {
+    func wiiSlot() -> (port: Int, isWii: Bool)? {
+      for indexOneBased in 1 ... 4
+        where TVControllerMappingBridge.defaultDevice(forWiimote: indexOneBased) as String == qualifier {
         return (indexOneBased - 1, true)
       }
+      return nil
     }
-    return nil
+    return wiiFirst ? (wiiSlot() ?? gcSlot()) : (gcSlot() ?? wiiSlot())
+  }
+
+  /// PrimeHack for iPad: each connected controller's ControllerInterface name, remembered while it is
+  /// connected. On a disconnect the core's MFi scanner can remove the device before this manager's
+  /// observer runs, so a live lookup then finds nothing, and the "Controller disconnected" pause
+  /// never started. Keyed by the real (unwrapped) `GCController`.
+  private var qualifierByController: [ObjectIdentifier: String] = [:]
+
+  private func rememberQualifiers() {
+    for controller in GCController.controllers() {
+      let qualifier = TVControllerMappingBridge.qualifiedName(for: controller) as String
+      if !qualifier.isEmpty { qualifierByController[ObjectIdentifier(controller)] = qualifier }
+    }
   }
 
   func startObserving() {
@@ -298,17 +320,23 @@ final class ControllerManager: NSObject, ObservableObject {
       let c = (note.object as? GCController).map {
         self.physicalProfileWrappers.removeValue(forKey: ObjectIdentifier($0)) ?? $0
       }
+      // The name it had while connected: the core may already have removed the device.
+      let remembered = (note.object as? GCController).flatMap {
+        self.qualifierByController.removeValue(forKey: ObjectIdentifier($0))
+      }
+      let liveQualifier = c.map { TVControllerMappingBridge.qualifiedName(for: $0) as String } ?? ""
+      let droppedQualifier = liveQualifier.isEmpty ? (remembered ?? "") : liveQualifier
       // Auto-pause when an ASSIGNED PHYSICAL controller drops mid-game. A
       // touchscreen-only / unassigned disconnect does nothing. Capture the slot
       // before reconcile() can rewrite the bindings.
       if self.disconnectPause == nil,
          let dropped = c,
          !dropped.isMenuRemote,
-         let slot = self.assignedSlot(for: dropped),
          TVEmulationBridge.isRunning(),
+         let slot = self.assignedSlot(forQualifier: droppedQualifier, wiiFirst: TVEmulationBridge.isCurrentSystemWii()),
          !(TVEmulationBridge.currentGameID() as String).isEmpty,
          MainActor.assumeIsolated({ PauseArbiter.shared.coreWouldRun }) {
-        let qualifier = TVControllerMappingBridge.qualifiedName(for: dropped) as String
+        let qualifier = droppedQualifier
         self.disconnectPause = DisconnectPause(qualifier: qualifier, port: slot.port, isWii: slot.isWii)
         MainActor.assumeIsolated { _ = PauseArbiter.shared.claim(PauseArbiter.Reason.disconnect) }
       }
@@ -562,6 +590,7 @@ final class ControllerManager: NSObject, ObservableObject {
   /// bound to. Four scattered `playerIndex =` writes (three here, one in
   /// `TVControllerMappingBridge`) used to drift out of sync with the config.
   private func syncPlayerIndices() {
+    rememberQualifiers()
     for controller in GCController.controllers() {
       if let slot = assignedSlot(for: controller) {
         controller.playerIndex = GCControllerPlayerIndex(rawValue: slot.port) ?? .indexUnset

@@ -1,6 +1,7 @@
 #include "Core/PrimeHack/PrimeUtils.h"
 
 #include "Core/Config/GraphicsSettings.h"
+#include "Core/HW/Wiimote.h"
 #include "Core/PowerPC/MMU.h"
 #include "VideoCommon/VideoConfig.h"
 
@@ -22,6 +23,8 @@ static int current_visor = 0;
 static std::array<bool, 4> beam_owned = {false, false, false, false};
 static std::array<bool, 4> visor_owned = {false, false, false, false};
 static bool was_in_alternate = false;
+// An alternate profile was loaded on entering morph ball / the map, so leaving must restore.
+static bool swapped_to_alternate = false;
 
 void set_beam_owned(int index, bool owned) {
   beam_owned[index] = owned;
@@ -138,14 +141,26 @@ void swap_alt_profiles(u32 ball_state, u32 transition_state, u32 screw_state)
   if ((morphed || in_map) && !was_in_alternate) {
     std::string profile = GetProfiles().first;
 
+    swapped_to_alternate = false;
     if (!profile.empty() && (profile != std::string("Disabled"))) {
       ChangeControllerProfileAlt(profile);
+      swapped_to_alternate = true;
     }
     was_in_alternate = true;
   } else if (!(morphed || in_map) && was_in_alternate) {
-    std::string profile = GetProfiles().second;
-
-    ChangeControllerProfileAlt(profile);
+    // PrimeHack for iPad: restore only when an alternate (morph ball / map) profile was actually
+    // loaded. Restoring unconditionally loaded WiimoteNew_Backup.ini -- the slot's ordinary mapping,
+    // not the game's PrimeHack layout -- every time the player unmorphed or closed the map, which
+    // scrambled the controls until the layout watchdog reloaded them a moment later.
+    if (swapped_to_alternate) {
+#ifdef IPHONEOS
+      // The live layout comes from the game's [Controls] profile; LoadConfig re-applies it.
+      ::Wiimote::LoadConfig();
+#else
+      ChangeControllerProfileAlt(GetProfiles().second);
+#endif
+      swapped_to_alternate = false;
+    }
     was_in_alternate = false;
   }
 }
