@@ -266,6 +266,13 @@ final class ControllerManager: NSObject, ObservableObject {
     // Initial configure
     refreshInputHandlers()
 
+    // PrimeHack for iPad: DualSense adaptive triggers in the Metroid Prime games.
+    if Thread.isMainThread {
+      MainActor.assumeIsolated { PrimeHackAdaptiveTriggers.shared.start() }
+    } else {
+      DispatchQueue.main.async { MainActor.assumeIsolated { PrimeHackAdaptiveTriggers.shared.start() } }
+    }
+
     // Connect/disconnect notifications
     let onConnect = NotificationCenter.default.addObserver(forName: .GCControllerDidConnect, object: nil, queue: .main) { [weak self] note in
       guard let self = self else { return }

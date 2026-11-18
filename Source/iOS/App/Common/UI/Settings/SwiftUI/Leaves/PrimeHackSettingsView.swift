@@ -7,6 +7,7 @@ import SwiftUI
 struct PrimeHackSettingsState: Equatable {
   var enabled = true
   var controllerOnly = true
+  var adaptiveTriggers = true
   var horizontalSensitivity = 45.0
   var verticalSensitivity = 35.0
   var invertX = false
@@ -41,6 +42,7 @@ struct PrimeHackSettingsState: Equatable {
 enum PrimeHackSettingsChange: Equatable {
   case enabled(Bool)
   case controllerOnly(Bool)
+  case adaptiveTriggers(Bool)
   case horizontalSensitivity(Double)
   case verticalSensitivity(Double)
   case invertX(Bool)
@@ -81,6 +83,9 @@ enum PrimeHackSettingsModelBuilder {
       SettingsRow.toggle("primehack-controller-only", L("Controller Only"), s.controllerOnly,
                          L("Your game controller is always Player 1, in every game, and the on-screen controls are never used. Takes effect when a game starts or a controller connects."),
                          defaultValue: true, set: { apply(.controllerOnly($0)) }),
+      SettingsRow.toggle("primehack-adaptive-triggers", L("Adaptive Triggers (DualSense)"), s.adaptiveTriggers,
+                         L("R2 clicks like a trigger when you fire and hums as a charge builds; L2 pushes back lightly for lock-on. Only in the Metroid Prime games, never in menus."),
+                         defaultValue: true, set: { apply(.adaptiveTriggers($0)) }),
       SettingsRow.stepper("primehack-h-sens", L("Look Sensitivity (Horizontal)"), s.horizontalSensitivity,
                           range: PrimeHackSettingsState.sensitivityRange, step: 1, format: whole,
                           L("How fast the right stick turns the camera left and right."),
@@ -185,6 +190,7 @@ struct PrimeHackSettingsView: View {
     var s = PrimeHackSettingsState()
     s.enabled = PrimeHackBridge.enabled()
     s.controllerOnly = ControllerManager.controllerOnly()
+    s.adaptiveTriggers = PrimeHackAdaptiveTriggers.isEnabled()
     s.horizontalSensitivity = Double(PrimeHackBridge.stickHorizontalSensitivity())
     s.verticalSensitivity = Double(PrimeHackBridge.stickVerticalSensitivity())
     s.invertX = PrimeHackBridge.invertX()
@@ -215,6 +221,7 @@ struct PrimeHackSettingsView: View {
     switch change {
     case .enabled(let v): state.enabled = v; PrimeHackBridge.setEnabled(v)
     case .controllerOnly(let v): state.controllerOnly = v; ControllerManager.setControllerOnly(v)
+    case .adaptiveTriggers(let v): state.adaptiveTriggers = v; PrimeHackAdaptiveTriggers.setEnabled(v)
     case .horizontalSensitivity(let v): state.horizontalSensitivity = v; PrimeHackBridge.setStickHorizontalSensitivity(Int(v.rounded()))
     case .verticalSensitivity(let v): state.verticalSensitivity = v; PrimeHackBridge.setStickVerticalSensitivity(Int(v.rounded()))
     case .invertX(let v): state.invertX = v; PrimeHackBridge.setInvertX(v)
