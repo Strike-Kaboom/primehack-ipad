@@ -437,6 +437,13 @@ inline void SetDeadFPRFElimHint(bool value)
   g_dead_fprf_elim_hint = value;
 }
 
+// PrimeHack for iPad: FPRF emulation is off for this session. "FPRF" (MAIN_FPRF, default False)
+// already means this for both JITs (JitArm64::SetFPRFIfNeeded returns at once when !m_fprf), but
+// the interpreters ignored it and classified every FP result. The Cached Interpreter sets this from
+// JitBase::m_fprf (Init / ClearCache) and clears it in Shutdown, so a game whose INI sets
+// FPRF = True keeps the full behaviour. Compares are unaffected: they write FPCC directly.
+inline bool g_fprf_updates_off = false;
+
 // iCube: quantized paired-single FLOAT fast-path enable (MAIN_CIR_PSQ_FASTPATH) and its self-validation
 // (MAIN_CIR_PSQ_FASTPATH_VALIDATE). Read once at CachedInterpreter::Init and stashed in a file-static so
 // the generic psq Helper_Dequantize/Helper_Quantize handlers can consult them per-execution without a

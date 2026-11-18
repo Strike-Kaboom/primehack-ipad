@@ -723,14 +723,14 @@ void PowerPCState::UpdateFPRFDouble(double dvalue)
   // iCube: skip the FPRF classify+store when the CIR proved this op's FPRF is dead. This writes ONLY the
   // FPRF field, so an early-return is EXACTLY the op minus the FPRF write — result/rounding/exceptions/
   // all other FPSCR bits are unaffected.
-  if (g_dead_fprf_elim_hint) [[unlikely]]
+  if (g_dead_fprf_elim_hint || g_fprf_updates_off)
     return;
   fpscr.FPRF = Common::ClassifyDouble(dvalue);
 }
 
 void PowerPCState::UpdateFPRFSingle(float fvalue)
 {
-  if (g_dead_fprf_elim_hint) [[unlikely]]
+  if (g_dead_fprf_elim_hint || g_fprf_updates_off)
     return;
   fpscr.FPRF = Common::ClassifyFloat(fvalue);
 }

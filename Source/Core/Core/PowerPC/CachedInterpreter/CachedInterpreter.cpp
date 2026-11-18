@@ -1750,6 +1750,8 @@ void CachedInterpreter::Init()
   // Memory's BAT page tables, which exist whether or not the reservation succeeded.
   InitFastmemArena();
   RefreshConfig();
+  // PrimeHack for iPad: honour FPRF = False (the default) the way the JITs do.
+  PowerPC::g_fprf_updates_off = !m_fprf;
   s_pic_loadstore = Config::Get(Config::MAIN_CIR_PIC_LOADSTORE);
   {
     auto& memory = m_system.GetMemory();
@@ -1820,7 +1822,8 @@ void CachedInterpreter::Init()
   s_dead_flag_elim_validate = Config::Get(Config::MAIN_CIR_DEAD_FLAG_ELIM_VALIDATE);
   // iCube: dead-FPRF elimination (default OFF). Read once at codegen time. When off DoJit never wraps an
   // FP op, so the emitted stream is byte-identical to the flag-off baseline and the hint is never set.
-  s_dead_fprf_elim = Config::Get(Config::MAIN_CIR_DEAD_FPRF_ELIM);
+  // PrimeHack for iPad: nothing is left for the per-op elimination to remove when FPRF is off outright.
+  s_dead_fprf_elim = Config::Get(Config::MAIN_CIR_DEAD_FPRF_ELIM) && !PowerPC::g_fprf_updates_off;
   s_dead_fprf_elim_validate = Config::Get(Config::MAIN_CIR_DEAD_FPRF_ELIM_VALIDATE);
   // iCube: psq FLOAT fast-path (default OFF). Read once here and stashed via the PowerPC accessors so the
   // generic psq Helper_Dequantize/Helper_Quantize handlers can consult them per-execution without a
@@ -1873,6 +1876,7 @@ void CachedInterpreter::Init()
 
 void CachedInterpreter::Shutdown()
 {
+  PowerPC::g_fprf_updates_off = false;
   m_block_cache.Shutdown();
 }
 
@@ -7293,6 +7297,7 @@ void CachedInterpreter::ClearCache()
   ClearCodeSpace();
   ResetFreeMemoryRanges();
   RefreshConfig();
+  PowerPC::g_fprf_updates_off = !m_fprf;
   Host_JitCacheInvalidation();
 }
 
