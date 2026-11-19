@@ -126,6 +126,9 @@ private:
   bool m_surround_decoding = false;
   std::unique_ptr<AudioCommon::SurroundDecoder> m_surround;
   std::vector<short> m_stereo_temp;
+  // PrimeHack for iPad: stereo frames pulled from the mixer at a steady chunk per buffer, waiting
+  // for the surround decoder, which consumes whole blocks of up to 4096 frames.
+  std::vector<short> m_surround_stage;
   std::vector<float> m_float_temp;
   AudioCommon::AudioDSPChain m_dsp;
 

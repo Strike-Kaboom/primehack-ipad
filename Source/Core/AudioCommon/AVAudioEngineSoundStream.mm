@@ -18,6 +18,7 @@
 #include <algorithm>
 #include <chrono>
 #include <condition_variable>
+#include <cstddef>
 #include <cstring>
 #include <sstream>
 
@@ -236,6 +237,7 @@ bool AVAudioEngineSound::buildGraphLocked()
 
   m_surround = std::make_unique<AudioCommon::SurroundDecoder>(
       m_mixer->GetSampleRate(), FrameBlockSizeForQuality(Config::Get(Config::MAIN_DPL2_QUALITY)));
+  m_surround_stage.clear();
   m_dsp.Configure(m_mixer->GetSampleRate(), mode == Mode::Stereo ? 2 : kSurroundChannels);
   m_mode.store(mode);
 
@@ -628,14 +630,34 @@ void AVAudioEngineSound::audioThreadMain()
     }
     else
     {
+      // PrimeHack for iPad: pull the same small chunk from the mixer for every buffer, as the stereo
+      // path does, and stage it until the decoder wants a whole block. Pulling a whole block at
+      // once (43 ms at the default quality) drained the mixer's granule queue in one go: it then
+      // looped old granules to fill the gap (slowed-down, glitchy sound) and later jumped ahead.
+      m_stereo_temp.resize(static_cast<size_t>(chunk) * 2);
+      m_mixer->Mix(m_stereo_temp.data(), chunk);
+      m_surround_stage.insert(m_surround_stage.end(), m_stereo_temp.begin(), m_stereo_temp.end());
+
       const size_t needed = m_surround->QueryFramesNeededForSurroundOutput(chunk);
+      bool have_output = true;
       if (needed > 0)
       {
-        m_stereo_temp.resize(needed * 2);
-        m_mixer->Mix(m_stereo_temp.data(), static_cast<u32>(needed));
-        m_surround->PutFrames(m_stereo_temp.data(), needed);
+        if (m_surround_stage.size() >= needed * 2)
+        {
+          m_surround->PutFrames(m_surround_stage.data(), needed);
+          m_surround_stage.erase(m_surround_stage.begin(),
+                                 m_surround_stage.begin() + static_cast<std::ptrdiff_t>(needed * 2));
+        }
+        else
+        {
+          // Only while the first block fills (one block of extra latency, as before).
+          have_output = false;
+        }
       }
-      m_surround->ReceiveFrames(m_float_temp.data(), chunk);
+      if (have_output)
+        m_surround->ReceiveFrames(m_float_temp.data(), chunk);
+      else
+        std::fill(m_float_temp.begin(), m_float_temp.end(), 0.0f);
     }
     m_dsp.Process(m_float_temp.data(), chunk);
 
