@@ -22,6 +22,9 @@ jobs:
     env:
       CC: clang-18
       CXX: clang++-18
+      # std::expected: libstdc++ hides it from clang 18, so use LLVM's libc++ (as Apple does).
+      CXXFLAGS: -stdlib=libc++
+      LDFLAGS: -stdlib=libc++
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 1500M
       PH_CPUDIFF_CASES: ${{ inputs.cases || '20000' }}
@@ -33,7 +36,7 @@ jobs:
         run: |
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            clang-18 cmake ninja-build pkg-config ccache libgl-dev libusb-1.0-0-dev \
+            clang-18 libc++-18-dev libc++abi-18-dev cmake ninja-build pkg-config ccache libgl-dev libusb-1.0-0-dev \
             libhidapi-dev libcurl4-openssl-dev liblzma-dev libbz2-dev libzstd-dev
 
       - name: Fetch the pinned sources used by this configuration
@@ -51,8 +54,8 @@ jobs:
         id: cache
         with:
           path: ${{ env.CCACHE_DIR }}
-          key: cpu-diff-noble-arm64-clang18-v1-${{ github.sha }}
-          restore-keys: cpu-diff-noble-arm64-clang18-v1-
+          key: cpu-diff-noble-arm64-clang18-libcxx-v1-${{ github.sha }}
+          restore-keys: cpu-diff-noble-arm64-clang18-libcxx-v1-
 
       - name: Configure the native Linux tests
         shell: bash

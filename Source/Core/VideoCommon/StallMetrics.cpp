@@ -16,7 +16,7 @@
 #include <mach/mach.h>
 #include <mach/mach_init.h>
 #include <mach/thread_act.h>
-// (Core/System.h is included below for all platforms.)
+// (Core/System.h is included above for all platforms.)
 #endif
 
 namespace StallMetrics
