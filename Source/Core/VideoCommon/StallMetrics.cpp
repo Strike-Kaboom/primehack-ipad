@@ -9,13 +9,14 @@
 #include <string_view>
 
 #include "Core/Config/MainSettings.h"
+#include "Core/System.h"  // PrimeHack for iPad: used outside __APPLE__ too (Linux CPU test build)
 #include "VideoCommon/PerformanceMetrics.h"
 
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <mach/mach_init.h>
 #include <mach/thread_act.h>
-#include "Core/System.h"  // 2606: PerformanceMetrics lives on Core::System
+// (Core/System.h is included below for all platforms.)
 #endif
 
 namespace StallMetrics
