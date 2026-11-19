@@ -29,6 +29,16 @@ enum class State;
 // iCube WIN#2: micro-op fusion engine (MAIN_CIR_MICROOP_FUSION). MicroOpCode is the compact op-id that
 // indexes MicroOpHandlers::table in CachedInterpreter.cpp; the table order MUST match this enum exactly
 // (a static_assert against COUNT checks the length). Only used when the flag is on.
+// PrimeHack for iPad: interpreter names also key the cold decoder and both callback tables.
+#define CIR_FP_MICRO_OPS(X) \
+  X(fmulsx) X(faddsx) X(fsubsx) X(fmulx) X(faddx) X(fsubx) \
+  X(fmaddsx) X(fmsubsx) X(fnmaddsx) X(fnmsubsx) X(fmaddx) X(fmsubx) \
+  X(fnmaddx) X(fnmsubx) X(frspx) X(fctiwzx) X(fdivsx) X(fmrx) \
+  X(fabsx) X(fnegx) X(fnabsx) X(fselx) X(fcmpo) X(fcmpu) \
+  X(ps_madd) X(ps_mul) X(ps_madds0) X(ps_madds1) X(ps_muls0) X(ps_muls1) \
+  X(ps_add) X(ps_sub) X(ps_msub) X(ps_merge00) X(ps_merge01) X(ps_merge10) \
+  X(ps_merge11) X(ps_sum0)
+
 enum class MicroOpCode : u8
 {
   CONST32,
@@ -124,6 +134,14 @@ enum class MicroOpCode : u8
   MEM_STWUX,
   MEM_STBUX,
   MEM_STHUX,
+  // PrimeHack for iPad: the FP record stores FD (or CRFD), FA, FB and FC as four bytes.
+  MEM_LFS,
+  MEM_LFD,
+  MEM_STFS,
+  MEM_STFD,
+#define CI_FP_CODE(name) name, name##_FPRF,
+  CIR_FP_MICRO_OPS(CI_FP_CODE)
+#undef CI_FP_CODE
   NOP,
   COUNT,
 };
@@ -151,8 +169,8 @@ enum class CIMemKind : u8
   LMW,    // D-form only
   STMW,   // D-form only
   DCBZ,   // X-form only
-  PSQL,   // psq_l family, float quantization type only (checked against the GQR at run time)
-  PSQST,  // psq_st family, likewise
+  PSQL,   // PrimeHack for iPad: float and integer loads, selected by the live GQR
+  PSQST,  // float stores
 };
 constexpr u32 CI_MEM_KIND_COUNT = static_cast<u32>(CIMemKind::PSQST) + 1;
 
@@ -305,10 +323,6 @@ private:
   // dispatch. Only ever written when MAIN_CIR_MICROOP_FUSION_VALIDATE is on, so the shipping
   // ExecuteMicroOps stream stays lean. See ExecuteMicroOpsValidate.
   struct ExecuteMicroOpsValidateOperands;
-  // iCube: payload for paired-single sequence fusion (MAIN_CIR_MICROOP_FUSION extension). Fuses
-  // consecutive psq_l / ps_mul / ps_madd ops from F-Zero-style hot blocks into one callback to cut
-  // per-op dispatch overhead. Only written when micro-op fusion is on. See ExecuteFusedPsqSeq.
-  struct ExecuteFusedPsqSeqOperands;
   // iCube: payload for gather-pipe copy fusion (MAIN_CIR_GP_COPY_FUSION). A run of
   // `lbz rD,k(rA) ; stb rD,d(rB)` pairs whose store displacement d never changes — the GX command
   // stream shape. Only written when the flag is on, so the flag-off record stream is byte-identical.
@@ -436,7 +450,7 @@ private:
   template <u32 cr_bit, bool dec_ctr, bool to_lr, bool mid_block, bool chain>
   static s32 BranchCond(PowerPC::PowerPCState& ppc_state, const void* payload);
   static s32 BranchCond(std::ostream& stream, const void* payload);
-  // chain is ignored for the mid-block form (its successor is chosen at run time).
+  // PrimeHack for iPad: mid-block chain encodes the global policy, then checks the target tag.
   static AnyCallback GetBranchCondCallback(u32 cr_bit, bool dec_ctr, bool to_lr, bool mid_block,
                                            bool chain);
   // iCube: compare + conditional branch fused into ONE record (the most common instruction pair, and
@@ -449,6 +463,11 @@ private:
   template <int cmp, u32 cr_bit, bool mid_block, bool chain>
   static s32 CmpBranch(PowerPC::PowerPCState& ppc_state, const void* payload);
   static s32 CmpBranch(std::ostream& stream, const void* payload);
+  // PrimeHack for iPad: floating compare and bc share the integer branch record layout.
+  template <bool ordered, bool mid_block, bool chain, bool validate>
+  static s32 FCmpBranch(PowerPC::PowerPCState& ppc_state, const void* payload);
+  static AnyCallback GetFCmpBranchCallback(bool ordered, bool mid_block, bool chain, bool validate);
+  static s32 FCmpBranch(std::ostream& stream, const void* payload);
   static AnyCallback GetCmpBranchCallback(int cmp, u32 cr_bit, bool mid_block, bool chain);
   // iCube: long blocks (MAIN_CIR_LONG_BLOCKS). With the analyzer's conditional-continue and
   // branch-follow options on, a branch is no longer always the last instruction of a block. After a
@@ -465,8 +484,6 @@ private:
   template <bool chain>
   static s32 CheckFPUChained(PowerPC::PowerPCState& ppc_state, const void* payload);
   static s32 EndBlockChained(PowerPC::PowerPCState& ppc_state, const void* payload);
-  template <bool chain>
-  static s32 ExecuteFusedPsqSeqChained(PowerPC::PowerPCState& ppc_state, const void* payload);
   template <bool chain>
   static s32 ExecuteFusedGpCopyChained(PowerPC::PowerPCState& ppc_state, const void* payload);
   // iCube: chain-capable forms of the generic and the specialized non-terminal records.
@@ -500,7 +517,7 @@ private:
   struct MicroOpHandlers;
   static s32 MicroOpRecord(std::ostream& stream, const void* payload);
   // Every micro-op handler (both chain variants), for the disassembler's callback lookup.
-  static std::span<const AnyCallback> GetMicroOpCallbacks();
+  static std::span<const AnyCallback> GetMicroOpCallbacks(bool chain);
   // Every fused-pair handler, likewise.
   static std::vector<AnyCallback> GetMicroOpPairCallbacks();
   static s32 MicroOpPairRecord(std::ostream& stream, const void* payload);
@@ -515,13 +532,6 @@ private:
   template <bool write_pc>
   static s32 ExecuteMicroOpsValidate(std::ostream& stream,
                                      const ExecuteMicroOpsValidateOperands& operands);
-  // iCube: paired-single sequence fusion (MAIN_CIR_MICROOP_FUSION extension). Runs 2–3 consecutive
-  // psq_l/ps_mul/ps_madd handlers in one callback. write_pc mirrors Interpret<write_pc>.
-  template <bool write_pc>
-  static s32 ExecuteFusedPsqSeq(PowerPC::PowerPCState& ppc_state,
-                                const ExecuteFusedPsqSeqOperands& operands);
-  template <bool write_pc>
-  static s32 ExecuteFusedPsqSeq(std::ostream& stream, const ExecuteFusedPsqSeqOperands& operands);
   // iCube: gather-pipe copy fusion (MAIN_CIR_GP_COPY_FUSION). Runs a whole `lbz/stb`-to-the-pipe run
   // in one callback: the load page and the store's gather-pipe classification are resolved ONCE for
   // the run, then the bytes are appended in program order with the burst check at the identical
@@ -656,29 +666,26 @@ struct CachedInterpreter::EndBlockOperands<true> : CachedInterpreter::EndBlockOp
 // follows the link when ppc_state.npc == expected_pc (fail-safe deopt otherwise). rel is the patched
 // relative distance (bytes) from the start of THIS callback (the AnyCallback slot) to the target
 // block's normalEntry; 0 means "not linked / unlinked" and forces a dispatcher exit. rel is the ONLY
-// field WriteLinkBlock mutates after emit. Layout is 24 bytes = 3*alignof(AnyCallback) (8 on arm64),
-// trivially copyable, satisfying CachedInterpreterEmitter::Write's size/alignment static_assert.
-struct CachedInterpreter::LinkBlockOperands
+// field WriteLinkBlock mutates after emit.
+// PrimeHack for iPad: pad the 13 words so the following callback is pointer-aligned.
+struct alignas(8) CachedInterpreter::LinkBlockOperands
 {
   u32 downcount;
   u32 num_load_stores;
   u32 num_fp_inst;
   u32 expected_pc;
-  // Reserved: the feature_flags the source block was compiled under. Recorded at emit for parity with
-  // the JitBlock and possible future cross-flag checks; validate-mode instead compares the LIVE
-  // ppc_state.feature_flags against the resolved target block, which is the authoritative check.
+  // PrimeHack for iPad: a static link can only enter a block compiled with the live feature key.
   u32 feature_flags;
   s32 rel;
   // iCube: block ENTRY guest PC for the hot-block profiler (MAIN_CIR_PROFILE, default OFF). Populated
   // in WriteEndBlock; read only by the once-per-block profiler hook in LinkBlock, never on the linked
-  // fast path. Grows the trampoline 24->32B (still alignof-multiple; passes the emitter static_assert)
-  // only on the default-ON block-linking path; harmless when profiling is off.
+  // fast path.
   u32 entry_pc;
   // iCube: dynamic-link inline cache (MAIN_CIR_DYN_LINKING). The last dynamic successor seen from
   // this exit: its guest pc, the feature_flags it was resolved under, the generation it was
   // recorded in, and the relative distance from this callback's AnyCallback slot to its
   // normalEntry (0 = empty). Written ONLY by ExecuteOneBlock's fill step right after a dispatcher
-  // round-trip; read by LinkBlock when the static edge does not apply. Trampoline grows 32->48 B.
+  // round-trip; read by LinkBlock when the static edge does not apply.
   u32 dyn_pc;
   u32 dyn_flags;
   u32 dyn_generation;
@@ -787,18 +794,6 @@ struct CachedInterpreter::ExecuteMicroOpsValidateOperands
   // dead) eliminated fields whenever both validate flags are on. Excluded from the CR diff. Zero when
   // dead-flag-elim is off, so the compare is unchanged. u32 keeps the struct alignment a multiple of 8.
   u32 elim_cr_mask;
-};
-
-// iCube: payload for paired-single sequence fusion (MAIN_CIR_MICROOP_FUSION extension). count is 2 or 3;
-// inst[] holds the original consumed PowerPC words in program order. Trivially copyable; only written when
-// micro-op fusion is on.
-struct CachedInterpreter::ExecuteFusedPsqSeqOperands
-{
-  static constexpr u32 kMaxOps = 3;
-  Interpreter& interpreter;
-  u32 count;
-  UGeckoInstruction inst[kMaxOps];
-  u32 current_pc;
 };
 
 // iCube: payload for gather-pipe copy fusion (MAIN_CIR_GP_COPY_FUSION). Describes a run of

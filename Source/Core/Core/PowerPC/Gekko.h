@@ -949,8 +949,20 @@ enum CPUEmuFeatureFlags : u32
   FEATURE_FLAG_MSR_DR = 1 << 0,
   FEATURE_FLAG_MSR_IR = 1 << 1,
   FEATURE_FLAG_PERFMON = 1 << 2,
+  // PrimeHack for iPad: distinguish blocks that can enter the FPU immediately.
+  FEATURE_FLAG_MSR_FP = 1 << 3,
   FEATURE_FLAG_END_OF_ENUMERATION,
 };
+
+// PrimeHack for iPad: the entry-point table indexes aligned PCs for each combination.
+constexpr u32 NUM_CPU_FEATURE_FLAG_COMBINATIONS = (FEATURE_FLAG_END_OF_ENUMERATION - 1) << 1;
+
+constexpr u32 MSRFeatureFlags(u32 msr)
+{
+  static_assert(UReg_MSR{}.DR.StartBit() == 4 && UReg_MSR{}.IR.StartBit() == 5);
+  static_assert(FEATURE_FLAG_MSR_DR == 1 && FEATURE_FLAG_MSR_IR == 2);
+  return ((msr >> 4) & 3) | ((msr & (1u << UReg_MSR{}.FP.StartBit())) ? FEATURE_FLAG_MSR_FP : 0);
+}
 
 constexpr s32 SignExt16(s16 x)
 {

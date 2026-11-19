@@ -119,14 +119,6 @@ s32 CachedInterpreter::InterpretChained(std::ostream& stream, const void* payloa
   return Interpret<false>(stream, *static_cast<const InterpretOperands*>(payload));
 }
 
-template <bool write_pc>
-s32 CachedInterpreter::ExecuteFusedPsqSeq(std::ostream& stream,
-                                          const ExecuteFusedPsqSeqOperands& operands)
-{
-  fmt::print(stream, "FusedPsqSeq (count={}) at PC={:#010x}\n", operands.count,
-             operands.current_pc);
-  return sizeof(AnyCallback) + sizeof(operands);
-}
 
 template <bool write_pc>
 s32 CachedInterpreter::ExecuteFusedGpCopy(std::ostream& stream,
@@ -135,6 +127,15 @@ s32 CachedInterpreter::ExecuteFusedGpCopy(std::ostream& stream,
   fmt::print(stream, "FusedGpCopy (pairs={}, lbz r{}+[{}..{}] -> stb {}(r{})) at PC={:#010x}\n",
              operands.count, operands.ra, operands.load_min, operands.load_max, operands.store_off,
              operands.rb, operands.current_pc);
+  return sizeof(AnyCallback) + sizeof(operands);
+}
+
+template <bool write_pc>
+s32 CachedInterpreter::ExecuteMicroOpsValidate(std::ostream& stream,
+                                               const ExecuteMicroOpsValidateOperands& operands)
+{
+  fmt::print(stream, "MicroOpsValidate (count={}, generic_count={}) at PC={:#010x}\n", operands.count,
+             operands.generic_count, operands.current_pc);
   return sizeof(AnyCallback) + sizeof(operands);
 }
 
@@ -150,12 +151,14 @@ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream& 
 
   // Function addresses aren't known at compile-time, so this array is sorted at run-time.
   // Only records the emitter still writes with a typed callback. The chain-capable forms (which
-  // replaced EndBlock<false>, Interpret<false>, ExecuteFusedPsqSeq<false>, ...) are added below;
+  // replaced EndBlock<false> and Interpret<false>, among others) are added below;
   // naming a template here that nothing emits would leave it uninstantiated at link time.
   static auto base_lookup = std::to_array<LookupKV>({
       LOOKUP_KV(CachedInterpreter::PoisonCallback),
       LOOKUP_KV(CachedInterpreter::StartProfiledBlock),
       LOOKUP_KV(CachedInterpreter::EndBlock<true>),
+      // PrimeHack for iPad: the validate record has its own (larger) operand layout.
+      LOOKUP_KV(CachedInterpreter::ExecuteMicroOpsValidate<false>),
       LOOKUP_KV(CachedInterpreter::Interpret<true>),
       LOOKUP_KV(CachedInterpreter::InterpretAndCheckExceptions<false>),
       LOOKUP_KV(CachedInterpreter::InterpretAndCheckExceptions<true>),
@@ -195,11 +198,14 @@ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream& 
         add(pick(true), static_cast<ErasedDisassemble>(CachedInterpreter::LoadStoreFastChecked));
       }
     }
-    for (const AnyCallback handler : GetMicroOpCallbacks())
-      add(handler, static_cast<ErasedDisassemble>(MicroOpRecord));
+    for (bool chain : {false, true})
+    {
+      for (const AnyCallback handler : GetMicroOpCallbacks(chain))
+        add(handler, static_cast<ErasedDisassemble>(MicroOpRecord));
+    }
     for (const AnyCallback pair : GetMicroOpPairCallbacks())
       add(pair, static_cast<ErasedDisassemble>(MicroOpPairRecord));
-    for (int form = 0; form < 3 * 2 * 2 * 4; ++form)
+    for (int form = 0; form < 3 * 2 * 2 * 6; ++form)
     {
       add(GetLinkBlockCallback(form % 3, (form / 3) % 2 != 0, (form / 6) % 2 != 0, form / 12),
           static_cast<ErasedDisassemble>(CachedInterpreter::LinkBlock));
@@ -218,15 +224,9 @@ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream& 
     const ErasedDisassemble end_block = +[](std::ostream& stream, const void* payload) -> s32 {
       return EndBlock<false>(stream, *static_cast<const EndBlockOperands<false>*>(payload));
     };
-    const ErasedDisassemble psq_seq = +[](std::ostream& stream, const void* payload) -> s32 {
-      return ExecuteFusedPsqSeq<false>(stream,
-                                       *static_cast<const ExecuteFusedPsqSeqOperands*>(payload));
-    };
     add(AnyCallback{CheckFPUChained<false>}, check_fpu);
     add(AnyCallback{CheckFPUChained<true>}, check_fpu);
     add(AnyCallback{EndBlockChained}, end_block);
-    add(AnyCallback{ExecuteFusedPsqSeqChained<false>}, psq_seq);
-    add(AnyCallback{ExecuteFusedPsqSeqChained<true>}, psq_seq);
     const ErasedDisassemble gp_copy = +[](std::ostream& stream, const void* payload) -> s32 {
       return ExecuteFusedGpCopy<false>(stream,
                                        *static_cast<const ExecuteFusedGpCopyOperands*>(payload));
@@ -244,6 +244,10 @@ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream& 
       add(GetCmpBranchCallback(form & 3, (form >> 2) & 3, (form & 16) != 0, (form & 32) != 0),
           static_cast<ErasedDisassemble>(CmpBranch));
     }
+    // PrimeHack for iPad: FCmpBranch has the same width for all validation and chaining forms.
+    for (u32 form = 0; form < 16; ++form)
+      add(GetFCmpBranchCallback(form & 1, form & 2, form & 4, form & 8),
+          static_cast<ErasedDisassemble>(FCmpBranch));
     add(AnyCallback{ContinueIfNpc<false>}, static_cast<ErasedDisassemble>(ContinueIfNpc));
     add(AnyCallback{ContinueIfNpc<true>}, static_cast<ErasedDisassemble>(ContinueIfNpc));
     add(AnyCallback{InterpretChained<false>},

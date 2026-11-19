@@ -538,16 +538,21 @@ void Jit64::MSRUpdated(const OpArg& msr, X64Reg scratch_reg)
   static_assert(UReg_MSR{}.IR.StartBit() == 5);
   static_assert(FEATURE_FLAG_MSR_DR == 1 << 0);
   static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
-  const u32 other_feature_flags = m_ppc_state.feature_flags & ~0x3;
+  const u32 other_feature_flags = m_ppc_state.feature_flags & FEATURE_FLAG_PERFMON;
   if (msr.IsImm())
   {
-    MOV(32, PPCSTATE(feature_flags), Imm32(other_feature_flags | ((msr.Imm32() >> 4) & 0x3)));
+    MOV(32, PPCSTATE(feature_flags), Imm32(other_feature_flags | MSRFeatureFlags(msr.Imm32())));
   }
   else
   {
     MOV(32, R(scratch_reg), msr);
     SHR(32, R(scratch_reg), Imm8(4));
     AND(32, R(scratch_reg), Imm32(0x3));
+    // PrimeHack for iPad: preserve the source register for the page-table check below.
+    TEST(32, msr, Imm32(1u << UReg_MSR{}.FP.StartBit()));
+    FixupBranch fp_off = J_CC(CC_Z);
+    OR(32, R(scratch_reg), Imm32(FEATURE_FLAG_MSR_FP));
+    SetJumpTarget(fp_off);
     if (other_feature_flags != 0)
       OR(32, R(scratch_reg), Imm32(other_feature_flags));
     MOV(32, PPCSTATE(feature_flags), R(scratch_reg));

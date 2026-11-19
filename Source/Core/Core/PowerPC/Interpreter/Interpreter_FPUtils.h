@@ -15,6 +15,26 @@
 #include "Core/PowerPC/Interpreter/ExceptionUtils.h"
 #include "Core/PowerPC/PowerPC.h"
 
+// PrimeHack for iPad: integer paired loads share the interpreter's six-bit scale table.
+inline constexpr float PAIRED_DEQUANTIZE_SCALE[64] = {
+    1.0 / (1ULL << 0),  1.0 / (1ULL << 1),  1.0 / (1ULL << 2),  1.0 / (1ULL << 3),
+    1.0 / (1ULL << 4),  1.0 / (1ULL << 5),  1.0 / (1ULL << 6),  1.0 / (1ULL << 7),
+    1.0 / (1ULL << 8),  1.0 / (1ULL << 9),  1.0 / (1ULL << 10), 1.0 / (1ULL << 11),
+    1.0 / (1ULL << 12), 1.0 / (1ULL << 13), 1.0 / (1ULL << 14), 1.0 / (1ULL << 15),
+    1.0 / (1ULL << 16), 1.0 / (1ULL << 17), 1.0 / (1ULL << 18), 1.0 / (1ULL << 19),
+    1.0 / (1ULL << 20), 1.0 / (1ULL << 21), 1.0 / (1ULL << 22), 1.0 / (1ULL << 23),
+    1.0 / (1ULL << 24), 1.0 / (1ULL << 25), 1.0 / (1ULL << 26), 1.0 / (1ULL << 27),
+    1.0 / (1ULL << 28), 1.0 / (1ULL << 29), 1.0 / (1ULL << 30), 1.0 / (1ULL << 31),
+    (1ULL << 32),       (1ULL << 31),       (1ULL << 30),       (1ULL << 29),
+    (1ULL << 28),       (1ULL << 27),       (1ULL << 26),       (1ULL << 25),
+    (1ULL << 24),       (1ULL << 23),       (1ULL << 22),       (1ULL << 21),
+    (1ULL << 20),       (1ULL << 19),       (1ULL << 18),       (1ULL << 17),
+    (1ULL << 16),       (1ULL << 15),       (1ULL << 14),       (1ULL << 13),
+    (1ULL << 12),       (1ULL << 11),       (1ULL << 10),       (1ULL << 9),
+    (1ULL << 8),        (1ULL << 7),        (1ULL << 6),        (1ULL << 5),
+    (1ULL << 4),        (1ULL << 3),        (1ULL << 2),        (1ULL << 1),
+};
+
 constexpr double PPC_NAN = std::numeric_limits<double>::quiet_NaN();
 
 // the 4 less-significand bits in FPSCR[FPRF]
@@ -51,6 +71,16 @@ inline void SetFPException(PowerPC::PowerPCState& ppc_state, u32 mask)
   UpdateFPExceptionSummary(ppc_state);
 }
 
+// PrimeHack for iPad: ArmCPUDetect.cpp sets this host capability unconditionally in Detect().
+inline bool HostSupportsFlushToZero()
+{
+#if defined(_M_ARM_64)
+  return true;
+#else
+  return cpu_info.bFlushToZero;
+#endif
+}
+
 inline float ForceSingle(const UReg_FPSCR& fpscr, double value)
 {
   if (fpscr.NI)
@@ -73,7 +103,7 @@ inline float ForceSingle(const UReg_FPSCR& fpscr, double value)
   // Emulate standard conversion to single precision.
 
   float x = static_cast<float>(value);
-  if (!cpu_info.bFlushToZero && fpscr.NI)
+  if (!HostSupportsFlushToZero() && fpscr.NI)
   {
     x = Common::FlushToZero(x);
   }
@@ -82,7 +112,7 @@ inline float ForceSingle(const UReg_FPSCR& fpscr, double value)
 
 inline double ForceDouble(const UReg_FPSCR& fpscr, double d)
 {
-  if (!cpu_info.bFlushToZero && fpscr.NI)
+  if (!HostSupportsFlushToZero() && fpscr.NI)
   {
     d = Common::FlushToZero(d);
   }
@@ -141,35 +171,71 @@ struct FPResult
   FPSCRExceptionFlag exception{};
 };
 
+// PrimeHack for iPad: keep NaN handling out of the finite arithmetic path.
+[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_mul_nan(PowerPC::PowerPCState& ppc_state,
+                                                           double a, double b)
+{
+  FPResult result;
+  if (Common::IsSNAN(a) || Common::IsSNAN(b))
+  {
+    result.SetException(ppc_state, FPSCR_VXSNAN);
+  }
+
+  ppc_state.fpscr.ClearFIFR();
+
+  if (std::isnan(a))
+  {
+    result.value = Common::MakeQuiet(a);
+    return result;
+  }
+  if (std::isnan(b))
+  {
+    result.value = Common::MakeQuiet(b);
+    return result;
+  }
+
+  result.value = PPC_NAN;
+  result.SetException(ppc_state, FPSCR_VXIMZ);
+  return result;
+}
+
 inline FPResult NI_mul(PowerPC::PowerPCState& ppc_state, double a, double b)
 {
   FPResult result{a * b};
 
-  if (std::isnan(result.value))
+  if (std::isnan(result.value)) [[unlikely]]
+    return NI_mul_nan(ppc_state, a, b);
+
+  return result;
+}
+
+// PrimeHack for iPad: keep NaN handling out of the finite arithmetic path.
+[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_div_nan(PowerPC::PowerPCState& ppc_state,
+                                                           double a, double b)
+{
+  FPResult result;
+  if (Common::IsSNAN(a) || Common::IsSNAN(b))
+    result.SetException(ppc_state, FPSCR_VXSNAN);
+
+  ppc_state.fpscr.ClearFIFR();
+
+  if (std::isnan(a))
   {
-    if (Common::IsSNAN(a) || Common::IsSNAN(b))
-    {
-      result.SetException(ppc_state, FPSCR_VXSNAN);
-    }
-
-    ppc_state.fpscr.ClearFIFR();
-
-    if (std::isnan(a))
-    {
-      result.value = Common::MakeQuiet(a);
-      return result;
-    }
-    if (std::isnan(b))
-    {
-      result.value = Common::MakeQuiet(b);
-      return result;
-    }
-
-    result.value = PPC_NAN;
-    result.SetException(ppc_state, FPSCR_VXIMZ);
+    result.value = Common::MakeQuiet(a);
+    return result;
+  }
+  if (std::isnan(b))
+  {
+    result.value = Common::MakeQuiet(b);
     return result;
   }
 
+  if (b == 0.0)
+    result.SetException(ppc_state, FPSCR_VXZDZ);
+  else if (std::isinf(a) && std::isinf(b))
+    result.SetException(ppc_state, FPSCR_VXIDI);
+
+  result.value = PPC_NAN;
   return result;
 }
 
@@ -185,32 +251,8 @@ inline FPResult NI_div(PowerPC::PowerPCState& ppc_state, double a, double b)
       return result;
     }
   }
-  else if (std::isnan(result.value))
-  {
-    if (Common::IsSNAN(a) || Common::IsSNAN(b))
-      result.SetException(ppc_state, FPSCR_VXSNAN);
-
-    ppc_state.fpscr.ClearFIFR();
-
-    if (std::isnan(a))
-    {
-      result.value = Common::MakeQuiet(a);
-      return result;
-    }
-    if (std::isnan(b))
-    {
-      result.value = Common::MakeQuiet(b);
-      return result;
-    }
-
-    if (b == 0.0)
-      result.SetException(ppc_state, FPSCR_VXZDZ);
-    else if (std::isinf(a) && std::isinf(b))
-      result.SetException(ppc_state, FPSCR_VXIDI);
-
-    result.value = PPC_NAN;
-    return result;
-  }
+  else if (std::isnan(result.value)) [[unlikely]]
+    return NI_div_nan(ppc_state, a, b);
 
   return result;
 }

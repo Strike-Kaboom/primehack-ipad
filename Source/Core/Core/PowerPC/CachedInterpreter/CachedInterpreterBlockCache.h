@@ -20,6 +20,9 @@ public:
 
   void DestroyBlock(JitBlock& block) override;
 
+  // PrimeHack for iPad: only remember targets whose translation lasts until cache invalidation.
+  bool CanCacheTarget(u32 pc, CPUEmuFeatureFlags flags) const;
+
   void ClearRangesToFree();
 
   const std::vector<std::pair<u8*, u8*>>& GetRangesToFree() const

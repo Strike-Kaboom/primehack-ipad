@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <bit>
 #include <cstddef>
 #include <span>
 #include <tuple>
@@ -80,14 +81,15 @@ struct PairedSingle
   u32 PS0AsU32() const { return static_cast<u32>(ps0); }
   u32 PS1AsU32() const { return static_cast<u32>(ps1); }
 
-  double PS0AsDouble() const;
-  double PS1AsDouble() const;
+  // PrimeHack for iPad: expose the raw lane moves to threaded FP handlers.
+  double PS0AsDouble() const { return std::bit_cast<double>(ps0); }
+  double PS1AsDouble() const { return std::bit_cast<double>(ps1); }
 
   void SetPS0(u64 value) { ps0 = value; }
-  void SetPS0(double value);
+  void SetPS0(double value) { ps0 = std::bit_cast<u64>(value); }
 
   void SetPS1(u64 value) { ps1 = value; }
-  void SetPS1(double value);
+  void SetPS1(double value) { ps1 = std::bit_cast<u64>(value); }
 
   void SetBoth(u64 lhs, u64 rhs)
   {

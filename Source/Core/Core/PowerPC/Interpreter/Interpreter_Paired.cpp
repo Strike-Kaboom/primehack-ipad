@@ -14,7 +14,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/FloatUtils.h"
 #include "Core/Config/MainSettings.h"
-#include "Core/PowerPC/Interpreter/Interpreter_FPUtils.h"
+#include "Core/PowerPC/Interpreter/Interpreter_FPInstructions.h"
 #include "Core/PowerPC/PowerPC.h"
 
 // ============================================================================
@@ -452,50 +452,22 @@ void Interpreter::ps_abs(Interpreter& interpreter, UGeckoInstruction inst)
 // These are just moves, double is OK.
 void Interpreter::ps_merge00(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-
-  ppc_state.ps[inst.FD].SetBoth(a.PS0AsDouble(), b.PS0AsDouble());
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_merge00<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_merge01(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-
-  ppc_state.ps[inst.FD].SetBoth(a.PS0AsDouble(), b.PS1AsDouble());
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_merge01<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_merge10(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-
-  ppc_state.ps[inst.FD].SetBoth(a.PS1AsDouble(), b.PS0AsDouble());
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_merge10<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_merge11(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-
-  ppc_state.ps[inst.FD].SetBoth(a.PS1AsDouble(), b.PS1AsDouble());
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_merge11<true>(interpreter.m_ppc_state, inst);
 }
 
 // From here on, the real deal.
@@ -580,9 +552,10 @@ void Interpreter::ps_rsqrte(Interpreter& interpreter, UGeckoInstruction inst)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_sub(Interpreter& interpreter, UGeckoInstruction inst)
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_sub(PowerPC::PowerPCState& ppc_state, Inst inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
 
@@ -612,7 +585,8 @@ void Interpreter::ps_sub(Interpreter& interpreter, UGeckoInstruction inst)
         }
 
         ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-        ppc_state.UpdateFPRFSingle(ps0);
+        if constexpr (fprf)
+          ppc_state.UpdateFPRFSingle(ps0);
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Sub);
@@ -633,15 +607,22 @@ void Interpreter::ps_sub(Interpreter& interpreter, UGeckoInstruction inst)
       ForceSingle(ppc_state.fpscr, NI_sub(ppc_state, a.PS1AsDouble(), b.PS1AsDouble()).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_add(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_sub(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_sub<true>(interpreter.m_ppc_state, inst);
+}
+
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_add(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
 
@@ -671,7 +652,8 @@ void Interpreter::ps_add(Interpreter& interpreter, UGeckoInstruction inst)
         }
 
         ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-        ppc_state.UpdateFPRFSingle(ps0);
+        if constexpr (fprf)
+          ppc_state.UpdateFPRFSingle(ps0);
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Add);
@@ -692,15 +674,22 @@ void Interpreter::ps_add(Interpreter& interpreter, UGeckoInstruction inst)
       ForceSingle(ppc_state.fpscr, NI_add(ppc_state, a.PS1AsDouble(), b.PS1AsDouble()).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_mul(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_add(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_add<true>(interpreter.m_ppc_state, inst);
+}
+
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_mul(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& c = ppc_state.ps[inst.FC];
 
@@ -731,7 +720,8 @@ void Interpreter::ps_mul(Interpreter& interpreter, UGeckoInstruction inst)
         }
 
         ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-        ppc_state.UpdateFPRFSingle(ps0);
+        if constexpr (fprf)
+          ppc_state.UpdateFPRFSingle(ps0);
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Mul);
@@ -753,15 +743,22 @@ void Interpreter::ps_mul(Interpreter& interpreter, UGeckoInstruction inst)
   const float ps1 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS1AsDouble(), c1).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_msub(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_mul(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_mul<true>(interpreter.m_ppc_state, inst);
+}
+
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_msub(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
   const auto& c = ppc_state.ps[inst.FC];
@@ -790,7 +787,8 @@ void Interpreter::ps_msub(Interpreter& interpreter, UGeckoInstruction inst)
       }
 
       ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-      ppc_state.UpdateFPRFSingle(ps0);
+      if constexpr (fprf)
+        ppc_state.UpdateFPRFSingle(ps0);
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -806,15 +804,22 @@ void Interpreter::ps_msub(Interpreter& interpreter, UGeckoInstruction inst)
       NI_msub<true>(ppc_state, a.PS1AsDouble(), c.PS1AsDouble(), b.PS1AsDouble()).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_madd(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_msub(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_msub<true>(interpreter.m_ppc_state, inst);
+}
+
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_madd(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
   const auto& c = ppc_state.ps[inst.FC];
@@ -843,7 +848,8 @@ void Interpreter::ps_madd(Interpreter& interpreter, UGeckoInstruction inst)
       }
 
       ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-      ppc_state.UpdateFPRFSingle(ps0);
+      if constexpr (fprf)
+        ppc_state.UpdateFPRFSingle(ps0);
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -859,10 +865,16 @@ void Interpreter::ps_madd(Interpreter& interpreter, UGeckoInstruction inst)
       NI_madd<true>(ppc_state, a.PS1AsDouble(), c.PS1AsDouble(), b.PS1AsDouble()).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
+}
+
+void Interpreter::ps_madd(Interpreter& interpreter, UGeckoInstruction inst)
+{
+  InterpreterFP::ps_madd<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
@@ -991,20 +1003,7 @@ void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
 
 void Interpreter::ps_sum0(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-  const auto& c = ppc_state.ps[inst.FC];
-
-  const float ps0 =
-      ForceSingle(ppc_state.fpscr, NI_add(ppc_state, a.PS0AsDouble(), b.PS1AsDouble()).value);
-  const float ps1 = ForceSingle(ppc_state.fpscr, c.PS1AsDouble());
-
-  ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_sum0<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_sum1(Interpreter& interpreter, UGeckoInstruction inst)
@@ -1025,9 +1024,10 @@ void Interpreter::ps_sum1(Interpreter& interpreter, UGeckoInstruction inst)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_muls0(Interpreter& interpreter, UGeckoInstruction inst)
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_muls0(PowerPC::PowerPCState& ppc_state, Inst inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
   const auto& a = ppc_state.ps[inst.FA];
   const auto& c = ppc_state.ps[inst.FC];
 
@@ -1057,7 +1057,8 @@ void Interpreter::ps_muls0(Interpreter& interpreter, UGeckoInstruction inst)
         }
 
         ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-        ppc_state.UpdateFPRFSingle(ps0);
+        if constexpr (fprf)
+          ppc_state.UpdateFPRFSingle(ps0);
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Muls0);
@@ -1077,15 +1078,22 @@ void Interpreter::ps_muls0(Interpreter& interpreter, UGeckoInstruction inst)
   const float ps1 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS1AsDouble(), c0).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_muls1(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_muls0(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_muls0<true>(interpreter.m_ppc_state, inst);
+}
+
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_muls1(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& c = ppc_state.ps[inst.FC];
 
@@ -1115,7 +1123,8 @@ void Interpreter::ps_muls1(Interpreter& interpreter, UGeckoInstruction inst)
         }
 
         ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-        ppc_state.UpdateFPRFSingle(ps0);
+        if constexpr (fprf)
+          ppc_state.UpdateFPRFSingle(ps0);
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Muls1);
@@ -1135,15 +1144,22 @@ void Interpreter::ps_muls1(Interpreter& interpreter, UGeckoInstruction inst)
   const float ps1 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS1AsDouble(), c1).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_madds0(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_muls1(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_muls1<true>(interpreter.m_ppc_state, inst);
+}
+
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_madds0(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
   const auto& c = ppc_state.ps[inst.FC];
@@ -1173,7 +1189,8 @@ void Interpreter::ps_madds0(Interpreter& interpreter, UGeckoInstruction inst)
       }
 
       ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-      ppc_state.UpdateFPRFSingle(ps0);
+      if constexpr (fprf)
+        ppc_state.UpdateFPRFSingle(ps0);
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -1189,15 +1206,22 @@ void Interpreter::ps_madds0(Interpreter& interpreter, UGeckoInstruction inst)
       NI_madd<true>(ppc_state, a.PS1AsDouble(), c.PS0AsDouble(), b.PS1AsDouble()).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_madds1(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_madds0(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_madds0<true>(interpreter.m_ppc_state, inst);
+}
+
+// PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_madds1(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
   const auto& c = ppc_state.ps[inst.FC];
@@ -1227,7 +1251,8 @@ void Interpreter::ps_madds1(Interpreter& interpreter, UGeckoInstruction inst)
       }
 
       ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-      ppc_state.UpdateFPRFSingle(ps0);
+      if constexpr (fprf)
+        ppc_state.UpdateFPRFSingle(ps0);
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -1243,10 +1268,16 @@ void Interpreter::ps_madds1(Interpreter& interpreter, UGeckoInstruction inst)
       NI_madd<true>(ppc_state, a.PS1AsDouble(), c.PS1AsDouble(), b.PS1AsDouble()).value);
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
+}
+
+void Interpreter::ps_madds1(Interpreter& interpreter, UGeckoInstruction inst)
+{
+  InterpreterFP::ps_madds1<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_cmpu0(Interpreter& interpreter, UGeckoInstruction inst)
@@ -1284,3 +1315,26 @@ void Interpreter::ps_cmpo1(Interpreter& interpreter, UGeckoInstruction inst)
 
   Helper_FloatCompareOrdered(ppc_state, inst, a.PS1AsDouble(), b.PS1AsDouble());
 }
+
+// PrimeHack for iPad: decoded Rc=0 entry points used by the cached interpreter.
+namespace InterpreterFP
+{
+template void ps_madd<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_madd<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_mul<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_mul<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_madds0<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_madds0<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_madds1<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_madds1<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_muls0<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_muls0<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_muls1<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_muls1<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_add<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_add<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_sub<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_sub<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_msub<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_msub<true>(PowerPC::PowerPCState&, Decoded);
+}  // namespace InterpreterFP

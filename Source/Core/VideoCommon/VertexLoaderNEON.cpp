@@ -76,16 +76,6 @@ void TexMtx_Write_Float3(VertexLoader* loader)
   DataWrite(float(loader->m_curtexmtx[loader->m_texmtxwrite++]));
 }
 
-// Mirror of VertexLoader.cpp:56-65
-void SkipVertex(VertexLoader* loader)
-{
-  if (loader->m_vertexSkip)
-  {
-    g_vertex_manager_write_ptr -= loader->m_native_vtx_decl.stride;
-    loader->m_skippedVertices++;
-  }
-}
-
 // ===========================================================================
 //  Phase 2: NEON direct-attribute decoders.
 //
@@ -319,6 +309,36 @@ void Pos_ReadIndex_Local(VertexLoader* loader)
   g_vertex_manager_write_ptr = dst;
 }
 
+// PrimeHack for iPad: the profiled N-only formats read exactly one index and three values.
+// A full NEON load from the guest array would overread the last six-byte normal.
+template <typename I, typename T>
+void Normal_ReadIndex_Local(VertexLoader* loader)
+{
+  const u8* src = g_video_buffer_read_ptr;
+  const u32 index = ReadIndexLocal<I>(src);
+  const u8* data = VertexLoaderManager::cached_arraybases[CPArray::Normal] +
+                   index * g_main_cp_state.array_strides[CPArray::Normal];
+  float values[4];
+  if constexpr (std::is_same_v<T, s16>)
+  {
+    u8 bytes[8]{};
+    std::memcpy(bytes, data, 3 * sizeof(s16));
+    const int16x4_t lanes = vreinterpret_s16_u8(vrev16_u8(vld1_u8(bytes)));
+    // Scalar FracAdjust divides signed shorts by 2^14, exact for every s16.
+    vst1q_f32(values, vcvtq_n_f32_s32(vmovl_s16(lanes), 14));
+  }
+  else
+  {
+    for (int i = 0; i < 3; ++i)
+      values[i] = ReadArrayElement<float>(data, i);
+  }
+  if (loader->m_remaining == 0)
+    std::memcpy(VertexLoaderManager::normal_cache.data(), values, 3 * sizeof(float));
+  std::memcpy(g_vertex_manager_write_ptr, values, 3 * sizeof(float));
+  g_vertex_manager_write_ptr += 3 * sizeof(float);
+  g_video_buffer_read_ptr = src;
+}
+
 // Mirror of VertexLoader_TextCoord.cpp TexCoord_ReadIndex<I, T, N> (TCScale: float unscaled).
 template <typename I, typename T, int N>
 void TexCoord_ReadIndex_Local(VertexLoader* loader)
@@ -493,12 +513,22 @@ void VertexLoaderNEON::BuildPipeline()
   }
 
   // -- Normals (VertexLoader.cpp:113-137) ------------------------------------
-  // Always scalar fallback: normals are frequently indexed (NormalIndex3) and
-  // populate normal/tangent/binormal caches via a single canonical path.
   if (desc.low.Normal != VertexComponentFormat::NotPresent)
   {
-    TPipelineFunction pFunc = VertexLoader_Normal::GetFunction(
-        desc.low.Normal, attr.g0.NormalFormat, attr.g0.NormalElements, attr.g0.NormalIndex3);
+    TPipelineFunction pFunc = nullptr;
+#if defined(_M_ARM_64)
+    if (IsIndexed(desc.low.Normal) && attr.g0.NormalElements == NormalComponentCount::N)
+    {
+      const bool index8 = desc.low.Normal == VertexComponentFormat::Index8;
+      if (attr.g0.NormalFormat == ComponentFormat::Short)
+        pFunc = index8 ? Normal_ReadIndex_Local<u8, s16> : Normal_ReadIndex_Local<u16, s16>;
+      else if (attr.g0.NormalFormat == ComponentFormat::Float)
+        pFunc = index8 ? Normal_ReadIndex_Local<u8, float> : Normal_ReadIndex_Local<u16, float>;
+    }
+#endif
+    if (!pFunc)
+      pFunc = VertexLoader_Normal::GetFunction(desc.low.Normal, attr.g0.NormalFormat,
+                                               attr.g0.NormalElements, attr.g0.NormalIndex3);
     WriteCall(pFunc);
   }
 
@@ -586,10 +616,6 @@ void VertexLoaderNEON::BuildPipeline()
         break;
     }
   }
-
-  // -- Indexed position may skip the vertex (VertexLoader.cpp:242-246) --------
-  if (IsIndexed(desc.low.Position))
-    WriteCall(SkipVertex);
 }
 
 // ===========================================================================
@@ -603,6 +629,7 @@ int VertexLoaderNEON::RunVertices(const u8* src, u8* dst, int count)
 
   m_numLoadedVertices += count;
   m_ctx.m_skippedVertices = 0;
+  const bool indexed_position = IsIndexed(m_VtxDesc.low.Position);
 
   for (m_ctx.m_remaining = count - 1; m_ctx.m_remaining >= 0; m_ctx.m_remaining--)
   {
@@ -611,6 +638,12 @@ int VertexLoaderNEON::RunVertices(const u8* src, u8* dst, int count)
     m_ctx.m_texmtxwrite = m_ctx.m_texmtxread = 0;
     for (TPipelineFunction& func : m_pipeline)
       func(&m_ctx);
+    // PrimeHack for iPad: rewind after every attribute (including its cache writes) has run.
+    if (indexed_position && m_ctx.m_vertexSkip)
+    {
+      g_vertex_manager_write_ptr -= m_ctx.m_native_vtx_decl.stride;
+      ++m_ctx.m_skippedVertices;
+    }
   }
 
   return count - m_ctx.m_skippedVertices;

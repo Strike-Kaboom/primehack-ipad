@@ -120,9 +120,12 @@ void JitInterface::UpdateMembase()
 
 static std::string_view GetDescription(const CPUEmuFeatureFlags flags)
 {
-  static constexpr std::array<std::string_view, (FEATURE_FLAG_END_OF_ENUMERATION - 1) << 1>
+  static constexpr std::array<std::string_view, NUM_CPU_FEATURE_FLAG_COMBINATIONS>
       descriptions = {
           "", "DR", "IR", "DR|IR", "PERFMON", "DR|PERFMON", "IR|PERFMON", "DR|IR|PERFMON",
+          // PrimeHack for iPad: FP-enabled counterparts in the same bit order.
+          "FP", "DR|FP", "IR|FP", "DR|IR|FP", "PERFMON|FP", "DR|PERFMON|FP",
+          "IR|PERFMON|FP", "DR|IR|PERFMON|FP",
       };
   return descriptions[flags];
 }

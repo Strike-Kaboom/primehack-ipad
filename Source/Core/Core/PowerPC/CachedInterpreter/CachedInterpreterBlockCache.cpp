@@ -6,6 +6,7 @@
 #include "Core/PowerPC/CachedInterpreter/CachedInterpreter.h"
 #include "Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h"
 #include "Core/PowerPC/JitCommon/JitBase.h"
+#include "Core/PowerPC/MMU.h"
 
 CachedInterpreterBlockCache::CachedInterpreterBlockCache(JitBase& jit) : JitBaseBlockCache{jit}
 {
@@ -25,6 +26,13 @@ void CachedInterpreterBlockCache::DestroyBlock(JitBlock& block)
 
   if (block.near_begin != block.near_end)
     m_ranges_to_free_on_next_codegen.emplace_back(block.near_begin, block.near_end);
+}
+
+// PrimeHack for iPad: IBATUpdated destroys the blocks. Page-table/TLB updates need not do so.
+bool CachedInterpreterBlockCache::CanCacheTarget(u32 pc, CPUEmuFeatureFlags flags) const
+{
+  return !(flags & FEATURE_FLAG_MSR_IR) ||
+         (m_jit.m_mmu.GetIBATTable()[pc >> PowerPC::BAT_INDEX_SHIFT] & PowerPC::BAT_MAPPED_BIT);
 }
 
 void CachedInterpreterBlockCache::ClearRangesToFree()
@@ -47,7 +55,7 @@ void CachedInterpreterBlockCache::WriteLinkBlock(const JitBlock::LinkData& sourc
   //     block's code memory is freed/poisoned. This is the path that prevents a stale rel from ever
   //     pointing into reclaimed code: every block-freeing route (Clear, ErasePhysicalRange,
   //     EraseSingleBlock) funnels through DestroyBlock -> UnlinkBlock -> WriteLinkBlock(.., nullptr).
-  if (!dest)
+  if (!dest || !CanCacheTarget(dest->effectiveAddress, dest->feature_flags))
   {
     CachedInterpreter::PatchLinkBlockRel(source.exitPtrs, 0);
     return;

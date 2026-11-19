@@ -35,7 +35,7 @@
 #include "Core/Host.h"
 #include "Core/PowerPC/Gekko.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
-#include "Core/PowerPC/Interpreter/Interpreter_FPUtils.h"
+#include "Core/PowerPC/Interpreter/Interpreter_FPInstructions.h"
 #include "Core/PowerPC/Jit64Common/Jit64Constants.h"
 #include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/MMU.h"
@@ -415,7 +415,7 @@ static constexpr u32 kCIRDynKinds = static_cast<u32>(CIRDynExitKind::COUNT);
 static u64 s_dyn_hits_by_kind[kCIRDynKinds] = {};
 static u64 s_dyn_miss_by_kind_reason[kCIRDynKinds][4] = {};
 
-// iCube 2026-09-23: GLOBAL INDIRECT-TARGET CACHE (MAIN_CIR_DYN_TARGET_CACHE, default OFF).
+// PrimeHack for iPad: global indirect-target cache (MAIN_CIR_DYN_TARGET_CACHE).
 //
 // Measured on NFS: Underground with the census above: 100% of dyn-link misses are `pc-changed` (0%
 // cold, 0% generation), and `blr` alone is 97.3M of the 98.5M misses — a 73.4% hit rate on returns
@@ -1790,8 +1790,9 @@ void CachedInterpreter::Init()
   s_validate_instance = s_block_linking_validate ? this : nullptr;
   s_dyn_linking = s_block_linking && Config::Get(Config::MAIN_CIR_DYN_LINKING);
   s_dyn_fill_slot = nullptr;
-  ++s_dyn_generation;
-  s_dyn_target_cache = Config::Get(Config::MAIN_CIR_DYN_TARGET_CACHE);
+  // PrimeHack for iPad: a new tape has no surviving per-site entries.
+  s_dyn_generation = 1;
+  s_dyn_target_cache = s_dyn_linking && Config::Get(Config::MAIN_CIR_DYN_TARGET_CACHE);
   std::memset(s_target_cache, 0, sizeof(s_target_cache));
   s_dyn_global_hits = 0;
   s_dyn_hits = 0;
@@ -1876,6 +1877,9 @@ void CachedInterpreter::Init()
 
 void CachedInterpreter::Shutdown()
 {
+  // PrimeHack for iPad: retire pending writers and targets before releasing core resources.
+  BumpDynLinkGeneration();
+  s_validate_instance = nullptr;
   PowerPC::g_fprf_updates_off = false;
   m_block_cache.Shutdown();
 }
@@ -1926,6 +1930,11 @@ void CachedInterpreter::ExecuteOneBlock(const CPU::State* state_ptr)
   // record exactly that pairing. Self-consistent even if an exception moved pc in between: a wrong
   // guess costs one future miss, never a wrong stream. Any DestroyBlock since the miss cleared the
   // slot (BumpDynLinkGeneration), so this can never write into freed tape.
+  // PrimeHack for iPad: a page-table remap can change this PC without destroying its old block.
+  const bool cache_target = (s_dyn_target_cache || s_dyn_fill_slot != nullptr) &&
+                            m_block_cache.CanCacheTarget(ppc_state.pc, ppc_state.feature_flags);
+  if (!cache_target)
+    s_dyn_fill_slot = nullptr;
   if (s_dyn_fill_slot != nullptr) [[unlikely]]
   {
     auto* slot = static_cast<LinkBlockOperands*>(s_dyn_fill_slot);
@@ -1939,7 +1948,7 @@ void CachedInterpreter::ExecuteOneBlock(const CPU::State* state_ptr)
   // iCube: fill the GLOBAL indirect-target cache (MAIN_CIR_DYN_TARGET_CACHE). Done on EVERY dispatcher
   // entry, not only after a published miss, so the table is warm for exits that have never missed yet.
   // One tag write per dispatch, which is noise next to the dispatch itself.
-  if (s_dyn_target_cache)
+  if (cache_target && s_dyn_target_cache)
   {
     CIRTargetCacheEntry& slot = s_target_cache[CIR_TargetCacheIndex(ppc_state.pc)];
     slot.pc = ppc_state.pc;
@@ -2107,6 +2116,13 @@ s32 CachedInterpreter::LinkBlock(PowerPC::PowerPCState& ppc_state, const void* p
   {
     ppc_state.npc = LR(ppc_state) & ~u32{3};
   }
+  // PrimeHack for iPad: bcctrx masks the low two CTR bits and leaves CTR unchanged.
+  else if constexpr (terminal == 4 || terminal == 5)
+  {
+    ppc_state.npc = CTR(ppc_state) & ~u32{3};
+    if constexpr (terminal == 5)
+      LR(ppc_state) = operands.lr_value;
+  }
   else if constexpr (terminal >= 2)
   {
     if constexpr (terminal == 3)
@@ -2161,9 +2177,13 @@ s32 CachedInterpreter::LinkBlock(PowerPC::PowerPCState& ppc_state, const void* p
   // the wrong stream, it costs one dispatcher round-trip.
   // edge 2 has no static edge (expected_pc == UINT32_MAX, rel never patched); edge 1's terminal is
   // unconditional, so npc always equals expected_pc and only "not linked yet" sends it to the cache.
-  s32 rel = edge == 2 ? 0 : operands.rel;
+  // PrimeHack for iPad: a static patch is valid only under its source block's feature key.
+  s32 rel = edge == 2 || operands.feature_flags != ppc_state.feature_flags ? 0 : operands.rel;
   if (edge == 2 || rel == 0 || (edge == 0 && ppc_state.pc != operands.expected_pc))
   {
+    // PrimeHack for iPad: after generation rollover, dispatch until a fresh tape is allocated.
+    if (s_dyn_generation == 0) [[unlikely]]
+      return 0;
     if (operands.dyn_rel == 0 || operands.dyn_pc != ppc_state.pc ||
         operands.dyn_generation != s_dyn_generation ||
         operands.dyn_flags != static_cast<u32>(ppc_state.feature_flags))
@@ -2288,6 +2308,10 @@ CachedInterpreter::AnyCallback CachedInterpreter::GetLinkBlockCallback(int edge,
     return CI_LINK_FORM(2, 0);
   if (edge == 2 && terminal == 1)
     return CI_LINK_FORM(2, 1);
+  if (edge == 2 && terminal == 4)
+    return CI_LINK_FORM(2, 4);
+  if (edge == 2 && terminal == 5)
+    return CI_LINK_FORM(2, 5);
 #undef CI_LINK_FORM
   return nullptr;
 }
@@ -2319,7 +2343,9 @@ void CachedInterpreter::ValidateLinkTarget(const PowerPC::PowerPCState& ppc_stat
 
 void CachedInterpreter::BumpDynLinkGeneration()
 {
-  ++s_dyn_generation;
+  // PrimeHack for iPad: zero disables both cache probes until Init. Never recycle a live tag.
+  if (s_dyn_generation != 0)
+    ++s_dyn_generation;
   s_dyn_fill_slot = nullptr;
 }
 
@@ -2342,18 +2368,11 @@ void CachedInterpreter::PatchLinkBlockRel(u8* exit_ptrs, s32 rel)
   operands->rel = rel;
 }
 
-// iCube 2026-09-17: conditional branch terminal. Chibi-Robo (core 5, Time Profiler) spent 8.2 % of the
-// emulation thread inside Interpreter::bcx reached through the generic Interpret<true> record's
-// indirect call. Same math as Interpreter::bcx (CTR decrement per BO, counter/condition tests, LK,
-// AA/relative target) with the branch-watch hooks omitted — only emitted when debugging is off, so
-// branch watch can never be recording. Payload and return are identical to Interpret<true>.
-template <bool chain>
-s32 CachedInterpreter::InterpretBcx(PowerPC::PowerPCState& ppc_state, const void* payload)
+// PrimeHack for iPad: use the ordinary bc implementation as the fused branch validator.
+static void CI_InterpretBcx(PowerPC::PowerPCState& ppc_state, u32 pc, UGeckoInstruction inst)
 {
-  const auto& operands = *static_cast<const InterpretOperands*>(payload);
-  const UGeckoInstruction inst = operands.inst;
-  ppc_state.pc = operands.current_pc;
-  ppc_state.npc = operands.current_pc + 4;
+  ppc_state.pc = pc;
+  ppc_state.npc = pc + 4;
   if ((inst.BO & BO_DONT_DECREMENT_FLAG) == 0)
     CTR(ppc_state)--;
   const bool true_false = ((inst.BO >> 3) & 1) != 0;
@@ -2371,6 +2390,18 @@ s32 CachedInterpreter::InterpretBcx(PowerPC::PowerPCState& ppc_state, const void
       destination_addr += ppc_state.pc;
     ppc_state.npc = destination_addr;
   }
+}
+
+// iCube 2026-09-17: conditional branch terminal. Chibi-Robo (core 5, Time Profiler) spent 8.2 % of the
+// emulation thread inside Interpreter::bcx reached through the generic Interpret<true> record's
+// indirect call. Same math as Interpreter::bcx (CTR decrement per BO, counter/condition tests, LK,
+// AA/relative target) with the branch-watch hooks omitted — only emitted when debugging is off, so
+// branch watch can never be recording. Payload and return are identical to Interpret<true>.
+template <bool chain>
+s32 CachedInterpreter::InterpretBcx(PowerPC::PowerPCState& ppc_state, const void* payload)
+{
+  const auto& operands = *static_cast<const InterpretOperands*>(payload);
+  CI_InterpretBcx(ppc_state, operands.current_pc, operands.inst);
   CI_CHAIN_EXIT(chain, payload, sizeof(InterpretOperands));
 }
 
@@ -2819,7 +2850,13 @@ inline bool CI_TryGatherPipeStore(PowerPC::PowerPCState& ppc_state, UGeckoInstru
     else if constexpr (kind == CIMemKind::STFS)
       s_gpfifo->FastWrite32(ConvertToSingle(ppc_state.ps[inst.FS].PS0AsU64()));
     else
-      s_gpfifo->FastWrite64(ppc_state.ps[inst.FS].PS0AsU64());
+    {
+      // PrimeHack for iPad: the MMU splits a double into two ordered 32-bit writes.
+      const u64 bits = ppc_state.ps[inst.FS].PS0AsU64();
+      s_gpfifo->FastWrite32(static_cast<u32>(bits >> 32));
+      s_gpfifo->FastCheckGatherPipe();
+      s_gpfifo->FastWrite32(static_cast<u32>(bits));
+    }
     s_gpfifo->FastCheckGatherPipe();
     return true;
   }
@@ -2830,6 +2867,35 @@ inline bool CI_TryGatherPipeStore(PowerPC::PowerPCState& ppc_state, UGeckoInstru
 }
 }  // namespace
 
+// PrimeHack for iPad: check both words before the first FIFO write. MMU::Write<u64> writes
+// the high word and checks for a burst before writing the low word.
+static bool CI_TryPsqGatherStore(PowerPC::PowerPCState& ppc_state, UGeckoInstruction inst)
+{
+  const bool indexed = inst.OPCD == 4;
+  if (indexed ? inst.SUBOP6 != 7 : inst.OPCD != 60)
+    return false;  // psq_stx or psq_st only
+  const UGQR gqr(ppc_state.spr[SPR_GQR0 + (indexed ? inst.Ix : inst.I)]);
+  if (HID2(ppc_state).LSQE == 0 || gqr.st_type != QUANTIZE_FLOAT)
+    return false;
+  const u32 ea = ppc_state.gpr[inst.RA] +
+                 (indexed ? ppc_state.gpr[inst.RB] : static_cast<u32>(s32{inst.SIMM_12}));
+  const bool single = (indexed ? inst.Wx : inst.W) != 0;
+  if ((ea & 3) || (ea & 0xfff) > 0x1000u - (single ? 4u : 8u) ||
+      !CI_IsGatherPipeWrite(ppc_state, ea))
+    return false;
+  const auto& ps = ppc_state.ps[inst.RS];
+  const u32 first = ConvertToSingleFTZ(ps.PS0AsU64());
+  const u32 second = single ? 0 : ConvertToSingleFTZ(ps.PS1AsU64());
+  s_gpfifo->FastWrite32(first);
+  s_gpfifo->FastCheckGatherPipe();
+  if (!single)
+  {
+    s_gpfifo->FastWrite32(second);
+    s_gpfifo->FastCheckGatherPipe();
+  }
+  return true;
+}
+
 // Everything the direct path declines. Takes only the record (so it can carry the chain on) and
 // re-derives the effective address from the instruction word; this is the cold path.
 template <CIMemKind kind, bool chain, bool checked>
@@ -2838,6 +2904,12 @@ template <CIMemKind kind, bool chain, bool checked>
 {
   using Record = std::conditional_t<checked, InterpretAndCheckExceptionsOperands, InterpretOperands>;
   const Record& operands = *static_cast<const Record*>(payload);
+  if constexpr (kind == CIMemKind::PSQST)
+  {
+    if ((!checked || !(ppc_state.Exceptions & (EXCEPTION_DSI | EXCEPTION_PROGRAM))) &&
+        CI_TryPsqGatherStore(ppc_state, operands.inst))
+      CI_CHAIN_EXIT(chain, payload, sizeof(Record));
+  }
   if constexpr (kind == CIMemKind::STW || kind == CIMemKind::STB || kind == CIMemKind::STH ||
                 kind == CIMemKind::STFS || kind == CIMemKind::STFD)
   {
@@ -2884,7 +2956,8 @@ s32 CachedInterpreter::LoadStoreFast(PowerPC::PowerPCState& ppc_state, const voi
   else
     ea += ppc_state.gpr[inst.RA];
   u8* const page = CI_PagePtr(ppc_state, ea);
-  if (page == nullptr || (ea & CI_AlignMask(kind)) != 0) [[unlikely]]
+  // PrimeHack for iPad: quantized integer loads use their own width-dependent alignment.
+  if (page == nullptr || (kind != CIMemKind::PSQL && (ea & CI_AlignMask(kind)) != 0)) [[unlikely]]
   {
     CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
   }
@@ -2973,8 +3046,7 @@ s32 CachedInterpreter::LoadStoreFast(PowerPC::PowerPCState& ppc_state, const voi
   case CIMemKind::PSQL:
   case CIMemKind::PSQST:
   {
-    // Interpreter_LoadStorePaired.cpp, QUANTIZE_FLOAT branch only (no scale is applied to floats).
-    // Every other quantization type, and LSQE off (program exception), goes to the generic handler.
+    // PrimeHack for iPad: floats use raw conversion. Integer loads use the shared scale table.
     const bool single = (indexed ? inst.Wx : inst.W) != 0;
     const UGQR gqr(ppc_state.spr[SPR_GQR0 + (indexed ? inst.Ix : inst.I)]);
     EQuantizeType type;
@@ -2982,7 +3054,37 @@ s32 CachedInterpreter::LoadStoreFast(PowerPC::PowerPCState& ppc_state, const voi
       type = gqr.ld_type;
     else
       type = gqr.st_type;
-    if (HID2(ppc_state).LSQE == 0 || type != QUANTIZE_FLOAT ||
+    // PrimeHack for iPad: defer pending faults and LSQE traps to the normal exception path.
+    if (HID2(ppc_state).LSQE == 0 || (ppc_state.Exceptions & EXCEPTION_DSI) ||
+        (checked && (ppc_state.Exceptions & EXCEPTION_PROGRAM))) [[unlikely]]
+      CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
+    if constexpr (kind == CIMemKind::PSQL)
+    {
+      if (type == QUANTIZE_U8 || type == QUANTIZE_S8 || type == QUANTIZE_U16 || type == QUANTIZE_S16)
+      {
+        const bool half = type == QUANTIZE_U16 || type == QUANTIZE_S16;
+        const u32 width = half ? 2 : 1;
+        if ((ea & (width - 1)) || offset > PowerPC::BAT_PAGE_SIZE - width * (single ? 1 : 2))
+          CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
+        const float scale = PAIRED_DEQUANTIZE_SCALE[gqr.ld_scale];
+        const auto lane = [type, half, scale](const u8* ptr) -> double {
+          int value;
+          if (half)
+          {
+            const u16 bits = Common::swap16(CI_ReadHost<u16>(ptr));
+            value = type == QUANTIZE_S16 ? static_cast<s16>(bits) : int(bits);
+          }
+          else
+          {
+            value = type == QUANTIZE_S8 ? static_cast<s8>(*ptr) : int(*ptr);
+          }
+          return static_cast<float>(value) * scale;
+        };
+        ppc_state.ps[inst.RD].SetBoth(lane(host), single ? 1.0 : lane(host + width));
+        break;
+      }
+    }
+    if (type != QUANTIZE_FLOAT || (ea & 3) ||
         (!single && offset > PowerPC::BAT_PAGE_SIZE - 2 * sizeof(u32))) [[unlikely]]
     {
       CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
@@ -3050,12 +3152,15 @@ s32 CachedInterpreter::LoadStoreFastChecked(std::ostream& stream, const void* pa
     {                                                                                              \
       const u8* const ci_exits = static_cast<const u8*>(payload) + sizeof(OPERANDS);               \
       const u8* const ci_target = taken ? ci_exits : ci_exits + operands.skip;                     \
-      std::uintptr_t ci_target_slot;                                                               \
-      std::memcpy(&ci_target_slot, ci_target, sizeof(ci_target_slot));                             \
-      if (s_chain_links && (ci_target_slot & CHAIN_TAG) != 0) [[likely]]                           \
+      if constexpr (chain)                                                                         \
       {                                                                                            \
-        CI_MUSTTAIL return reinterpret_cast<AnyCallback>(ci_target_slot - CHAIN_TAG)(              \
-            ppc_state, ci_target + sizeof(AnyCallback));                                           \
+        std::uintptr_t ci_target_slot;                                                             \
+        std::memcpy(&ci_target_slot, ci_target, sizeof(ci_target_slot));                           \
+        if ((ci_target_slot & CHAIN_TAG) != 0) [[likely]]                                          \
+        {                                                                                          \
+          CI_MUSTTAIL return reinterpret_cast<AnyCallback>(ci_target_slot - CHAIN_TAG)(            \
+              ppc_state, ci_target + sizeof(AnyCallback));                                         \
+        }                                                                                          \
       }                                                                                            \
       return static_cast<s32>(ci_target - s_chain_base);                                           \
     }                                                                                              \
@@ -3160,6 +3265,90 @@ s32 CachedInterpreter::CmpBranch(PowerPC::PowerPCState& ppc_state, const void* p
   CI_BRANCH_SUCCESSOR(CmpBranchOperands);
 }
 
+// PrimeHack for iPad: compare before writing branch PC, just as two separate records would.
+template <bool ordered, bool mid_block, bool chain, bool validate>
+s32 CachedInterpreter::FCmpBranch(PowerPC::PowerPCState& ppc_state, const void* payload)
+{
+  static_assert(sizeof(CmpBranchOperands) == 24 && alignof(CmpBranchOperands) <= alignof(AnyCallback));
+  const auto& operands = *static_cast<const CmpBranchOperands*>(payload);
+  const auto inst = operands.inst;
+  const u32 pc = operands.current_pc;
+  const auto compare = [&] {
+    return InterpreterFP::Compare<ordered>(ppc_state, operands.crfd,
+                                           ppc_state.ps[operands.ra].PS0AsDouble(),
+                                           ppc_state.ps[operands.rb].PS0AsDouble());
+  };
+  [[maybe_unused]] u32 reference_npc = 0;
+  u32 result;
+  if constexpr (validate)
+  {
+    const auto saved_cr = ppc_state.cr;
+    const u32 saved_fpscr = ppc_state.fpscr.Hex;
+    const u32 saved_exceptions = ppc_state.Exceptions;
+    const u32 saved_srr1 = SRR1(ppc_state);
+    const UGeckoInstruction original{operands.imm};
+    Interpreter::GetInterpreterOp(original)(*s_interpreter, original);
+    const auto reference_cr = ppc_state.cr;
+    const u32 reference_bit = ppc_state.cr.GetBit(inst.BI);
+    // The emitter only selects bc without LK or CTR updates. Save its PC effects for comparison.
+    const u32 saved_pc = ppc_state.pc;
+    const u32 saved_npc = ppc_state.npc;
+    CI_InterpretBcx(ppc_state, pc, inst);
+    reference_npc = ppc_state.npc;
+    ppc_state.pc = saved_pc;
+    ppc_state.npc = saved_npc;
+    const u32 reference_fpscr = ppc_state.fpscr.Hex;
+    const u32 reference_exceptions = ppc_state.Exceptions;
+    const u32 reference_srr1 = SRR1(ppc_state);
+    ppc_state.cr = saved_cr;
+    ppc_state.fpscr.Hex = saved_fpscr;
+    ppc_state.Exceptions = saved_exceptions;
+    SRR1(ppc_state) = saved_srr1;
+    result = compare();
+    ASSERT_MSG(DYNA_REC, std::ranges::equal(reference_cr.fields, ppc_state.cr.fields) &&
+                             reference_bit == ((result >> (3 - (inst.BI & 3))) & 1) &&
+                             reference_fpscr == ppc_state.fpscr.Hex &&
+                             reference_exceptions == ppc_state.Exceptions &&
+                             reference_srr1 == SRR1(ppc_state),
+               "FCmpBranch mismatch at branch PC {:#x}", pc);
+  }
+  else
+  {
+    result = compare();
+  }
+  const bool bit = (result & (8u >> (inst.BI & 3))) != 0;
+  const bool taken = bit == (((inst.BO >> 3) & 1) != 0);
+  u32 destination = static_cast<u32>(s32{static_cast<s16>(inst.BD << 2)});
+  if (!inst.AA)
+    destination += pc;
+  ppc_state.pc = pc;
+  ppc_state.npc = taken ? destination : pc + 4;
+  if constexpr (validate)
+    ASSERT_MSG(DYNA_REC, ppc_state.npc == reference_npc, "FCmpBranch target mismatch at {:#x}", pc);
+  CI_BRANCH_SUCCESSOR(CmpBranchOperands);
+}
+
+CachedInterpreter::AnyCallback CachedInterpreter::GetFCmpBranchCallback(bool ordered, bool mid_block,
+                                                                        bool chain, bool validate)
+{
+#define CI_FCMP(O, M, C) (validate ? AnyCallback{FCmpBranch<O, M, C, true>} :                      \
+                                     AnyCallback{FCmpBranch<O, M, C, false>})
+#define CI_FCMP_CHAIN(O, M) (chain ? CI_FCMP(O, M, true) : CI_FCMP(O, M, false))
+  if (ordered)
+    return mid_block ? CI_FCMP_CHAIN(true, true) : CI_FCMP_CHAIN(true, false);
+  return mid_block ? CI_FCMP_CHAIN(false, true) : CI_FCMP_CHAIN(false, false);
+#undef CI_FCMP_CHAIN
+#undef CI_FCMP
+}
+
+s32 CachedInterpreter::FCmpBranch(std::ostream& stream, const void* payload)
+{
+  const auto& operands = *static_cast<const CmpBranchOperands*>(payload);
+  fmt::println(stream, "FCmpBranch(compare={:#010x}, pc={:#010x}, bc={:#010x})", operands.imm,
+               operands.current_pc, operands.inst.hex);
+  return sizeof(AnyCallback) + sizeof(operands);
+}
+
 s32 CachedInterpreter::CmpBranch(std::ostream& stream, const void* payload)
 {
   const auto& operands = *static_cast<const CmpBranchOperands*>(payload);
@@ -3173,7 +3362,8 @@ CachedInterpreter::AnyCallback CachedInterpreter::GetCmpBranchCallback(int cmp, 
                                                                        bool mid_block, bool chain)
 {
 #define CI_CB_FORM(CMP, BIT)                                                                       \
-  (mid_block ? AnyCallback{CmpBranch<CMP, BIT, true, false>} :                                     \
+  (mid_block ? (chain ? AnyCallback{CmpBranch<CMP, BIT, true, true>} :                             \
+                        AnyCallback{CmpBranch<CMP, BIT, true, false>}) :                           \
    chain     ? AnyCallback{CmpBranch<CMP, BIT, false, true>} :                                     \
                AnyCallback{CmpBranch<CMP, BIT, false, false>})
 #define CI_CB_BITS(CMP)                                                                            \
@@ -3216,7 +3406,8 @@ CachedInterpreter::AnyCallback CachedInterpreter::GetBranchCondCallback(u32 cr_b
                                                                         bool chain)
 {
 #define CI_BC_FORM(BIT, CTRF, LRF)                                                                 \
-  (mid_block ? AnyCallback{BranchCond<BIT, CTRF, LRF, true, false>} :                             \
+  (mid_block ? (chain ? AnyCallback{BranchCond<BIT, CTRF, LRF, true, true>} :                      \
+                        AnyCallback{BranchCond<BIT, CTRF, LRF, true, false>}) :                    \
    chain     ? AnyCallback{BranchCond<BIT, CTRF, LRF, false, true>} :                             \
                AnyCallback{BranchCond<BIT, CTRF, LRF, false, false>})
 #define CI_BC_TARGET(BIT, CTRF) (to_lr ? CI_BC_FORM(BIT, CTRF, true) : CI_BC_FORM(BIT, CTRF, false))
@@ -3281,14 +3472,6 @@ s32 CachedInterpreter::CheckFPUChained(PowerPC::PowerPCState& ppc_state, const v
 s32 CachedInterpreter::EndBlockChained(PowerPC::PowerPCState& ppc_state, const void* payload)
 {
   return EndBlock<false>(ppc_state, *static_cast<const EndBlockOperands<false>*>(payload));
-}
-
-template <bool chain>
-s32 CachedInterpreter::ExecuteFusedPsqSeqChained(PowerPC::PowerPCState& ppc_state,
-                                                 const void* payload)
-{
-  ExecuteFusedPsqSeq<false>(ppc_state, *static_cast<const ExecuteFusedPsqSeqOperands*>(payload));
-  CI_CHAIN_EXIT(chain, payload, sizeof(ExecuteFusedPsqSeqOperands));
 }
 
 template <bool chain>
@@ -3386,11 +3569,48 @@ CachedInterpreter::AnyCallback CachedInterpreter::GetLoadStoreFastCallback(CIMem
 // lookup and the same fall-back rules as LoadStoreFast.
 namespace
 {
-template <bool indexed>
+template <bool indexed, bool zero_base = false>
 inline u32 CI_MicroMemEA(const PowerPC::PowerPCState& ppc_state, const MicroOpPayload& m)
 {
-  return ppc_state.gpr[m.ra] + (indexed ? ppc_state.gpr[m.rb] :
-                                          static_cast<u32>(s32{static_cast<s16>(m.imm)}));
+  const u32 base = zero_base && m.ra == 0 ? 0 : ppc_state.gpr[m.ra];
+  const u32 offset = indexed ? ppc_state.gpr[m.rb] : static_cast<u32>(s32{static_cast<s16>(m.imm)});
+  return base + offset;
+}
+
+// PrimeHack for iPad: use the interpreter decoder for A-form subopcodes (FC overlaps SUBOP10).
+std::optional<MicroOp> DecodeFPMicroOp(UGeckoInstruction inst, bool memory_enabled)
+{
+  MicroOpCode code;
+  if (inst.OPCD >= 48 && inst.OPCD <= 55)
+  {
+    if (!memory_enabled || (inst.OPCD & 1) != 0)
+      return std::nullopt;
+    switch (inst.OPCD)
+    {
+    case 48: code = MicroOpCode::MEM_LFS; break;
+    case 50: code = MicroOpCode::MEM_LFD; break;
+    case 52: code = MicroOpCode::MEM_STFS; break;
+    default: code = MicroOpCode::MEM_STFD; break;
+    }
+  }
+  else
+  {
+    if (inst.Rc)
+      return std::nullopt;
+    const auto func = Interpreter::GetInterpreterOp(inst);
+    const bool compare = func == &Interpreter::fcmpo || func == &Interpreter::fcmpu;
+    const u8 dst = compare ? u8(inst.CRFD) : u8(inst.FD);
+#define CI_DECODE_FP(name)                                                                         \
+    if (func == &Interpreter::name)                                                                \
+    {                                                                                              \
+      const auto op = PowerPC::g_fprf_updates_off ? MicroOpCode::name : MicroOpCode::name##_FPRF;  \
+      return MicroOp{op, dst, u8(inst.FA), u8(inst.FB), u8(inst.FC), inst.hex};                    \
+    }
+    CIR_FP_MICRO_OPS(CI_DECODE_FP)
+#undef CI_DECODE_FP
+    return std::nullopt;
+  }
+  return MicroOp{code, u8(inst.FD), u8(inst.FA), u8(inst.FB), u8(inst.FC), inst.hex};
 }
 
 // Returns false, with no side effect, when the access cannot take the direct path (MMIO, gather pipe,
@@ -3399,7 +3619,9 @@ inline u32 CI_MicroMemEA(const PowerPC::PowerPCState& ppc_state, const MicroOpPa
 template <CIMemKind kind, bool indexed, bool update>
 inline bool CI_MicroMemAccess(PowerPC::PowerPCState& ppc_state, const MicroOpPayload& m)
 {
-  const u32 ea = CI_MicroMemEA<indexed>(ppc_state, m);
+  constexpr bool fp = kind == CIMemKind::LFS || kind == CIMemKind::LFD ||
+                      kind == CIMemKind::STFS || kind == CIMemKind::STFD;
+  const u32 ea = CI_MicroMemEA<indexed, fp>(ppc_state, m);
   u8* const page = CI_PagePtr(ppc_state, ea);
   if (page == nullptr || (ea & CI_AlignMask(kind)) != 0) [[unlikely]]
     return false;
@@ -3432,6 +3654,28 @@ inline bool CI_MicroMemAccess(PowerPC::PowerPCState& ppc_state, const MicroOpPay
     break;
   case CIMemKind::STH:
     CI_WriteHost<u16>(host, Common::swap16(static_cast<u16>(ppc_state.gpr[m.rd])));
+    break;
+  // PrimeHack for iPad: same conversions, lane writes and alignment as the D-form interpreter.
+  case CIMemKind::LFS:
+    if (!(ppc_state.Exceptions & EXCEPTION_DSI))
+      ppc_state.ps[m.rd].Fill(ConvertToDouble(Common::swap32(CI_ReadHost<u32>(host))));
+    break;
+  case CIMemKind::STFS:
+    CI_WriteHost<u32>(host, Common::swap32(ConvertToSingle(ppc_state.ps[m.rd].PS0AsU64())));
+    break;
+  case CIMemKind::LFD:
+  case CIMemKind::STFD:
+    if ((ea & CI_PAGE_OFFSET_MASK) > PowerPC::BAT_PAGE_SIZE - sizeof(u64)) [[unlikely]]
+      return false;
+    if constexpr (kind == CIMemKind::LFD)
+    {
+      if (!(ppc_state.Exceptions & EXCEPTION_DSI))
+        ppc_state.ps[m.rd].SetPS0(Common::swap64(CI_ReadHost<u64>(host)));
+    }
+    else
+    {
+      CI_WriteHost<u64>(host, Common::swap64(ppc_state.ps[m.rd].PS0AsU64()));
+    }
     break;
   default:
     break;
@@ -3472,6 +3716,12 @@ template <CIMemKind kind, bool indexed, bool update>
       return;
   }
   const UGeckoInstruction inst{m.imm};
+  // PrimeHack for iPad: keep FIFO writes on the same path as full-size FP memory records.
+  if constexpr (kind == CIMemKind::STFS || kind == CIMemKind::STFD)
+  {
+    if (CI_TryGatherPipeStore<kind>(ppc_state, inst, CI_MicroMemEA<indexed, true>(ppc_state, m)))
+      return;
+  }
   Interpreter::GetInterpreterOp(inst)(*s_interpreter, inst);
 }
 
@@ -3516,6 +3766,25 @@ struct CachedInterpreter::MicroOpHandlers
   // [chain][MicroOpCode]; defined below in enum order. The emitter writes table[0][op] and lets
   // WriteChainable patch in table[1][op] when the next record is chain-capable.
   static const AnyCallback table[2][static_cast<size_t>(MicroOpCode::COUNT)];
+
+  // PrimeHack for iPad: FP instructions and their fused forms consume identical decoded operands.
+  using FPOp = void (*)(PowerPC::PowerPCState&, InterpreterFP::Decoded);
+  template <FPOp op>
+  static inline void FPBody(PowerPC::PowerPCState& ppc_state, const MicroOpPayload& m)
+  {
+    op(ppc_state, {m.rd, m.ra, m.rb, m.rc});
+  }
+
+  template <FPOp op, bool chain>
+  static s32 FloatingPoint(PowerPC::PowerPCState& ppc_state, const void* payload)
+  {
+    FPBody<op>(ppc_state, *static_cast<const MicroOpPayload*>(payload));
+    CI_MICRO_NEXT();
+  }
+
+  static_assert(sizeof(AnyCallback) + sizeof(MicroOpPayload) == 16);
+  static_assert(sizeof(AnyCallback) + 2 * sizeof(MicroOpPayload) == 24);
+  static_assert(alignof(MicroOpPayload) <= alignof(AnyCallback));
 
   static inline void CONST32_body(PowerPC::PowerPCState& ppc_state, const MicroOpPayload& m)
   {
@@ -4247,6 +4516,10 @@ struct CachedInterpreter::MicroOpHandlers
   CI_MICRO_MEM(MEM_STBX, STB, true, false)
   CI_MICRO_MEM(MEM_STHX, STH, true, false)
   CI_MICRO_MEM(MEM_LWZU, LWZ, false, true)
+  CI_MICRO_MEM(MEM_LFS, LFS, false, false)
+  CI_MICRO_MEM(MEM_LFD, LFD, false, false)
+  CI_MICRO_MEM(MEM_STFS, STFS, false, false)
+  CI_MICRO_MEM(MEM_STFD, STFD, false, false)
   CI_MICRO_MEM(MEM_LBZU, LBZ, false, true)
   CI_MICRO_MEM(MEM_LHZU, LHZ, false, true)
   CI_MICRO_MEM(MEM_LHAU, LHA, false, true)
@@ -4432,6 +4705,15 @@ const CachedInterpreter::AnyCallback
             &MicroOpHandlers::MEM_STWUX<false>,
             &MicroOpHandlers::MEM_STBUX<false>,
             &MicroOpHandlers::MEM_STHUX<false>,
+            &MicroOpHandlers::MEM_LFS<false>,
+            &MicroOpHandlers::MEM_LFD<false>,
+            &MicroOpHandlers::MEM_STFS<false>,
+            &MicroOpHandlers::MEM_STFD<false>,
+#define CI_FP_ENTRY(name) \
+  &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<false, InterpreterFP::Decoded>, false>, \
+  &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<true, InterpreterFP::Decoded>, false>,
+            CIR_FP_MICRO_OPS(CI_FP_ENTRY)
+#undef CI_FP_ENTRY
             &MicroOpHandlers::NOP<false>,
         },
         {
@@ -4518,6 +4800,15 @@ const CachedInterpreter::AnyCallback
             &MicroOpHandlers::MEM_STWUX<true>,
             &MicroOpHandlers::MEM_STBUX<true>,
             &MicroOpHandlers::MEM_STHUX<true>,
+            &MicroOpHandlers::MEM_LFS<true>,
+            &MicroOpHandlers::MEM_LFD<true>,
+            &MicroOpHandlers::MEM_STFS<true>,
+            &MicroOpHandlers::MEM_STFD<true>,
+#define CI_FP_ENTRY(name) \
+  &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<false, InterpreterFP::Decoded>, true>, \
+  &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<true, InterpreterFP::Decoded>, true>,
+            CIR_FP_MICRO_OPS(CI_FP_ENTRY)
+#undef CI_FP_ENTRY
             &MicroOpHandlers::NOP<true>,
         },
 };
@@ -4562,6 +4853,47 @@ CachedInterpreter::AnyCallback CachedInterpreter::MicroOpHandlers::GetPair(Micro
     CI_PICK(PairMM, CIMemKind::A, CIMemKind::B)
 #define CI_ROW_MM(A, ...) CI_PAIR_MEM_2(CI_CELL_MM, A)
   CI_PAIR_MEM_1(CI_ROW_MM)
+  // PrimeHack for iPad: a short list of single-precision math and streaming memory pairs.
+  // Instantiate both classification policies without multiplying the integer pair grids.
+#define CI_FP_BODY(OP, FPRF) &FPBody<&InterpreterFP::OP<FPRF, InterpreterFP::Decoded>>
+#define CI_FP_MA(MEM, OP)                                                                          \
+  if (a == MicroOpCode::MEM_##MEM && b == MicroOpCode::OP)                                         \
+    CI_PICK(PairMA, CIMemKind::MEM, CI_FP_BODY(OP, false))                                         \
+  if (a == MicroOpCode::MEM_##MEM && b == MicroOpCode::OP##_FPRF)                                  \
+    CI_PICK(PairMA, CIMemKind::MEM, CI_FP_BODY(OP, true))
+#define CI_FP_AM(OP, MEM)                                                                          \
+  if (a == MicroOpCode::OP && b == MicroOpCode::MEM_##MEM)                                         \
+    CI_PICK(PairAM, CI_FP_BODY(OP, false), CIMemKind::MEM)                                         \
+  if (a == MicroOpCode::OP##_FPRF && b == MicroOpCode::MEM_##MEM)                                  \
+    CI_PICK(PairAM, CI_FP_BODY(OP, true), CIMemKind::MEM)
+#define CI_FP_AA(A, B)                                                                             \
+  if (a == MicroOpCode::A && b == MicroOpCode::B)                                                  \
+    CI_PICK(PairAA, CI_FP_BODY(A, false), CI_FP_BODY(B, false))                                    \
+  if (a == MicroOpCode::A##_FPRF && b == MicroOpCode::B##_FPRF)                                   \
+    CI_PICK(PairAA, CI_FP_BODY(A, true), CI_FP_BODY(B, true))
+
+  CI_FP_MA(LFS, fmulsx)
+  CI_FP_MA(LFS, faddsx)
+  CI_FP_MA(LFS, fsubsx)
+  CI_FP_MA(LFS, fmaddsx)
+  CI_FP_MA(LFD, frspx)
+  CI_FP_AM(fmulsx, STFS)
+  CI_FP_AM(faddsx, STFS)
+  CI_FP_AM(fsubsx, STFS)
+  CI_FP_AM(fmaddsx, STFS)
+  CI_FP_AM(fmrx, STFD)
+  CI_FP_AM(frspx, STFS)
+  CI_FP_AA(fmulsx, faddsx)
+  CI_FP_AA(fmulsx, fmulsx)
+  CI_CELL_MM(LFS, LFS)
+  CI_CELL_MM(STFS, STFS)
+  CI_CELL_MM(LFD, LFD)
+  CI_CELL_MM(STFD, STFD)
+  CI_CELL_MM(STFS, LFS)
+#undef CI_FP_AA
+#undef CI_FP_AM
+#undef CI_FP_MA
+#undef CI_FP_BODY
 #undef CI_ROW_MM
 #undef CI_CELL_MM
 #undef CI_ROW_MA
@@ -4594,9 +4926,9 @@ std::vector<CachedInterpreter::AnyCallback> CachedInterpreter::GetMicroOpPairCal
   return callbacks;
 }
 
-std::span<const CachedInterpreter::AnyCallback> CachedInterpreter::GetMicroOpCallbacks()
+std::span<const CachedInterpreter::AnyCallback> CachedInterpreter::GetMicroOpCallbacks(bool chain)
 {
-  return {MicroOpHandlers::table[0], 2 * static_cast<size_t>(MicroOpCode::COUNT)};
+  return MicroOpHandlers::table[chain];
 }
 
 // Runs a packed run outside the tape (the fusion validate harness): the same handlers, unchained, one
@@ -4604,44 +4936,31 @@ std::span<const CachedInterpreter::AnyCallback> CachedInterpreter::GetMicroOpCal
 void CachedInterpreter::RunMicroOps(PowerPC::PowerPCState& ppc_state,
                                     const ExecuteMicroOpsOperands& operands)
 {
+  // PrimeHack for iPad: exercise the real pair callback in validate mode. A stack record
+  // also needs its own chain base for the unchained callback's distance calculation.
+  const u8* const saved_base = s_chain_base;
   for (u32 i = 0; i < operands.count; ++i)
   {
+    const auto pack = [](const MicroOp& op) -> MicroOpPayload {
+      return {op.rd, op.ra, op.rb, op.rc, op.imm};
+    };
     const MicroOp& op = operands.ops[i];
-    const MicroOpPayload record = {op.rd, op.ra, op.rb, op.rc, op.imm};
-    MicroOpHandlers::table[0][static_cast<size_t>(op.op)](ppc_state, &record);
+    MicroOpPayload records[2] = {pack(op), {}};
+    s_chain_base = reinterpret_cast<const u8*>(&records);
+    if (s_micro_pairs && i + 1 < operands.count)
+    {
+      const MicroOp& second = operands.ops[i + 1];
+      if (const AnyCallback pair = MicroOpHandlers::GetPair(op.op, second.op, false))
+      {
+        records[1] = pack(second);
+        pair(ppc_state, records);
+        ++i;
+        continue;
+      }
+    }
+    MicroOpHandlers::table[0][static_cast<size_t>(op.op)](ppc_state, records);
   }
-}
-
-// iCube: paired-single sequence fusion (MAIN_CIR_MICROOP_FUSION extension). Invokes the same
-// Interpreter:: handlers the generic path would, in program order, with one callback overhead.
-template <bool write_pc>
-s32 CachedInterpreter::ExecuteFusedPsqSeq(PowerPC::PowerPCState& ppc_state,
-                                          const ExecuteFusedPsqSeqOperands& operands)
-{
-  if constexpr (write_pc)
-  {
-    ppc_state.pc = operands.current_pc;
-    ppc_state.npc = operands.current_pc + 4;
-  }
-
-  // Every instruction of the run executes, unconditionally. These runs are only emitted in DoJit's
-  // memcheck-off / fp-exceptions-off branch, where the unfused form of each instruction is a plain
-  // Interpret record that checks nothing, so none of them can raise a DSI or program exception that
-  // would have to stop the run. This loop used to `break` on `ppc_state.Exceptions != 0`, which is
-  // also true while a decrementer or external interrupt is merely PENDING (raised asynchronously,
-  // and left set until the next block boundary or until the guest re-enables MSR.EE). A run that
-  // started in that window executed its first instruction and silently skipped the ps_mul / ps_madd
-  // behind it: a matrix-vector product with terms missing. That was the single-frame background
-  // dropouts in New Super Mario Bros. Wii and Paper Mario TTYD, and Kirby Air Ride's
-  // `vlAbs(&param->up)>Epsilon` camera assertion.
-  for (u32 k = 0; k < operands.count; ++k)
-  {
-    const UGeckoInstruction inst = operands.inst[k];
-    const auto func = Interpreter::GetInterpreterOp(inst);
-    func(operands.interpreter, inst);
-  }
-
-  return sizeof(AnyCallback) + sizeof(operands);
+  s_chain_base = saved_base;
 }
 
 // iCube: gather-pipe copy fusion (MAIN_CIR_GP_COPY_FUSION). See the payload contract in the header.
@@ -4724,6 +5043,11 @@ s32 CachedInterpreter::ExecuteMicroOpsValidate(PowerPC::PowerPCState& ppc_state,
 {
   const s32 validate_distance = sizeof(AnyCallback) + sizeof(operands);
 
+  // PrimeHack for iPad: FP helpers may also set the program-exception cause in SRR1.
+  const auto saved_ps = std::to_array(ppc_state.ps);
+  const u32 saved_fpscr = ppc_state.fpscr.Hex;
+  const u32 saved_srr1 = SRR1(ppc_state);
+
   // Snapshot the full validated state set (same set the specialized ALU validate uses).
   std::array<u32, 32> saved_gpr;
   std::array<u64, 8> saved_cr;
@@ -4756,6 +5080,13 @@ s32 CachedInterpreter::ExecuteMicroOpsValidate(PowerPC::PowerPCState& ppc_state,
   const u32 generic_npc = ppc_state.npc;
   const u32 generic_exceptions = ppc_state.Exceptions;
 
+  const auto generic_ps = std::to_array(ppc_state.ps);
+  const u32 generic_fpscr = ppc_state.fpscr.Hex;
+  const u32 generic_srr1 = SRR1(ppc_state);
+  std::copy(saved_ps.begin(), saved_ps.end(), std::begin(ppc_state.ps));
+  ppc_state.fpscr.Hex = saved_fpscr;
+  SRR1(ppc_state) = saved_srr1;
+
   // Restore the pre-run state (including Exceptions) so the fused run starts from identical inputs.
   std::copy(saved_gpr.begin(), saved_gpr.end(), std::begin(ppc_state.gpr));
   std::copy(saved_cr.begin(), saved_cr.end(), std::begin(ppc_state.cr.fields));
@@ -4780,6 +5111,14 @@ s32 CachedInterpreter::ExecuteMicroOpsValidate(PowerPC::PowerPCState& ppc_state,
   std::copy(std::begin(ppc_state.gpr), std::end(ppc_state.gpr), fused_gpr.begin());
   std::copy(std::begin(ppc_state.cr.fields), std::end(ppc_state.cr.fields), fused_cr.begin());
 
+  for (size_t k = 0; k < generic_ps.size(); ++k)
+  {
+    ASSERT_MSG(DYNA_REC, generic_ps[k].PS0AsU64() == ppc_state.ps[k].PS0AsU64() &&
+                             generic_ps[k].PS1AsU64() == ppc_state.ps[k].PS1AsU64(),
+               "CIR micro-op f{} mismatch at pc {:#x}", k, operands.current_pc);
+  }
+  ASSERT_MSG(DYNA_REC, ppc_state.fpscr.Hex == generic_fpscr && SRR1(ppc_state) == generic_srr1,
+             "CIR micro-op FPSCR/SRR1 mismatch at pc {:#x}", operands.current_pc);
   ASSERT_MSG(DYNA_REC, fused_gpr == generic_gpr,
              "CIR micro-op fusion GPR mismatch at pc {:#x} (count={}, generic_count={})",
              operands.current_pc, operands.count, operands.generic_count);
@@ -4808,15 +5147,6 @@ s32 CachedInterpreter::ExecuteMicroOpsValidate(PowerPC::PowerPCState& ppc_state,
              operands.current_pc, ppc_state.Exceptions, generic_exceptions);
 
   return validate_distance;
-}
-
-template <bool write_pc>
-s32 CachedInterpreter::ExecuteMicroOpsValidate(std::ostream& stream,
-                                               const ExecuteMicroOpsValidateOperands& operands)
-{
-  fmt::print(stream, "MicroOpsValidate (count={}, generic_count={}) at PC={:#010x}\n", operands.count,
-             operands.generic_count, operands.current_pc);
-  return sizeof(AnyCallback) + sizeof(operands);
 }
 
 // iCube: dead CR-flag elimination validate (MAIN_CIR_DEAD_FLAG_ELIM_VALIDATE). Direct analogue of the
@@ -5463,6 +5793,7 @@ void CachedInterpreter::WriteEndBlock(u32 link_target, bool dyn_linkable, bool a
   // CachedInterpreterBlockCache::WriteLinkBlock once the target block exists, and clears it back to 0
   // on UnlinkBlock/DestroyBlock. expected_pc is the static target; npc must equal it at runtime to
   // follow the link.
+  static_assert(sizeof(LinkBlockOperands) == 56 && alignof(LinkBlockOperands) == 8);
   const LinkBlockOperands operands = {js.downcountAmount,
                                       js.numLoadStoreInst,
                                       js.numFloatingPointInst,
@@ -5620,7 +5951,8 @@ void CachedInterpreter::Jit(u32 em_address, bool clear_cache_and_retry_on_failur
 bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 {
   js.blockStart = em_address;
-  js.firstFPInstructionFound = false;
+  // PrimeHack for iPad: an FP-enabled entry has already satisfied the lazy-FPU check.
+  js.firstFPInstructionFound = (b->feature_flags & FEATURE_FLAG_MSR_FP) != 0;
   js.fifoBytesSinceCheck = 0;
   js.downcountAmount = 0;
   js.numLoadStoreInst = 0;
@@ -5809,6 +6141,10 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
           merged_terminal = op.inst.LK ? 3 : 2;
         else if (plain_blr && op.branchTo == 0xFFFFFFFF && ExitIsLinkBlock(0xFFFFFFFF, true))
           merged_terminal = 1;
+        else if (op.inst.OPCD == 19 && op.inst.SUBOP10 == 528 &&
+                 (op.inst.BO_2 & BO_DONT_DECREMENT_FLAG) && (op.inst.BO_2 & BO_DONT_CHECK_CONDITION) &&
+                 op.branchTo == 0xFFFFFFFF && ExitIsLinkBlock(0xFFFFFFFF, true))
+          merged_terminal = op.inst.LK_3 ? 5 : 4;
       }
       const bool mid_block_trap =
           mid_block_terminal && (op.inst.OPCD == 3 || (op.inst.OPCD == 31 && op.inst.SUBOP10 == 4));
@@ -5937,8 +6273,7 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
                   fop.load_max = std::max(fop.load_max, fop.load_off[k]);
                 }
                 // Charge every consumed op but op[i] itself, which the loop top already charged —
-                // the same accounting emit_psq_seq does, so the slice downcount is op-for-op equal
-                // to the unfused path.
+                // preserving the unfused slice downcount.
                 for (u32 k = 1; k < pairs * 2; ++k)
                   js.downcountAmount += m_code_buffer[i + k].opinfo->num_cycles;
                 WriteChainable(AnyCallback{ExecuteFusedGpCopyChained<false>},
@@ -5946,85 +6281,6 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
                 i += pairs * 2 - 1;
                 continue;
               }
-            }
-          }
-
-          // iCube: paired-single sequence fusion (F-Zero rank-1 block 0x8006e204 pattern). Fuses
-          // consecutive psq_l / ps_mul / ps_madd into one callback when the register dependencies
-          // match, cutting per-op dispatch overhead on FP-heavy titles. Gated on the same flag as
-          // integer micro-op fusion; only runs in this fp-exceptions-off / memcheck-off else branch.
-          auto is_psq_l_dform = [](const UGeckoInstruction& ins) { return ins.OPCD == 56; };
-          auto is_ps_mul = [](const UGeckoInstruction& ins) {
-            return ins.OPCD == 4 && ins.SUBOP10 == 25;
-          };
-          auto is_ps_madd = [](const UGeckoInstruction& ins) {
-            return ins.OPCD == 4 && ins.SUBOP10 == 29;
-          };
-          auto psq_seq_fusible = [&](const PPCAnalyst::CodeOp& c) {
-            return !c.skip && !c.canEndBlock &&
-                   (is_psq_l_dform(c.inst) || is_ps_mul(c.inst) || is_ps_madd(c.inst));
-          };
-          auto emit_psq_seq = [&](u32 last_idx, u32 fuse_count) {
-            ExecuteFusedPsqSeqOperands fop{interpreter, fuse_count, {}, js.compilerPC};
-            for (u32 k = 0; k < fuse_count; ++k)
-            {
-              fop.inst[k] = m_code_buffer[i + k].inst;
-              if (k != 0)
-                js.downcountAmount += m_code_buffer[i + k].opinfo->num_cycles;
-            }
-            WriteChainable(AnyCallback{ExecuteFusedPsqSeqChained<false>},
-                           AnyCallback{ExecuteFusedPsqSeqChained<true>}, &fop, sizeof(fop));
-            i += fuse_count - 1;
-          };
-
-          if (is_psq_l_dform(op.inst))
-          {
-            // psq_l + psq_l + ps_mul (rank-1 F-Zero hot block: mul uses first load's RD)
-            if (i + 2 < code_block.m_num_instructions)
-            {
-              const PPCAnalyst::CodeOp& op1 = m_code_buffer[i + 1];
-              const PPCAnalyst::CodeOp& op2 = m_code_buffer[i + 2];
-              if (psq_seq_fusible(op) && psq_seq_fusible(op1) && psq_seq_fusible(op2) &&
-                  is_psq_l_dform(op1.inst) && is_ps_mul(op2.inst) && op2.inst.FA == op.inst.RD)
-              {
-                emit_psq_seq(i + 2, 3);
-                continue;
-              }
-            }
-            // psq_l + ps_mul + ps_madd (load, in-place mul, accumulate)
-            if (i + 2 < code_block.m_num_instructions)
-            {
-              const PPCAnalyst::CodeOp& op1 = m_code_buffer[i + 1];
-              const PPCAnalyst::CodeOp& op2 = m_code_buffer[i + 2];
-              if (psq_seq_fusible(op) && psq_seq_fusible(op1) && psq_seq_fusible(op2) &&
-                  is_ps_mul(op1.inst) && is_ps_madd(op2.inst) && op1.inst.FA == op.inst.RD &&
-                  op1.inst.FD == op.inst.RD && op2.inst.FC == op.inst.RD)
-              {
-                emit_psq_seq(i + 2, 3);
-                continue;
-              }
-            }
-            // psq_l + ps_mul (consecutive load then in-place multiply)
-            if (i + 1 < code_block.m_num_instructions)
-            {
-              const PPCAnalyst::CodeOp& op1 = m_code_buffer[i + 1];
-              if (psq_seq_fusible(op) && psq_seq_fusible(op1) && is_ps_mul(op1.inst) &&
-                  op1.inst.FA == op.inst.RD)
-              {
-                emit_psq_seq(i + 1, 2);
-                continue;
-              }
-            }
-          }
-          else if (is_ps_mul(op.inst) && i + 1 < code_block.m_num_instructions)
-          {
-            // ps_mul + ps_madd (in-place mul then accumulate into same register)
-            const PPCAnalyst::CodeOp& op1 = m_code_buffer[i + 1];
-            if (psq_seq_fusible(op) && psq_seq_fusible(op1) && is_ps_madd(op1.inst) &&
-                op1.inst.FC == op.inst.FD)
-            {
-              emit_psq_seq(i + 1, 2);
-              continue;
             }
           }
 
@@ -6203,6 +6459,49 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
             vop.elim_cr_mask = static_cast<u32>(static_cast<u8>(packed_elim_cr.m_val));
             Write(CallbackCast(ExecuteMicroOpsValidate<false>), vop);
           };
+
+          // PrimeHack for iPad: emit on the normal per-instruction iteration. Hooks, breakpoints,
+          // availability, checked exceptions and all three counters have already been handled.
+          if ((op.opinfo->flags & FL_USE_FPU) && !s_specialized_ops_validate &&
+              !(s_dead_fprf_elim && FPRFElimApplies(op)))
+          {
+            if (const auto fp = DecodeFPMicroOp(op.inst, load_store_fast && s_mem_microops &&
+                                                            !s_microop_fusion_validate))
+            {
+              ExecuteMicroOpsOperands mop{};
+              mop.current_pc = js.compilerPC;
+              mop.ops[0] = *fp;
+              mop.count = 1;
+              // Rewind only the immediately preceding lone record. Any intervening hook, check
+              // or branch is a hard barrier. Both guest instructions were charged at loop top.
+              const size_t previous_size = sizeof(AnyCallback) +
+                  (s_microop_fusion_validate ? sizeof(ExecuteMicroOpsValidateOperands) :
+                                               sizeof(MicroOpPayload));
+              if (s_micro_pairs && i > 0 && last_micro_record && last_micro_index == i - 1 &&
+                  GetCodePtr() - last_micro_record == static_cast<std::ptrdiff_t>(previous_size) &&
+                  MicroOpHandlers::GetPair(last_micro.op, fp->op, false))
+              {
+                RewindTo(last_micro_record);
+                last_micro_record = nullptr;
+                mop.ops[0] = last_micro;
+                mop.ops[1] = *fp;
+                mop.count = 2;
+                mop.current_pc = m_code_buffer[i - 1].address;
+                emit_fused(mop, i - 1, i);
+              }
+              else
+              {
+                if (s_microop_fusion_validate)
+                {
+                  last_micro_record = GetWritableCodePtr();
+                  last_micro_index = i;
+                  last_micro = *fp;
+                }
+                emit_fused(mop, i, i);
+              }
+              continue;
+            }
+          }
 
           // (a) CONST32: addis rt,r0,hi; ori rt,rt,lo  => rt = (hi<<16)|lo. Both ops are non-terminal
           // (ori never ends a block; addis here has RA==0). The next op (ori) must also be present and
@@ -7092,7 +7391,10 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
             int fused_cmp = -1;
             if (is_bc && bo_checks_cond && i > 0 && last_micro_record != nullptr &&
                 last_micro_index == i - 1 && !m_code_buffer[i - 1].skip &&
-                last_micro_record + sizeof(AnyCallback) + sizeof(MicroOpPayload) == GetCodePtr() &&
+                GetCodePtr() - last_micro_record == static_cast<std::ptrdiff_t>(
+                    sizeof(AnyCallback) + (s_microop_fusion_validate ?
+                                               sizeof(ExecuteMicroOpsValidateOperands) :
+                                               sizeof(MicroOpPayload))) &&
                 last_micro.rd == (op.inst.BI >> 2))
             {
               switch (last_micro.op)
@@ -7101,6 +7403,10 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
               case MicroOpCode::CMPL_U_RR: fused_cmp = 1; break;
               case MicroOpCode::CMP_S_IMM: fused_cmp = 2; break;
               case MicroOpCode::CMPL_U_IMM: fused_cmp = 3; break;
+              case MicroOpCode::fcmpo:
+              case MicroOpCode::fcmpo_FPRF: fused_cmp = 4; break;
+              case MicroOpCode::fcmpu:
+              case MicroOpCode::fcmpu_FPRF: fused_cmp = 5; break;
               default: break;
               }
             }
@@ -7114,9 +7420,15 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
                                                         last_micro.imm, 0};
               cond_branch_record = merged_continue ? GetWritableCodePtr() : nullptr;
               cond_branch_size = sizeof(fused_operands);
-              WriteChainable(GetCmpBranchCallback(fused_cmp, cr_bit, merged_continue, false),
-                             GetCmpBranchCallback(fused_cmp, cr_bit, merged_continue, true),
-                             &fused_operands, sizeof(fused_operands));
+              const auto select = [&](bool chain) {
+                if (fused_cmp >= 4)
+                  return GetFCmpBranchCallback(fused_cmp == 4, merged_continue,
+                                               merged_continue ? s_chain_links : chain,
+                                               s_microop_fusion_validate);
+                return GetCmpBranchCallback(fused_cmp, cr_bit, merged_continue,
+                                            merged_continue ? s_chain_links : chain);
+              };
+              WriteChainable(select(false), select(true), &fused_operands, sizeof(fused_operands));
             }
             else
             {
@@ -7124,8 +7436,10 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
               cond_branch_record = merged_continue ? GetWritableCodePtr() : nullptr;
               cond_branch_size = sizeof(branch_operands);
               WriteChainable(
-                  GetBranchCondCallback(cr_bit, bo_checks_ctr, is_bclr, merged_continue, false),
-                  GetBranchCondCallback(cr_bit, bo_checks_ctr, is_bclr, merged_continue, true),
+                  GetBranchCondCallback(cr_bit, bo_checks_ctr, is_bclr, merged_continue,
+                                        merged_continue ? s_chain_links : false),
+                  GetBranchCondCallback(cr_bit, bo_checks_ctr, is_bclr, merged_continue,
+                                        merged_continue ? s_chain_links : true),
                   &branch_operands, sizeof(branch_operands));
             }
           }

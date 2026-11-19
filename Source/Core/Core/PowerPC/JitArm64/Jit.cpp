@@ -470,8 +470,8 @@ void JitArm64::MSRUpdated(u32 msr)
   static_assert(UReg_MSR{}.IR.StartBit() == 5);
   static_assert(FEATURE_FLAG_MSR_DR == 1 << 0);
   static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
-  const u32 other_feature_flags = m_ppc_state.feature_flags & ~0x3;
-  const u32 feature_flags = other_feature_flags | ((msr >> 4) & 0x3);
+  const u32 other_feature_flags = m_ppc_state.feature_flags & FEATURE_FLAG_PERFMON;
+  const u32 feature_flags = other_feature_flags | MSRFeatureFlags(msr);
   if (feature_flags == 0)
   {
     STR(IndexType::Unsigned, ARM64Reg::WZR, PPC_REG, PPCSTATE_OFF(feature_flags));
@@ -517,8 +517,12 @@ void JitArm64::MSRUpdated(ARM64Reg msr)
   static_assert(UReg_MSR{}.IR.StartBit() == 5);
   static_assert(FEATURE_FLAG_MSR_DR == 1 << 0);
   static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
-  const u32 other_feature_flags = m_ppc_state.feature_flags & ~0x3;
+  const u32 other_feature_flags = m_ppc_state.feature_flags & FEATURE_FLAG_PERFMON;
   UBFX(WA, msr, 4, 2);
+  // PrimeHack for iPad: FP lives apart from the adjacent DR/IR bits in MSR.
+  FixupBranch fp_off = TBZ(msr, u8(UReg_MSR{}.FP.StartBit()));
+  ORR(WA, WA, LogicalImm(FEATURE_FLAG_MSR_FP, GPRSize::B32));
+  SetJumpTarget(fp_off);
   if (other_feature_flags != 0)
     ORR(WA, WA, LogicalImm(other_feature_flags, GPRSize::B32));
   STR(IndexType::Unsigned, WA, PPC_REG, PPCSTATE_OFF(feature_flags));

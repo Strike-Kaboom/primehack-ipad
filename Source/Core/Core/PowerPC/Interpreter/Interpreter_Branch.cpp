@@ -179,7 +179,13 @@ void Interpreter::sc(Interpreter& interpreter, UGeckoInstruction inst)
 }
 
 // Added this to Dolphin, this is a major security breach
-void Interpreter::vmcall(Interpreter& interpreter, UGeckoInstruction inst) {
-  interpreter.m_ppc_state.vmcall_table[inst.VMFI](interpreter.m_ppc_state, interpreter.m_mmu, inst.VMFP);
+void Interpreter::vmcall(Interpreter& interpreter, UGeckoInstruction inst)
+{
+  // PrimeHack for iPad: native mod callbacks have write access to the entire guest state.
+  auto& state = interpreter.m_ppc_state;
+  const u32 old_msr = state.msr.Hex;
+  state.vmcall_table[inst.VMFI](state, interpreter.m_mmu, inst.VMFP);
+  if (state.msr.Hex != old_msr)
+    interpreter.m_system.GetPowerPC().MSRUpdated();
   interpreter.m_end_block = true;
 }

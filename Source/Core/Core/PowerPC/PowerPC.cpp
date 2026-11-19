@@ -33,26 +33,6 @@
 
 namespace PowerPC
 {
-double PairedSingle::PS0AsDouble() const
-{
-  return std::bit_cast<double>(ps0);
-}
-
-double PairedSingle::PS1AsDouble() const
-{
-  return std::bit_cast<double>(ps1);
-}
-
-void PairedSingle::SetPS0(double value)
-{
-  ps0 = std::bit_cast<u64>(value);
-}
-
-void PairedSingle::SetPS1(double value)
-{
-  ps1 = std::bit_cast<u64>(value);
-}
-
 static void InvalidateCacheThreadSafe(Core::System& system, u64 userdata, s64 cyclesLate)
 {
   system.GetPPCState().iCache.Invalidate(system.GetMemory(), system.GetJitInterface(),
@@ -399,6 +379,8 @@ void PowerPCManager::ApplyMode()
     break;
 
   case CoreMode::JIT:  // Switching from interpreter to JIT.
+    // PrimeHack for iPad: an injected core may have changed MSR or MMCR directly.
+    RecalculateAllFeatureFlags(m_ppc_state);
     // Don't really need to do much. It'll work, the cache will refill itself.
     m_cpu_core_base = m_system.GetJitInterface().GetCore();
     if (!m_cpu_core_base)  // Has a chance to not get a working JIT core if one isn't active on host
@@ -679,7 +661,7 @@ void PowerPCManager::MSRUpdated()
   static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
 
   m_ppc_state.feature_flags = static_cast<CPUEmuFeatureFlags>(
-      (m_ppc_state.feature_flags & FEATURE_FLAG_PERFMON) | ((m_ppc_state.msr.Hex >> 4) & 0x3));
+      (m_ppc_state.feature_flags & FEATURE_FLAG_PERFMON) | MSRFeatureFlags(m_ppc_state.msr.Hex));
 
   if (m_ppc_state.msr.DR && m_ppc_state.pagetable_update_pending)
     m_system.GetMMU().PageTableUpdated();
@@ -758,7 +740,7 @@ void RecalculateAllFeatureFlags(PowerPCState& ppc_state)
   static_assert(FEATURE_FLAG_MSR_IR == 1 << 1);
 
   const bool perfmon = ppc_state.spr[SPR_MMCR0] || ppc_state.spr[SPR_MMCR1];
-  ppc_state.feature_flags = static_cast<CPUEmuFeatureFlags>(((ppc_state.msr.Hex >> 4) & 0x3) |
+  ppc_state.feature_flags = static_cast<CPUEmuFeatureFlags>(MSRFeatureFlags(ppc_state.msr.Hex) |
                                                             (perfmon ? FEATURE_FLAG_PERFMON : 0));
 }
 

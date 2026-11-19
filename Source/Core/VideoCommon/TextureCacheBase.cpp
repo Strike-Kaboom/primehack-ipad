@@ -13,6 +13,8 @@
 #include <vector>
 #if defined(_M_X86_64)
 #include <pmmintrin.h>
+#elif defined(_M_ARM_64)
+#include <arm_neon.h>
 #endif
 
 #include <fmt/format.h>
@@ -2670,16 +2672,23 @@ void TextureCacheBase::UninitializeXFBMemory(u8* dst, u32 stride, u32 bytes_per_
 
 #if defined(_M_X86_64)
   __m128i sixteenBytes = _mm_set1_epi16((s16)(u16)0xFE01);
+#elif defined(_M_ARM_64)
+  // PrimeHack for iPad: construct alternating Y/UV bytes without host-endian assumptions.
+  const uint8x16_t sixteenBytes = vzip1q_u8(vdupq_n_u8(1), vdupq_n_u8(254));
 #endif
 
   for (u32 i = 0; i < num_blocks_y; i++)
   {
     u32 size = bytes_per_row;
     u8* rowdst = dst;
-#if defined(_M_X86_64)
+#if defined(_M_X86_64) || defined(_M_ARM_64)
     while (size >= 16)
     {
+#if defined(_M_ARM_64)
+      vst1q_u8(rowdst, sixteenBytes);
+#else
       _mm_storeu_si128((__m128i*)rowdst, sixteenBytes);
+#endif
       size -= 16;
       rowdst += 16;
     }

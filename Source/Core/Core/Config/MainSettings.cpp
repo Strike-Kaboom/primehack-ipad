@@ -1128,7 +1128,8 @@ const Info<bool> MAIN_CIR_MICRO_PAIRS{{System::Main, "Core", "CIRMicroPairs"}, t
 // measured on NFS: Underground, 100% of dyn-link misses are pc-changed and `blr` is 97.3M of the
 // 98.5M. Keys on the target pc instead, so a return hits whoever called. UNVALIDATED on-device —
 // gated for A/B, like MAIN_CIR_STORE_LOOP_FF and MAIN_CIR_GP_COPY_FUSION.
-const Info<bool> MAIN_CIR_DYN_TARGET_CACHE{{System::Main, "Core", "CIRDynTargetCache"}, false};
+// PrimeHack for iPad: share resolved targets across polymorphic return sites by default.
+const Info<bool> MAIN_CIR_DYN_TARGET_CACHE{{System::Main, "Core", "CIRDynTargetCache"}, true};
 const Info<bool> MAIN_CIR_GP_COPY_FUSION{{System::Main, "Core", "CIRGatherPipeCopyFusion"}, false};
 // iCube WIN#1: PIC (position-independent-code) direct-pointer load/store on the CachedInterpreter.
 // Integer D-form/X-form load/stores resolve the host RAM pointer directly and do the access with the

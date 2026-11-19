@@ -145,9 +145,9 @@ public:
 class JitBaseBlockCache
 {
 public:
-  // The size of the fast map is determined like this:
-  // ((4 GiB guest memory space) / (4-byte alignment) * sizeof(JitBlock*)) << (3 feature flag bits)
-  static constexpr u64 FAST_BLOCK_MAP_SIZE = 0x10'0000'0000;
+  // PrimeHack for iPad: one entry for every aligned guest PC in each feature context.
+  static constexpr u64 FAST_BLOCK_MAP_SIZE =
+      (u64{1} << 30) * sizeof(u8*) * NUM_CPU_FEATURE_FLAG_COMBINATIONS;
   static constexpr u32 FAST_BLOCK_MAP_FALLBACK_ELEMENTS = 0x10000;
   static constexpr u32 FAST_BLOCK_MAP_FALLBACK_MASK = FAST_BLOCK_MAP_FALLBACK_ELEMENTS - 1;
 
