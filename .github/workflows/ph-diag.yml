@@ -1,0 +1,46 @@
+# PrimeHack for iPad: one-off diagnostics (no game data). Runs on a push to the ph-diag branch.
+# 1. Which CPU-core functions ran most in the committed PGO recording (instruction mix).
+# 2. Which clang features Xcode's compiler has (preserve_none, musttail) for the iOS target.
+name: PrimeHack diagnostics
+on:
+  push:
+    branches: [ ph-diag ]
+permissions:
+  contents: read
+jobs:
+  diag:
+    runs-on: ${{ vars.MACOS_RUNNER || 'macos-26' }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Select Xcode 26.3
+        run: sudo xcode-select -s /Applications/Xcode_26.3.app || true
+      - name: Profile report
+        run: |
+          mkdir -p out
+          xcrun llvm-profdata merge -o out/icube.profdata pgo/raw/*.profraw
+          xcrun llvm-profdata show --topn=400 out/icube.profdata > out/topn.txt 2>&1 || true
+          xcrun llvm-profdata show --all-functions --counts out/icube.profdata > out/all-counts.txt 2>&1 || true
+          ls -la out
+      - name: Compiler feature probe
+        run: |
+          xcrun clang --version | tee out/clang.txt
+          cat > t.cpp <<'CPP'
+          struct S { int a; };
+          using Fn = void (*)(S*, const void*, unsigned long, unsigned long);
+          [[clang::preserve_none]] void g(S* s, const void* p, unsigned long a, unsigned long b);
+          [[clang::preserve_none]] void f(S* s, const void* p, unsigned long a, unsigned long b) {
+            s->a += (int)a;
+            [[clang::musttail]] return g(s, p, a + 1, b);
+          }
+          CPP
+          for flag in "" ; do
+            xcrun --sdk iphoneos clang++ -std=c++20 -O3 -target arm64-apple-ios16.0 -mcpu=apple-m4 -c t.cpp -o t.o \
+              >> out/clang.txt 2>&1 && echo "preserve_none+musttail: OK" >> out/clang.txt || echo "preserve_none+musttail: FAILED" >> out/clang.txt
+          done
+          xcrun objdump -d t.o >> out/clang.txt 2>&1 || true
+          cat out/clang.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ph-diag
+          path: out/
+          retention-days: 7
