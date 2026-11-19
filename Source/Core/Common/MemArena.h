@@ -180,6 +180,8 @@ public:
   static void SetDarwinMode(DarwinMode) {}
   static DarwinMode GetDarwinMode() { return DarwinMode::Plain; }
   static const char* DarwinModeName() { return "native"; }
+  // Not the "plain" fallback: the fastmem arena stays available off Darwin.
+  static bool UsesPlainViews() { return false; }
 #endif
 };
 
