@@ -116,6 +116,9 @@ private:
   AVAudioFormat* m_player_format = nullptr;
   AVAudioFormat* m_chain_format = nullptr;
   CMHeadphoneMotionManager* m_headphone_motion = nullptr;
+  // PrimeHack for iPad: Apple's peak limiter after the spatial renderer (Spatial mode only). Its
+  // pre-gain makes up the level lost to the virtual speakers without clipping.
+  AVAudioUnit* m_spatial_limiter = nullptr;
   std::vector<AVAudioUnit*> m_fx_units;
 
   std::atomic<Mode> m_mode{Mode::Stereo};
@@ -126,9 +129,6 @@ private:
   bool m_surround_decoding = false;
   std::unique_ptr<AudioCommon::SurroundDecoder> m_surround;
   std::vector<short> m_stereo_temp;
-  // PrimeHack for iPad: stereo frames pulled from the mixer at a steady chunk per buffer, waiting
-  // for the surround decoder, which consumes whole blocks of up to 4096 frames.
-  std::vector<short> m_surround_stage;
   std::vector<float> m_float_temp;
   AudioCommon::AudioDSPChain m_dsp;
 

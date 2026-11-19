@@ -4,6 +4,7 @@
 #ifdef IPHONEOS
 
 #import <AVFoundation/AVFoundation.h>
+#import <AudioToolbox/AudioToolbox.h>
 #if TARGET_OS_IOS && __has_include(<CoreMotion/CoreMotion.h>)
 #import <CoreMotion/CoreMotion.h>
 #define DOL_HAS_HEADPHONE_MOTION 1
@@ -17,9 +18,7 @@
 
 #include <algorithm>
 #include <chrono>
-#include <cmath>
 #include <condition_variable>
-#include <cstddef>
 #include <cstring>
 #include <sstream>
 
@@ -37,30 +36,6 @@ AVAudioEngineSound* AVAudioEngineSound::s_active = nullptr;
 namespace
 {
 constexpr int kSurroundChannels = 6;
-
-// PrimeHack for iPad: decoding the stereo mix to 5.1 and rendering it as six virtual speakers on
-// headphones comes out a few dB quieter than the plain stereo mix. +4 dB brings it back to about
-// the same loudness; a soft knee above 0.8 keeps peaks from clipping.
-constexpr float kSpatialMakeupGain = 1.6f;
-constexpr float kSoftKnee = 0.8f;
-
-void ApplySpatialMakeupGain(float* samples, size_t count)
-{
-  constexpr float headroom = 1.0f - kSoftKnee;
-  for (size_t i = 0; i < count; ++i)
-  {
-    const float x = samples[i] * kSpatialMakeupGain;
-    const float magnitude = std::fabs(x);
-    if (magnitude <= kSoftKnee)
-    {
-      samples[i] = x;
-      continue;
-    }
-    const float limited = kSoftKnee + headroom * std::tanh((magnitude - kSoftKnee) / headroom);
-    samples[i] = std::copysign(limited, x);
-  }
-}
-
 /// Frames per scheduled buffer (10.7 ms at 48 kHz).
 constexpr uint32_t kChunkFrames = 512;
 /// Buffer groups kept scheduled ahead of the player.
@@ -216,6 +191,26 @@ bool AVAudioEngineSound::buildGraphLocked()
         AVAudioEnvironmentDistanceAttenuationModelLinear;
     m_environment.outputType = AVAudioEnvironmentOutputTypeAuto;
     [m_engine attachNode:m_environment];
+    {
+      // PrimeHack for iPad: six virtual speakers rendered binaurally come out a few dB quieter
+      // than the plain stereo mix. Apple's peak limiter adds the gain back cleanly: it turns the
+      // whole mix down smoothly on loud peaks instead of clipping or bending the waveform.
+      AudioComponentDescription desc = {};
+      desc.componentType = kAudioUnitType_Effect;
+      desc.componentSubType = kAudioUnitSubType_PeakLimiter;
+      desc.componentManufacturer = kAudioUnitManufacturer_Apple;
+      AVAudioUnitEffect* limiter = [[AVAudioUnitEffect alloc] initWithAudioComponentDescription:desc];
+      if (limiter)
+      {
+        AudioUnit au = limiter.audioUnit;
+        AudioUnitSetParameter(au, kLimiterParam_PreGain, kAudioUnitScope_Global, 0, 3.0f, 0);
+        // Short attack keeps the limiter's look-ahead delay to a few milliseconds.
+        AudioUnitSetParameter(au, kLimiterParam_AttackTime, kAudioUnitScope_Global, 0, 0.004f, 0);
+        AudioUnitSetParameter(au, kLimiterParam_DecayTime, kAudioUnitScope_Global, 0, 0.05f, 0);
+        [m_engine attachNode:limiter];
+        m_spatial_limiter = limiter;
+      }
+    }
     break;
   }
 
@@ -262,7 +257,6 @@ bool AVAudioEngineSound::buildGraphLocked()
 
   m_surround = std::make_unique<AudioCommon::SurroundDecoder>(
       m_mixer->GetSampleRate(), FrameBlockSizeForQuality(Config::Get(Config::MAIN_DPL2_QUALITY)));
-  m_surround_stage.clear();
   m_dsp.Configure(m_mixer->GetSampleRate(), mode == Mode::Stereo ? 2 : kSurroundChannels);
   m_mode.store(mode);
 
@@ -331,6 +325,7 @@ void AVAudioEngineSound::teardownGraphLocked()
     [m_players removeAllObjects];
     [m_buffer_pools removeAllObjects];
     m_fx_units.clear();
+    m_spatial_limiter = nil;
     m_environment = nil;
     m_player_format = nil;
     m_chain_format = nil;
@@ -359,6 +354,13 @@ void AVAudioEngineSound::reconnectGraphLocked()
   if (!head)
     return;
   [m_engine disconnectNodeOutput:head];
+  if (m_environment && m_spatial_limiter)
+  {
+    // environment -> limiter -> fx chain -> main mixer
+    [m_engine disconnectNodeOutput:m_spatial_limiter];
+    [m_engine connect:head to:m_spatial_limiter format:m_chain_format];
+    head = m_spatial_limiter;
+  }
   for (AVAudioUnit* unit : m_fx_units)
     [m_engine disconnectNodeOutput:unit];
   AVAudioNode* tail = head;
@@ -655,38 +657,16 @@ void AVAudioEngineSound::audioThreadMain()
     }
     else
     {
-      // PrimeHack for iPad: pull the same small chunk from the mixer for every buffer, as the stereo
-      // path does, and stage it until the decoder wants a whole block. Pulling a whole block at
-      // once (43 ms at the default quality) drained the mixer's granule queue in one go: it then
-      // looped old granules to fill the gap (slowed-down, glitchy sound) and later jumped ahead.
-      m_stereo_temp.resize(static_cast<size_t>(chunk) * 2);
-      m_mixer->Mix(m_stereo_temp.data(), chunk);
-      m_surround_stage.insert(m_surround_stage.end(), m_stereo_temp.begin(), m_stereo_temp.end());
-
       const size_t needed = m_surround->QueryFramesNeededForSurroundOutput(chunk);
-      bool have_output = true;
       if (needed > 0)
       {
-        if (m_surround_stage.size() >= needed * 2)
-        {
-          m_surround->PutFrames(m_surround_stage.data(), needed);
-          m_surround_stage.erase(m_surround_stage.begin(),
-                                 m_surround_stage.begin() + static_cast<std::ptrdiff_t>(needed * 2));
-        }
-        else
-        {
-          // Only while the first block fills (one block of extra latency, as before).
-          have_output = false;
-        }
+        m_stereo_temp.resize(needed * 2);
+        m_mixer->Mix(m_stereo_temp.data(), static_cast<u32>(needed));
+        m_surround->PutFrames(m_stereo_temp.data(), needed);
       }
-      if (have_output)
-        m_surround->ReceiveFrames(m_float_temp.data(), chunk);
-      else
-        std::fill(m_float_temp.begin(), m_float_temp.end(), 0.0f);
+      m_surround->ReceiveFrames(m_float_temp.data(), chunk);
     }
     m_dsp.Process(m_float_temp.data(), chunk);
-    if (mode == Mode::Spatial)
-      ApplySpatialMakeupGain(m_float_temp.data(), m_float_temp.size());
 
     const int slot = pool_cursor;
     pool_cursor = (pool_cursor + 1) % kPoolSize;
