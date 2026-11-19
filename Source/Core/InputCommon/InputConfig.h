@@ -41,6 +41,10 @@ public:
   void SetUserOverride(int index);
   // Forget SetUserOverride choices (called when a game ends).
   void ClearUserOverrides();
+  // PrimeHack for iPad: the game INI names a gamepad layout for controller `index`, but it was not
+  // applied because the slot had no game controller when the config was loaded (e.g. the pad was
+  // switched on after the game started). False once the user picked their own mapping.
+  bool IsGameProfileSkipped(int index) const;
   // Writes the mapping that belongs on disk for `controller` into `section`: its own mapping while a
   // game's per-game profile is loaded on a game controller (with the current device), otherwise its
   // live mapping. For anything that persists a mapping (SaveConfig, the app's mapping stash).
@@ -79,6 +83,8 @@ private:
   std::vector<bool> m_game_profile_active;
   // Per controller: the user loaded their own mapping during this game (SetUserOverride).
   std::vector<bool> m_user_override;
+  // Per controller: see IsGameProfileSkipped.
+  std::vector<bool> m_game_profile_skipped;
   // Per controller: its own config section from disk, kept while a per-game profile replaces it.
   std::vector<Common::IniFile::Section> m_own_sections;
   const std::string m_ini_name;

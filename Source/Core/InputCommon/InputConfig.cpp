@@ -12,6 +12,7 @@
 #include "Common/IniFile.h"
 #include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
+#include "Core/Config/MainSettings.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/HW/Wiimote.h"
@@ -62,8 +63,11 @@ bool InputConfig::LoadConfig()
           // PrimeHack for iPad: the Prime game INIs cover every release of a game, but PrimeHack
           // only drives the ones it supports (e.g. not the Japanese discs). Elsewhere its layout
           // would leave the right stick and pointer dead, so keep the user's own mapping.
+          // With PrimeHack Controls switched off, its mods are off too, so its layout would leave
+          // the camera stick and the pointer without any function.
           if (std::string_view(profile_setting).starts_with("PrimeHack") &&
-              !prime::IsSupportedGameID(SConfig::GetInstance().GetGameID()))
+              (!prime::IsSupportedGameID(SConfig::GetInstance().GetGameID()) ||
+               !Config::Get(Config::PRIMEHACK_ENABLE)))
           {
             continue;
           }
@@ -98,6 +102,7 @@ bool InputConfig::LoadConfig()
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   m_user_override.resize(m_controllers.size(), false);
   std::vector<bool> profile_active(m_controllers.size(), false);
+  std::vector<bool> profile_skipped(m_controllers.size(), false);
   std::vector<Common::IniFile::Section> own_sections(m_controllers.size());
 
   if (inifile.Load(File::GetUserPath(D_CONFIG_IDX) + m_ini_name + ".ini") &&
@@ -136,6 +141,7 @@ bool InputConfig::LoadConfig()
         if (placeholder && !own_device.starts_with("MFi/"))
         {
           useProfile[n] = false;
+          profile_skipped[n] = true;
         }
         else
         {
@@ -165,12 +171,14 @@ bool InputConfig::LoadConfig()
       n++;
     }
     m_game_profile_active = std::move(profile_active);
+    m_game_profile_skipped = std::move(profile_skipped);
     m_own_sections = std::move(own_sections);
     return true;
   }
   else
   {
     m_game_profile_active = std::move(profile_active);
+    m_game_profile_skipped = std::move(profile_skipped);
     m_own_sections = std::move(own_sections);
     // Only load the default profile for the first controller and clear the others,
     // otherwise they would all share the same mappings on the same (default) device
@@ -271,6 +279,16 @@ void InputConfig::ClearUserOverrides()
 {
   const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
   m_user_override.assign(m_controllers.size(), false);
+}
+
+bool InputConfig::IsGameProfileSkipped(int index) const
+{
+  const auto state_lock = ControllerEmu::EmulatedController::GetStateLock();
+  if (index < 0 || static_cast<size_t>(index) >= m_game_profile_skipped.size())
+    return false;
+  const bool user_override =
+      static_cast<size_t>(index) < m_user_override.size() && m_user_override[index];
+  return m_game_profile_skipped[index] && !user_override;
 }
 
 ControllerEmu::EmulatedController* InputConfig::GetController(int index) const

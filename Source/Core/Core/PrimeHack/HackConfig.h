@@ -46,6 +46,8 @@ bool LockCameraInPuzzles();
 bool GetEFBTexture();
 bool GetFogDisabled();
 void SetFogDisabled(bool toggle);
+// Removes the run-time fog override, so the user's own fog setting applies again.
+void ClearFogOverride();
 bool GetAutoFogToggleEnabled();
 bool GetBloom();
 bool GetReduceBloom();

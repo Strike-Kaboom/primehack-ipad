@@ -708,7 +708,8 @@ void FpsControls::run_mod_mp3(Game active_game, Region active_region) {
     const float target_pitch = Centre == prime::GetLockCamera() ? 0.f : 0.23f;
 
     if (pitch == target_pitch) {
-      writef32(target_pitch, pitch);
+      // PrimeHack for iPad: upstream passed `pitch` as the address here, writing to guest address 0.
+      writef32(target_pitch, firstperson_pitch);
       mp3_handle_cursor(false, false);
 
       return;

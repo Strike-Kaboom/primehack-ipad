@@ -101,9 +101,27 @@ void EnforceIOSControllerLayout(Game game) {
   {
     // The host thread edits and saves mappings under this lock; reading them without it races.
     const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    // The game's PrimeHack layout was skipped when the game started because player 1 had no game
+    // controller yet (the pad was switched on later). Now one is bound: reload so the layout
+    // applies. Two checks in a row first, so the app has finished binding and saving it.
+    static int s_skipped_checks = 0;
+    if (!config->IsGameProfileActive(0) && config->IsGameProfileSkipped(0) &&
+        BoundToGameController(config))
+    {
+      if (++s_skipped_checks >= 2 && now >= s_next_reload) {
+        s_skipped_checks = 0;
+        s_next_reload = now + std::chrono::seconds(10);
+        reload = true;
+      }
+    }
+    else
+    {
+      s_skipped_checks = 0;
+    }
+
     // Only while the game's PrimeHack profile is in effect for player 1: not on a touchscreen
     // slot, not on a release PrimeHack does not drive, not after the user loaded their own mapping.
-    if (!config->IsGameProfileActive(0) || !BoundToGameController(config))
+    if (!reload && (!config->IsGameProfileActive(0) || !BoundToGameController(config)))
       return;
 
     ControllerEmu::ControlGroup* stick =
@@ -136,9 +154,11 @@ void EnforceIOSControllerLayout(Game game) {
   // Outside the lock: LoadConfig looks up the profile first, which can raise a panic alert that
   // waits on the main thread, and only then takes the lock itself.
   if (reload) {
-    if (is_gamecube)
+    if (is_gamecube) {
       Pad::LoadConfig();
-    else
+      // Wiimote::LoadConfig refreshes these itself; the GC path does not.
+      UpdateHackSettings();
+    } else
       ::Wiimote::LoadConfig();
   }
 }
@@ -255,6 +275,12 @@ bool GetFogDisabled() {
 
 void SetFogDisabled(bool toggle) {
   Config::SetCurrent(Config::GFX_DISABLE_FOG, toggle);
+}
+
+void ClearFogOverride() {
+  // The run-time layer only exists while a game runs.
+  if (Config::GetLayer(Config::LayerType::CurrentRun) != nullptr)
+    Config::DeleteKey(Config::LayerType::CurrentRun, Config::GFX_DISABLE_FOG);
 }
 
 bool GetAutoFogToggleEnabled() {
@@ -416,7 +442,13 @@ float GetFov(Game game) {
 }
 
 bool InvertedY() {
+#ifdef IPHONEOS
+  // PrimeHack for iPad: read the settings screen's value live, so a change made mid-game applies at
+  // once (the cached copy only refreshes when the game or controller config reloads).
+  return Config::Get(Config::PRIMEHACK_IOS_INVERT_Y);
+#else
   return inverted_y;
+#endif
 }
 
 void SetInvertedY(bool inverted) {
@@ -424,7 +456,11 @@ void SetInvertedY(bool inverted) {
 }
 
 bool InvertedX() {
+#ifdef IPHONEOS
+  return Config::Get(Config::PRIMEHACK_IOS_INVERT_X);
+#else
   return inverted_x;
+#endif
 }
 
 void SetInvertedX(bool inverted) {

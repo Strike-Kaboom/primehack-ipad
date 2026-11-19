@@ -169,7 +169,14 @@ void update_mod_state_from_config() {
   SetModEnabled<CutBeamFxMP1>(GetEnableSecondaryGunFX());
   SetModEnabled<AutoFogToggleMP3>(GetAutoFogToggleEnabled());
 
-  if (Config::Get(Config::MAIN_ENABLE_CHEATS)) {
+#ifdef IPHONEOS
+  // PrimeHack for iPad: each of these has its own switch in Settings -> PrimeHack, and the app has no
+  // separate "Enable Cheats" master switch for them, so turning one on is enough.
+  constexpr bool cheats_allowed = true;
+#else
+  const bool cheats_allowed = Config::Get(Config::MAIN_ENABLE_CHEATS);
+#endif
+  if (cheats_allowed) {
     SetModEnabled<Noclip>(Config::Get(Config::PRIMEHACK_NOCLIP));
     SetModEnabled<Invulnerability>(Config::Get(Config::PRIMEHACK_INVULNERABILITY));
     SetModEnabled<SkipCutscene>(Config::Get(Config::PRIMEHACK_SKIPPABLE_CUTSCENES));

@@ -129,7 +129,7 @@ enum PrimeHackSettingsModelBuilder {
                          L("Moves the arm cannon so it suits a wider field of view."),
                          defaultValue: true, set: { apply(.armReposition($0)) }),
       SettingsRow.toggle("primehack-gunfx", L("Secondary Gun Effects"), s.secondaryGunFX,
-                         L("Keeps the extra beam effects on the arm cannon in Metroid Prime."),
+                         L("Restores the GameCube version's extra arm cannon beam effects in Trilogy's Metroid Prime."),
                          defaultValue: false, set: { apply(.secondaryGunFX($0)) }),
       SettingsRow.toggle("primehack-culling", L("Disable Culling"), s.toggleCulling,
                          L("Draws objects outside the original view so a wide field of view has no pop-in. Costs performance."),
@@ -137,9 +137,9 @@ enum PrimeHackSettingsModelBuilder {
     ])
 
     let gameplay = MenuSection(id: "primehack-gameplay", header: L("Gameplay"),
-                               footer: L("Takes effect when a game starts."), items: [
+                               footer: L("Changes apply straight away, in the games each one supports."), items: [
       SettingsRow.toggle("primehack-skip-cutscenes", L("Skippable Cutscenes"), s.skippableCutscenes,
-                         L("Lets you skip cutscenes that normally can't be skipped."),
+                         L("Lets you skip cutscenes on a first playthrough, which the games normally only allow once you've finished them. Press Options (the game's Start or + button) during a cutscene."),
                          defaultValue: false, set: { apply(.skippableCutscenes($0)) }),
       SettingsRow.toggle("primehack-dashing", L("Restore Dashing"), s.restoreDashing,
                          L("Brings back the scan dash from the original GameCube releases."),
@@ -151,19 +151,19 @@ enum PrimeHackSettingsModelBuilder {
                          L("Makes Hypermode available from the start in Trilogy."),
                          defaultValue: true, set: { apply(.unlockHypermode($0)) }),
       SettingsRow.toggle("primehack-vouchers", L("Friend Vouchers"), s.friendVouchers,
-                         L("Gives you the Friend Vouchers used for some Trilogy extras."),
+                         L("Trilogy extras that normally also need Friend Vouchers can be bought with credits alone."),
                          defaultValue: false, set: { apply(.friendVouchers($0)) }),
-      SettingsRow.toggle("primehack-mp2-portal", L("Skip Prime 2 Portal Wait"), s.skipPortalMP2,
-                         L("Skips the long wait at portals in Metroid Prime 2."),
+      SettingsRow.toggle("primehack-mp2-portal", L("Skip Prime 2 Portal Cutscenes"), s.skipPortalMP2,
+                         L("Skips the cutscene each time you go through a portal between Light and Dark Aether in Metroid Prime 2."),
                          defaultValue: false, set: { apply(.skipPortalMP2($0)) }),
       SettingsRow.toggle("primehack-any-beam", L("Doors Open with Any Beam"), s.anyBeamDoors,
-                         L("Coloured doors open with whatever beam you fire."),
+                         L("Prime 1: a coloured door opens with any beam once you own the beam it needs. Prime 2: the Annihilator Beam opens every beam door."),
                          defaultValue: false, set: { apply(.anyBeamDoors($0)) }),
     ])
 
     let cheats = MenuSection(id: "primehack-cheats", header: L("Cheats"), items: [
       SettingsRow.toggle("primehack-invulnerable", L("Invulnerability"), s.invulnerability,
-                         L("Samus takes no damage."),
+                         L("Samus takes no damage from most sources."),
                          defaultValue: false, set: { apply(.invulnerability($0)) }),
       SettingsRow.toggle("primehack-noclip", L("Noclip"), s.noclip,
                          L("Fly through walls. Can break your save if you leave a room the wrong way."),

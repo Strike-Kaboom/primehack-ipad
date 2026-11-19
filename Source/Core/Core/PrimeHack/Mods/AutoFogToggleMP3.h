@@ -10,10 +10,20 @@ class AutoFogToggleMP3 : public PrimeMod {
 public:
   void run_mod(Game game, Region region) override;
   bool init_mod(Game game, Region region) override;
-  void on_state_change(ModState) override {}
+  // PrimeHack for iPad: switching the mod off hands fog back to the user's own setting.
+  void on_state_change(ModState state) override {
+    if (state == ModState::DISABLED)
+      release_fog();
+  }
 
   bool is_cheat() const override { return false; }
   GEN_NAME(AutoFogToggleMP3)
+
+private:
+  // Drops this mod's fog override (the Scan Visor in Prime 3 turns fog off). Without this, leaving
+  // Prime 3 inside Trilogy while scanning kept fog off in Prime 1 and 2 for the rest of the run.
+  void release_fog();
+  bool m_fog_overridden = false;
 };
 
 } // namespace prime
