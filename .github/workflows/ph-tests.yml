@@ -2,7 +2,7 @@ name: PowerPC differential tests
 
 on:
   push:
-    branches: [ph-tests]
+    branches: [ph-tests, "ph-tests-*"]
   workflow_dispatch:
     inputs:
       cases:
