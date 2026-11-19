@@ -103,9 +103,11 @@ void ControlGroup::LoadConfig(Common::IniFile::Section* sec, const std::string& 
   {
     auto* const ext = static_cast<PrimeHackModes*>(this);
 
-    std::string i;
-    sec->Get(base + name + "/Mode", &i, "0");
-    ext->SetSelectedDevice(stoi(i));
+    // PrimeHack for iPad: parse via IniFile::Section::Get instead of std::stoi so an empty or
+    // malformed Mode value cannot throw std::invalid_argument and abort.
+    int mode = 0;
+    sec->Get(base + name + "/Mode", &mode, 0);
+    ext->SetSelectedDevice(mode);
   }
 
   if (type == GroupType::PrimeHackAltProfile)

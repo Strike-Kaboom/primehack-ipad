@@ -103,6 +103,8 @@ void PrimeMod::reset_mod() {
   original_instructions.clear();
   pending_change_backups.clear();
   code_groups.clear();
+  // PrimeHack for iPad: clear pending RSO patches on reset so reloading MP3 does not duplicate them.
+  pending_dyna_changes.clear();
   current_active_changes.clear();
   initialized = false;
   patches_disabled = false;

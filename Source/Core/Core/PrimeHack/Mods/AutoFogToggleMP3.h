@@ -10,10 +10,14 @@ class AutoFogToggleMP3 : public PrimeMod {
 public:
   void run_mod(Game game, Region region) override;
   bool init_mod(Game game, Region region) override;
-  // PrimeHack for iPad: switching the mod off hands fog back to the user's own setting.
-  void on_state_change(ModState state) override {
-    if (state == ModState::DISABLED)
+  // PrimeHack for iPad: on_state_change receives old_state, so check mod_state() (and on_reset)
+  // to hand fog back to the user's own setting when the mod is disabled or the game changes.
+  void on_state_change(ModState old_state) override {
+    if (mod_state() == ModState::DISABLED)
       release_fog();
+  }
+  void on_reset() override {
+    release_fog();
   }
 
   bool is_cheat() const override { return false; }

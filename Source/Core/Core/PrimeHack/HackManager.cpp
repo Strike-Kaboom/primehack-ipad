@@ -402,6 +402,12 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
     GetVariableManager()->reset_variables();
     sDynalibChanges.clear();
     sDynalibOriginal.clear();
+    // PrimeHack for iPad: clear MP3 RSO module list on game change so savestates in MP1/MP2
+    // cannot write stale MP3 epilogues into guest RAM, and record sLastGame/sLastRegion even
+    // when transitioning to INVALID_GAME so the reset block does not re-run every frame.
+    sModuleList.clear();
+    sLastGame = sActiveGame;
+    sLastRegion = sActiveRegion;
 
     for (auto& cb : sGameChangeCbList) {
       cb(sActiveGame, sActiveRegion);
@@ -452,7 +458,9 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
     mod.set_temporary_cpu_guard(nullptr);
   });
 
-  prime::g_mouse_input->ResetDeltas();
+  // PrimeHack for iPad: guard against null mouse backend before ControllerInterface initializes.
+  if (prime::g_mouse_input)
+    prime::g_mouse_input->ResetDeltas();
 }
 
 Game GetActiveGame() {

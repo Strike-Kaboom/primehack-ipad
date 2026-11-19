@@ -526,8 +526,9 @@ void SerialInterfaceManager::UpdateDevices()
   g_controller_interface.SetCurrentInputChannel(ciface::InputChannel::SerialInterface);
   g_controller_interface.UpdateInput();
 
-  //PrimeHack 
-  prime::g_mouse_input->UpdateInput();
+  // PrimeHack for iPad: guard against null mouse backend before ControllerInterface initializes.
+  if (prime::g_mouse_input)
+    prime::g_mouse_input->UpdateInput();
 
   // Update channels and set the status bit if there's new data
   for (u32 i = 0; i != MAX_SI_CHANNELS; ++i)

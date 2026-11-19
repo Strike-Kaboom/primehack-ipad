@@ -51,6 +51,8 @@ bool mem_check(u32 address);
 
 void set_beam_owned(int index, bool owned);
 void set_visor_owned(int index, bool owned);
+// PrimeHack for iPad: reset beam/visor slot bookkeeping on game change.
+void reset_beam_visor_state();
 void set_cursor_pos(float x, float y);
 
 void swap_alt_profiles(u32 ball_state, u32 transition_state, u32 screw_state);

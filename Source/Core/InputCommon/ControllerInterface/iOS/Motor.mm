@@ -204,6 +204,18 @@ Motor::Motor(CHHapticEngine* engine, const std::string name)
 
 Motor::~Motor()
 {
+#if !TARGET_OS_TV
+  // PrimeHack for iPad: RemoveDevice destroys a disconnected controller without calling SetState(0),
+  // so stop on-device haptics if this motor left them running.
+  {
+    std::lock_guard<std::mutex> guard(m_state->lock);
+    if (m_state->device_on)
+    {
+      [[DOLDeviceHaptics shared] setState:false];
+      m_state->device_on = false;
+    }
+  }
+#endif
   // PrimeHack for iPad: an in-flight handler holds the state alive through its weak_ptr and only
   // sets a flag, so teardown never waits on it.
   CHHapticEngine* engine = m_state->haptic_engine;

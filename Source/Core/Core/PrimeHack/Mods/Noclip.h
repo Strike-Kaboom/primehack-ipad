@@ -11,6 +11,11 @@ public:
   void run_mod(Game game, Region region) override;
   bool init_mod(Game game, Region region) override;
   void on_state_change(ModState old_state) override;
+  // PrimeHack for iPad: reset saved collision mask and control state on game change/shutdown.
+  void on_reset() override {
+    has_saved_matexclude = false;
+    had_control = true;
+  }
   bool is_cheat() const override { return true; }
   GEN_NAME(Noclip)
 
@@ -33,7 +38,8 @@ private:
   bool has_control_mp2_gc();
   bool has_control_mp3();
 
-  u64 old_matexclude_list;
+  u64 old_matexclude_list = 0;
+  bool has_saved_matexclude = false;
 
   Transform player_transform;
   vec3 player_vec;

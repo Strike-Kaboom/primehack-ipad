@@ -34,6 +34,12 @@ void set_visor_owned(int index, bool owned) {
   visor_owned[index] = owned;
 }
 
+void reset_beam_visor_state() {
+  // PrimeHack for iPad: clear slot indices across game switches so scroll starts from slot 0.
+  current_beam = 0;
+  current_visor = 0;
+}
+
 void set_cursor_pos(float x, float y) {
   cursor_x = x;
   cursor_y = y;
@@ -41,46 +47,63 @@ void set_cursor_pos(float x, float y) {
 
 std::tuple<int, int> get_visor_switch(std::array<std::tuple<int, int>, 4> const& visors, bool combat_visor) {
   static bool pressing_button = false;
+  // PrimeHack for iPad: keep current_visor synced as a 0..3 slot index across direct picks and scroll.
+  if (combat_visor) {
+    current_visor = 0;
+  }
   if (CheckVisorCtl(0)) {
     if (!combat_visor) {
       if (!pressing_button) {
         pressing_button = true;
-        return visors[0];
-      } else {
-        return std::make_tuple(-1, 0);
+        if (visor_owned[0]) {
+          current_visor = 0;
+          return visors[0];
+        }
       }
+      return std::make_tuple(-1, 0);
     }
   }
   if (CheckVisorCtl(1)) {
     if (!pressing_button) {
       pressing_button = true;
-      return visors[1];
+      if (visor_owned[1]) {
+        current_visor = 1;
+        return visors[1];
+      }
     }
   } else if (CheckVisorCtl(2)) {
     if (!pressing_button) {
       pressing_button = true;
-      return visors[2];
+      if (visor_owned[2]) {
+        current_visor = 2;
+        return visors[2];
+      }
     }
   } else if (CheckVisorCtl(3)) {
     if (!pressing_button) {
       pressing_button = true;
-      return visors[3];
+      if (visor_owned[3]) {
+        current_visor = 3;
+        return visors[3];
+      }
     }
   } else if (CheckVisorScrollCtl(true)) {
     if (!pressing_button) {
       pressing_button = true;
       for (int i = 0; i < 4; i++) {
-        if (visor_owned[current_visor = (current_visor + 1) % 4]) break;
+        current_visor = (current_visor + 1) % 4;
+        if (visor_owned[current_visor])
+          return visors[current_visor];
       }
-      return visors[current_visor];
     }
   } else if (CheckVisorScrollCtl(false)) {
     if (!pressing_button) {
       pressing_button = true;
       for (int i = 0; i < 4; i++) {
-        if (visor_owned[current_visor = (current_visor + 3) % 4]) break;
+        current_visor = (current_visor + 3) % 4;
+        if (visor_owned[current_visor])
+          return visors[current_visor];
       }
-      return visors[current_visor];
     }
   } else {
     pressing_button = false;
@@ -90,41 +113,37 @@ std::tuple<int, int> get_visor_switch(std::array<std::tuple<int, int>, 4> const&
 
 int get_beam_switch(std::array<int, 4> const& beams) {
   static bool pressing_button = false;
-  if (CheckBeamCtl(0)) {
-    if (!pressing_button) {
-      pressing_button = true;
-      return current_beam = beams[0];
+  // PrimeHack for iPad: store the 0..3 slot index in current_beam for both direct picks and scroll
+  // (previously direct picks stored the game beam ID beams[slot], breaking MP1 scroll order).
+  for (int slot = 0; slot < 4; ++slot) {
+    if (CheckBeamCtl(slot)) {
+      if (!pressing_button) {
+        pressing_button = true;
+        if (beam_owned[slot]) {
+          current_beam = slot;
+          return beams[slot];
+        }
+      }
+      return -1;
     }
-  } else if (CheckBeamCtl(1)) {
-    if (!pressing_button) {
-      pressing_button = true;
-      return current_beam = beams[1];
-    }
-  } else if (CheckBeamCtl(2)) {
-    if (!pressing_button) {
-      pressing_button = true;
-      return current_beam = beams[2];
-    }
-  } else if (CheckBeamCtl(3)) {
-    if (!pressing_button) {
-      pressing_button = true;
-      return current_beam = beams[3];
-    }
-  } else if (CheckBeamScrollCtl(true)) {
+  }
+  if (CheckBeamScrollCtl(true)) {
     if (!pressing_button) {
       pressing_button = true;
       for (int i = 0; i < 4; i++) {
-        if (beam_owned[current_beam = (current_beam + 1) % 4]) break;
+        current_beam = (current_beam + 1) % 4;
+        if (beam_owned[current_beam])
+          return beams[current_beam];
       }
-      return beams[current_beam];
     }
   } else if (CheckBeamScrollCtl(false)) {
     if (!pressing_button) {
       pressing_button = true;
       for (int i = 0; i < 4; i++) {
-        if (beam_owned[current_beam = (current_beam + 3) % 4]) break;
+        current_beam = (current_beam + 3) % 4;
+        if (beam_owned[current_beam])
+          return beams[current_beam];
       }
-      return beams[current_beam];
     }
   } else {
     pressing_button = false;
@@ -164,6 +183,7 @@ void swap_alt_profiles(u32 ball_state, u32 transition_state, u32 screw_state)
     was_in_alternate = false;
   }
 }
+
 
 bool mem_check(u32 address) {
   return (address >= 0x80000000) && (address < 0x81800000);

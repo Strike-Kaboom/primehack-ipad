@@ -118,10 +118,17 @@ static inline bool IsDisconnectedPlaceholder(const std::shared_ptr<ciface::Core:
   if (!cfg)
     return @"";
   const int port = static_cast<int>(portOneBased - 1);
+  if (port < 0 || port >= cfg->GetControllerCount())
+    return @"";
   auto* pad = cfg->GetController(port);
   if (!pad)
     return @"";
-  const auto def = pad->GetDefaultDevice().ToString();
+  // PrimeHack for iPad: CPU thread reloads/writes default device under this lock (EnforceIOSControllerLayout).
+  std::string def;
+  {
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    def = pad->GetDefaultDevice().ToString();
+  }
   return [NSString stringWithUTF8String:def.c_str()];
 }
 
@@ -131,10 +138,16 @@ static inline bool IsDisconnectedPlaceholder(const std::shared_ptr<ciface::Core:
   if (!cfg)
     return;
   const int port = static_cast<int>(portOneBased - 1);
+  if (port < 0 || port >= cfg->GetControllerCount())
+    return;
   auto* pad = cfg->GetController(port);
   if (!pad)
     return;
-  pad->SetDefaultDevice("");
+  {
+    // PrimeHack for iPad: synchronize device mutation with CPU thread reads under state lock.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    pad->SetDefaultDevice("");
+  }
   pad->UpdateReferences(g_controller_interface);
 }
 
@@ -570,9 +583,15 @@ static bool RepairTouchscreenMicrophone(int port)
   auto* cfg = Wiimote::GetConfig();
   if (!cfg) return @"";
   const int idx = (int)indexOneBased - 1;
+  if (idx < 0 || idx >= cfg->GetControllerCount()) return @"";
   auto* wm = cfg->GetController(idx);
   if (!wm) return @"";
-  const auto def = wm->GetDefaultDevice().ToString();
+  // PrimeHack for iPad: CPU thread reloads/writes default device under this lock (EnforceIOSControllerLayout).
+  std::string def;
+  {
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    def = wm->GetDefaultDevice().ToString();
+  }
   return [NSString stringWithUTF8String:def.c_str()];
 }
 
@@ -752,18 +771,26 @@ static const ControllerEmu::EmulatedController* WiimoteAt(NSInteger indexOneBase
 // editor (`applyProfileText:`) share it.
 static void ApplyProfileToPad(ControllerEmu::EmulatedController* pad, Common::IniFile& ini, bool restore)
 {
-  const auto selectedDev = pad->GetDefaultDevice();
-  pad->LoadConfig(ini.GetOrCreateSection("Profile"));
-  if (restore) pad->SetDefaultDevice(selectedDev);
+  {
+    // PrimeHack for iPad: hold the state lock while replacing bindings and restoring the device.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    const auto selectedDev = pad->GetDefaultDevice();
+    pad->LoadConfig(ini.GetOrCreateSection("Profile"));
+    if (restore) pad->SetDefaultDevice(selectedDev);
+  }
   pad->UpdateReferences(g_controller_interface);
   Pad::GetConfig()->SaveConfig();
 }
 
 static void ApplyProfileToWiimote(int idx, ControllerEmu::EmulatedController* wm, Common::IniFile& ini, bool restore)
 {
-  const auto selectedDev = wm->GetDefaultDevice();
-  LoadProfileKeepingExtension(wm, ini.GetOrCreateSection("Profile"));
-  if (restore) wm->SetDefaultDevice(selectedDev);
+  {
+    // PrimeHack for iPad: hold the state lock while replacing bindings and restoring the device.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    const auto selectedDev = wm->GetDefaultDevice();
+    LoadProfileKeepingExtension(wm, ini.GetOrCreateSection("Profile"));
+    if (restore) wm->SetDefaultDevice(selectedDev);
+  }
   wm->UpdateReferences(g_controller_interface);
   DisableCoreIMUPointerIfTouchscreen(idx);
   RepairTouchscreenIRPointer(idx);
@@ -821,13 +848,29 @@ static void ApplyProfileToWiimote(int idx, ControllerEmu::EmulatedController* wm
 + (void)markUserMappingForGCPort:(NSInteger)portOneBased
 {
   if (auto* cfg = Pad::GetConfig())
-    cfg->SetUserOverride((int)portOneBased - 1);
+  {
+    const int port = (int)portOneBased - 1;
+    // PrimeHack for iPad: loadProfile saved before SetUserOverride cleared m_game_profile_active,
+    // so SaveOwnMapping persisted the stale pre-game section; re-save now that the override is set.
+    const bool was_game_profile = cfg->IsGameProfileActive(port);
+    cfg->SetUserOverride(port);
+    if (was_game_profile && !cfg->IsGameProfileActive(port))
+      cfg->SaveConfig();
+  }
 }
 
 + (void)markUserMappingForWiimote:(NSInteger)indexOneBased
 {
   if (auto* cfg = Wiimote::GetConfig())
-    cfg->SetUserOverride((int)indexOneBased - 1);
+  {
+    const int idx = (int)indexOneBased - 1;
+    // PrimeHack for iPad: loadProfile saved before SetUserOverride cleared m_game_profile_active,
+    // so SaveOwnMapping persisted the stale pre-game section; re-save now that the override is set.
+    const bool was_game_profile = cfg->IsGameProfileActive(idx);
+    cfg->SetUserOverride(idx);
+    if (was_game_profile && !cfg->IsGameProfileActive(idx))
+      cfg->SaveConfig();
+  }
 }
 
 // Mirror of loadProfile:… in reverse. `SaveConfig` (ControllerEmu.h:245) writes the
@@ -976,8 +1019,10 @@ static NSArray<DOLProfileKey*>* ProfileKeys(ControllerEmu::EmulatedController* c
   auto* pad = cfg ? cfg->GetController((int)portOneBased - 1) : nullptr;
   Common::IniFile ini;
   if (!pad || !LoadProfileText(text, &ini)) return NO;
-  ApplyProfileToPad(pad, ini, restore);
+  // PrimeHack for iPad: mark user override before ApplyProfileToPad saves, so SaveOwnMapping writes
+  // the edited profile rather than the stale pre-game section.
   cfg->SetUserOverride((int)portOneBased - 1);  // the profile editor is a user choice
+  ApplyProfileToPad(pad, ini, restore);
   return YES;
 }
 
@@ -988,8 +1033,10 @@ static NSArray<DOLProfileKey*>* ProfileKeys(ControllerEmu::EmulatedController* c
   auto* wm = cfg ? cfg->GetController(idx) : nullptr;
   Common::IniFile ini;
   if (!wm || !LoadProfileText(text, &ini)) return NO;
-  ApplyProfileToWiimote(idx, wm, ini, restore);
+  // PrimeHack for iPad: mark user override before ApplyProfileToWiimote saves, so SaveOwnMapping
+  // writes the edited profile rather than the stale pre-game section.
   cfg->SetUserOverride(idx);  // the profile editor is a user choice
+  ApplyProfileToWiimote(idx, wm, ini, restore);
   return YES;
 }
 

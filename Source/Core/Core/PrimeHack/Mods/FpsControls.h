@@ -22,7 +22,9 @@ class FpsControls : public PrimeMod {
 public:
   void run_mod(Game game, Region region) override;
   bool init_mod(Game game, Region region) override;
-  void on_state_change(ModState old_state) override {}
+  // PrimeHack for iPad: clear published/session state on disable/reset.
+  void on_state_change(ModState old_state) override;
+  void on_reset() override;
   bool is_cheat() const override { return false; }
   GEN_NAME(FpsControls)
 

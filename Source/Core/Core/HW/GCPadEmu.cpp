@@ -433,12 +433,15 @@ void GCPad::ChangeUIPrimeHack(bool useMetroidUI)
 // May introduce Springball into GC at some point.
 bool GCPad::CheckSpringBallCtrl()
 {
+  // PrimeHack for iPad: lock control_ref state reads against main-thread LoadConfig/UpdateReferences.
+  const auto lock = GetStateLock();
   return m_primehack_misc->controls[0].get()->control_ref->State() > 0.5;
 }
 
 
 std::tuple<double, double> GCPad::GetPrimeStickXY()
 {
+  const auto lock = GetStateLock();
   const auto stick_state = m_primehack_stick->GetState();
 
 #ifdef IPHONEOS
@@ -454,6 +457,7 @@ std::tuple<double, double> GCPad::GetPrimeStickXY()
 
 bool GCPad::CheckPitchRecentre()
 {
+  const auto lock = GetStateLock();
   return m_primehack_stick->controls[5]->GetState() > 0.5;
 }
 

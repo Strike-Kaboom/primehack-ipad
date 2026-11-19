@@ -15,6 +15,10 @@ void ContextSensitiveControls::run_mod(Game game, Region region) {
   }
 
   LOOKUP_DYN(object_list);
+  // PrimeHack for iPad: do not walk an unloaded object list during room/title transitions.
+  if (object_list == 0) {
+    return;
+  }
   LOOKUP(motion_vf);
   LOOKUP(dna_scanner_vftable);
   u32 obj_list_iterator = object_list + 4;

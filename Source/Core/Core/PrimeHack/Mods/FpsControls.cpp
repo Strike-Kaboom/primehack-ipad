@@ -139,18 +139,29 @@ void FpsControls::update_pitchyaw_locked() {
   // frame has already been rendered.
   LOOKUP_DYN(object_list);
   LOOKUP_DYN(camera_manager);
+  if (object_list == 0 || camera_manager == 0) {
+    return;
+  }
   LOOKUP(xf_offset);
   const u16 camera_uid = read16(camera_manager);
   if (camera_uid == 0xffff) {
     return;
   }
-  const u32 camera = read32(object_list + ((camera_uid & 0x3ff) << 3) + 4);
+  // PrimeHack for iPad: Prime 3's object list has 2048 entries (0x7ff), vs 1024 (0x3ff) in MP1/MP2;
+  // validate the pointer and clamp fwd.z before asinf to prevent NaN pitch propagation.
+  const Game active_game = GetActiveGame();
+  const u32 index_mask =
+      (active_game == Game::PRIME_3 || active_game == Game::PRIME_3_STANDALONE) ? 0x7ffu : 0x3ffu;
+  const u32 camera = read32(object_list + ((camera_uid & index_mask) << 3) + 4);
+  if (!mem_check(camera)) {
+    return;
+  }
 
   Transform camera_xf;
   camera_xf.read_from(*active_guard, camera + xf_offset);
   const vec3 fwd = camera_xf.fwd();
   yaw = atan2f(fwd.y, fwd.x);
-  pitch = asin(fwd.z);
+  pitch = asinf(std::clamp(fwd.z, -1.f, 1.f));
   pitch = std::clamp(pitch, -1.52f, 1.52f);
 }
 
@@ -252,6 +263,10 @@ void FpsControls::run_mod_menu(Game game, Region region) {
     handle_cursor(*active_guard, p0, p0 + 0xc0, region);
   } else if (region == Region::PAL) {
     u32 cursor_address = read32(0x80621ffc);
+    // PrimeHack for iPad: guard uninitialized PAL menu cursor pointer (matching NTSC_U above).
+    if (!mem_check(cursor_address)) {
+      return;
+    }
     handle_cursor(*active_guard, cursor_address + 0xdc, cursor_address + 0x19c, region);
   }
 }
@@ -769,6 +784,22 @@ void FpsControls::CheckBeamVisorSetting(Game game)
     default:
       break;
   }
+}
+
+void FpsControls::on_state_change(ModState old_state) {
+  // PrimeHack for iPad: disabling FpsControls mid-game must
+  // clear the published gameplay state so adaptive triggers do not see stale state.
+  if (mod_state() == ModState::DISABLED) {
+    PublishPlayerState(0);
+  }
+}
+
+void FpsControls::on_reset() {
+  // PrimeHack for iPad: clear per-game state on game change/shutdown.
+  reset_beam_visor_state();
+  was_in_ridley_fight = false;
+  menu_open = true;
+  interpolating = false;
 }
 
 bool FpsControls::init_mod(Game game, Region region) {

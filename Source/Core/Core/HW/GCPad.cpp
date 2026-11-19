@@ -121,30 +121,36 @@ std::tuple<double, double> GetPrimeStickXY()
 }
 
 bool CheckForward() {
+  // PrimeHack for iPad: lock control_ref state reads against main-thread LoadConfig/UpdateReferences.
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   GCPad* gcpad = static_cast<GCPad*>(s_config.GetController(0));
 
   return gcpad->groups[1]->controls[0].get()->control_ref->State() > 0.5;
 }
 
 bool CheckBack() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   GCPad* gcpad = static_cast<GCPad*>(s_config.GetController(0));
 
   return gcpad->groups[1]->controls[1].get()->control_ref->State() > 0.5;
 }
 
 bool CheckLeft() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   GCPad* gcpad = static_cast<GCPad*>(s_config.GetController(0));
 
   return gcpad->groups[1]->controls[2].get()->control_ref->State() > 0.5;
 }
 
 bool CheckRight() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   GCPad* gcpad = static_cast<GCPad*>(s_config.GetController(0));
 
   return gcpad->groups[1]->controls[3].get()->control_ref->State() > 0.5;
 }
 
 bool CheckJump() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   GCPad* gcpad = static_cast<GCPad*>(s_config.GetController(0));
 
   return gcpad->groups[0]->controls[1]->control_ref->State() > 0.5;

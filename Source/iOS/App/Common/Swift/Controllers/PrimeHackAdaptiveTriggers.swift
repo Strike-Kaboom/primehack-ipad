@@ -111,7 +111,9 @@ final class PrimeHackAdaptiveTriggers {
   private static func isPrimeGameRunning() -> Bool {
     guard TVEmulationBridge.isRunning() else { return false }
     let id = TVEmulationBridge.currentGameID() as String
-    return ["GM8", "G2M", "R3M", "RM3"].contains { id.hasPrefix($0) }
+    // PrimeHack for iPad: match prime::kSupportedTitles (NTSC-U and PAL only) so unsupported
+    // Japanese/other releases do not spin the 30 Hz trigger poll timer.
+    return ["GM8E", "GM8P", "G2ME", "G2MP", "R3ME", "R3MP", "RM3E", "RM3P"].contains { id.hasPrefix($0) }
   }
 
   private func tick() {

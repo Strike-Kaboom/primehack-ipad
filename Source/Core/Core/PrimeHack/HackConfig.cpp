@@ -269,6 +269,12 @@ void SetEFBToTexture(bool toggle) {
   return Config::SetCurrent(Config::GFX_HACK_SKIP_EFB_COPY_TO_RAM, toggle);
 }
 
+// PrimeHack for iPad: drop AutoEFB's run-time override so the user's or game INI's setting applies again.
+void ClearEFBOverride() {
+  if (Config::GetLayer(Config::LayerType::CurrentRun) != nullptr)
+    Config::DeleteKey(Config::LayerType::CurrentRun, Config::GFX_HACK_SKIP_EFB_COPY_TO_RAM);
+}
+
 bool GetFogDisabled() {
   return Config::Get(Config::GFX_DISABLE_FOG);
 }
@@ -508,7 +514,7 @@ double GetHorizontalAxis() {
     return std::get<0>(Wiimote::GetPrimeStickXY());
   }
 
-  if (!Host_RendererHasFocus()) {
+  if (!Host_RendererHasFocus() || !g_mouse_input) {
     return 0;
   }
 
@@ -524,7 +530,7 @@ double GetVerticalAxis() {
     return std::get<1>(Wiimote::GetPrimeStickXY());
   }
 
-  if (!Host_RendererHasFocus()) {
+  if (!Host_RendererHasFocus() || !g_mouse_input) {
     return 0;
   }
 

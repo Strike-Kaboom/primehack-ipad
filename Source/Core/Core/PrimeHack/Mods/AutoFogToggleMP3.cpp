@@ -13,6 +13,9 @@ void AutoFogToggleMP3::run_mod(Game game, Region) {
   bool should_use = false;
 
   LOOKUP_DYN(active_visor);
+  // PrimeHack for iPad: do not read address 0 before player/powerups are loaded.
+  if (active_visor == 0)
+    return;
   should_use = read32(active_visor) == 1u;
 
   if (GetFogDisabled() != should_use) {

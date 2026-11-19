@@ -129,30 +129,39 @@ bool InputConfig::LoadConfig()
         // Load the profile from its own file: reusing `inifile` would replace the controller
         // config every later slot reads its mapping from.
         Common::IniFile profile_ini;
-        profile_ini.Load(profile[n]);
-        const Common::IniFile::Section profile_config = *profile_ini.GetOrCreateSection("Profile");
-        std::string profile_device;
-        profile_config.Get("Device", &profile_device);
-
-        // Bundled gamepad profiles name a placeholder device ("MFi/0/Select Device"): they describe
-        // a layout, not a controller. Apply one only to a slot bound to a game controller (MFi),
-        // and keep that controller; a touchscreen or other slot keeps its own mapping.
-        const bool placeholder = profile_device.find("Select Device") != std::string::npos;
-        if (placeholder && !own_device.starts_with("MFi/"))
+        // PrimeHack for iPad: fall back to the slot's own config if the profile fails to load.
+        if (!profile_ini.Load(profile[n]))
         {
           useProfile[n] = false;
-          profile_skipped[n] = true;
         }
         else
         {
-          std::string base;
-          SplitPath(profile[n], nullptr, &base, nullptr);
-          Core::DisplayMessage("Loading game specific input profile '" + base + "' for device '" +
-                                   controller->GetName() + "'",
-                               6000);
-          config = profile_config;
-          if (placeholder)
-            keep_device = own_device;
+          const Common::IniFile::Section profile_config =
+              *profile_ini.GetOrCreateSection("Profile");
+          std::string profile_device;
+          profile_config.Get("Device", &profile_device);
+
+          // Bundled gamepad profiles name a placeholder device ("MFi/0/Select Device"): they
+          // describe a layout, not a controller. Apply one only to a slot bound to a game
+          // controller (MFi), and keep that controller; a touchscreen or other slot keeps its own
+          // mapping.
+          const bool placeholder = profile_device.find("Select Device") != std::string::npos;
+          if (placeholder && !own_device.starts_with("MFi/"))
+          {
+            useProfile[n] = false;
+            profile_skipped[n] = true;
+          }
+          else
+          {
+            std::string base;
+            SplitPath(profile[n], nullptr, &base, nullptr);
+            Core::DisplayMessage("Loading game specific input profile '" + base + "' for device '" +
+                                     controller->GetName() + "'",
+                                 6000);
+            config = profile_config;
+            if (placeholder)
+              keep_device = own_device;
+          }
         }
       }
       if (!useProfile[n])

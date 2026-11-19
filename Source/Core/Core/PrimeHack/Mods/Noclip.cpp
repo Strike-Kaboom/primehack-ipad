@@ -142,6 +142,10 @@ void Noclip::run_mod_mp1(bool has_control) {
     return;
   }
   const u16 camera_id = read16(camera_manager);
+  // PrimeHack for iPad: match the other games' invalid-camera guard before indexing object_list.
+  if (camera_id == 0xffff) {
+    return;
+  }
 
   const u32 camera_tf_addr = read32(object_list + ((camera_id & 0x3ff) << 3) + 4) + 0x2c;
   vec3 movement_vec = (get_movement_vec(camera_tf_addr) * 0.5f) + player_transform.loc();
@@ -570,6 +574,7 @@ void Noclip::on_state_change(ModState old_state) {
         player_transform.read_from(*active_guard, player + 0x2c);
         old_matexclude_list = read64(player + 0x70);
         write64(0xffffffffffffffff, player + 0x70);
+        has_saved_matexclude = true;
         break;
       case Game::PRIME_1_GCN:
       case Game::PRIME_1_GCN_R1:
@@ -577,31 +582,41 @@ void Noclip::on_state_change(ModState old_state) {
         player_transform.read_from(*active_guard, player + 0x34);
         old_matexclude_list = read64(player + 0x78);
         write64(0xffffffffffffffff, player + 0x78);
+        has_saved_matexclude = true;
         break;
       case Game::PRIME_2:
         player_vec.read_from(*active_guard, player + 0x50);
         old_matexclude_list = read64(player + 0x70);
         write64(0xffffffffffffffff, player + 0x70);
+        has_saved_matexclude = true;
         break;
       case Game::PRIME_2_GCN:
         player_vec.read_from(*active_guard, player + 0x54);
         old_matexclude_list = read64(player + 0x74);
         write64(0xffffffffffffffff, player + 0x74);
+        has_saved_matexclude = true;
         break;
       case Game::PRIME_3:
         player_vec.read_from(*active_guard, player + 0x6c);
         old_matexclude_list = read64(player + 0x88);
         write64(0xffffffffffffffff, player + 0x88);
+        has_saved_matexclude = true;
         break;
       case Game::PRIME_3_STANDALONE:
         player_vec.read_from(*active_guard, player + 0x6c);
         old_matexclude_list = read64(player + 0x88);
         write64(0xffffffffffffffff, player + 0x88);
+        has_saved_matexclude = true;
         break;
       default:
         break;
     }
   } else if (mod_state() == ModState::DISABLED && old_state == ModState::ENABLED) {
+    // PrimeHack for iPad: only restore old_matexclude_list if it was captured for this player.
+    if (!has_saved_matexclude) {
+      return;
+    }
+    has_saved_matexclude = false;
     switch (GetActiveGame()) {
       case Game::PRIME_1:
         write64(old_matexclude_list, player + 0x70);

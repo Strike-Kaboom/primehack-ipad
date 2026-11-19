@@ -254,6 +254,8 @@ bool CheckBeam(int beamcount)
 }
 
 bool CheckForward() {
+  // PrimeHack for iPad: lock control_ref state reads against main-thread LoadConfig/UpdateReferences.
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   WiimoteEmu::Wiimote* wiimote = static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(0));
 
   return wiimote->GetNunchukGroup(WiimoteEmu::NunchukGroup::Stick)->
@@ -261,6 +263,7 @@ bool CheckForward() {
 }
 
 bool CheckBack() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   WiimoteEmu::Wiimote* wiimote = static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(0));
 
   return wiimote->GetNunchukGroup(WiimoteEmu::NunchukGroup::Stick)->
@@ -268,6 +271,7 @@ bool CheckBack() {
 }
 
 bool CheckLeft() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   WiimoteEmu::Wiimote* wiimote = static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(0));
 
   return wiimote->GetNunchukGroup(WiimoteEmu::NunchukGroup::Stick)->
@@ -275,6 +279,7 @@ bool CheckLeft() {
 }
 
 bool CheckRight() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   WiimoteEmu::Wiimote* wiimote = static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(0));
 
   return wiimote->GetNunchukGroup(WiimoteEmu::NunchukGroup::Stick)->
@@ -282,6 +287,7 @@ bool CheckRight() {
 }
 
 bool CheckJump() {
+  const auto lock = ControllerEmu::EmulatedController::GetStateLock();
   WiimoteEmu::Wiimote* wiimote = static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(0));
 
   return wiimote->groups[0].get()->controls[1]->control_ref->State() > 0.5;

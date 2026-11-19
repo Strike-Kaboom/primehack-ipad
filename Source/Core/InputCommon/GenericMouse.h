@@ -22,8 +22,9 @@ public:
   int32_t GetDeltaHorizontalAxis() const;
 
 protected:
-  bool cursor_locked;
-  int32_t dx, dy;
+  // PrimeHack for iPad: initialize fields so NullMouse never returns uninitialized deltas.
+  bool cursor_locked = false;
+  int32_t dx = 0, dy = 0;
 };
 
 class NullMouse : public GenericMouse {

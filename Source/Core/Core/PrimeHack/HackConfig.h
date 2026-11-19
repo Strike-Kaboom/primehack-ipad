@@ -41,6 +41,8 @@ bool GrappleTappingMode();
 bool GrappleCtlBound();
 
 void SetEFBToTexture(bool toggle);
+// PrimeHack for iPad: removes the run-time EFB override, so the user's or game INI's setting applies again.
+void ClearEFBOverride();
 bool UseMPAutoEFB();
 bool LockCameraInPuzzles();
 bool GetEFBTexture();

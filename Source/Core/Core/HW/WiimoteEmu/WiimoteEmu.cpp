@@ -1205,27 +1205,33 @@ Nunchuk* Wiimote::GetNunchuk()
 
 bool Wiimote::CheckVisorCtrl(int visorcount)
 {
+  // PrimeHack for iPad: lock control_ref state/expression reads against main-thread LoadConfig/UpdateReferences.
+  const auto lock = GetStateLock();
   return m_primehack_visors->controls[visorcount].get()->control_ref->State() > 0.5;
 }
 
 bool Wiimote::CheckBeamCtrl(int beamcount)
 {
+  const auto lock = GetStateLock();
   return m_primehack_beams->controls[beamcount].get()->control_ref->State() > 0.5;
 }
 
 bool Wiimote::CheckBeamScrollCtrl(bool direction)
 {
+  const auto lock = GetStateLock();
   return m_primehack_beams->controls[direction ? 4 : 5].get()->control_ref->State() > 0.5;
 }
 
 bool Wiimote::CheckVisorScrollCtrl(bool direction)
 {
+  const auto lock = GetStateLock();
   return m_primehack_visors->controls[direction ? 4 : 5].get()->control_ref->State() > 0.5;
 }
 
 // Grapple Lasso
 bool Wiimote::CheckGrappleCtrl()
 {
+  const auto lock = GetStateLock();
   return m_primehack_misc->controls[1].get()->control_ref->State() > 0.5;
 }
 
@@ -1236,6 +1242,7 @@ bool Wiimote::CheckUseGrappleTapping()
 
 bool Wiimote::IsGrappleBinded()
 {
+  const auto lock = GetStateLock();
   return !m_primehack_misc->controls[1].get()->control_ref->GetExpression().empty();
 }
 
@@ -1246,11 +1253,13 @@ bool Wiimote::CheckImprovedMotions()
 
 bool Wiimote::CheckSpringBallCtrl()
 {
+  const auto lock = GetStateLock();
   return m_primehack_misc->controls[0].get()->control_ref->State() > 0.5;
 }
 
 std::tuple<double, double> Wiimote::GetPrimeStickXY()
 {
+  const auto lock = GetStateLock();
   const auto stick_state = m_primehack_stick->GetState();
 
 #ifdef IPHONEOS
@@ -1266,6 +1275,7 @@ std::tuple<double, double> Wiimote::GetPrimeStickXY()
 
 bool Wiimote::CheckPitchRecentre()
 {
+  const auto lock = GetStateLock();
   return m_primehack_stick->controls[5]->GetState() > 0.5;
 }
 
