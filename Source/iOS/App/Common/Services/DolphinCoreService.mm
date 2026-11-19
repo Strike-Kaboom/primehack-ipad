@@ -5,6 +5,7 @@
 #import "DOLConfigBridge.h"
 
 #import "Core/Config/UISettings.h"
+#import "AudioCommon/Enums.h" // DPL2Quality (MainSettings.h only forward-declares it)
 #import "Core/Config/MainSettings.h"
 #import "Core/Config/GraphicsSettings.h"
 #import "VideoCommon/VideoConfig.h" // Defines TriState enum (GraphicsSettings.h only forward-declares it)
@@ -145,6 +146,9 @@ static inline void SetBaseIfUnspecified(const Config::Info<T>& info, const T& va
   // internal resolution several steps on high-density screens; keep it opt-in.
   // SetBaseIfUnspecified preserves the user's explicit resolution selection.
   SetBaseIfUnspecified(Config::GFX_EFB_SCALE, 1);
+  // PrimeHack for iPad: the surround decoder delays sound by one block. Low (1024 frames, ~21 ms)
+  // instead of High (2048, ~43 ms) keeps spatial audio on AirPods in step with the picture.
+  SetBaseIfUnspecified(Config::MAIN_DPL2_QUALITY, AudioCommon::DPL2Quality::Low);
 
   // PrimeHack for iPad: sharper graphics (3x resolution, 16x anisotropic filtering), applied once
   // as the user's own Base values instead of game INI values, so Settings → Graphics still wins

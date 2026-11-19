@@ -450,7 +450,10 @@ let iCube = Target.target(
             "INFOPLIST_FILE[sdk=appletv*]": "DolphiniOS/Info-TV.plist",
             "INFOPLIST_KEY_GCSupportsControllerUserInteraction": "YES",
             "INFOPLIST_KEY_GCSupportsGameMode": "YES",
-            "INFOPLIST_KEY_LSApplicationCategoryType": "public.app-category.entertainment",
+            // PrimeHack for iPad: a game category, so iPadOS turns on Game Mode (with
+            // GCSupportsGameMode / LSSupportsGameMode): AirPods latency drops from about 150 ms to 60 ms
+            // and Bluetooth controllers are polled twice as often. "Entertainment" never qualified.
+            "INFOPLIST_KEY_LSApplicationCategoryType": "public.app-category.action-games",
             "INFOPLIST_KEY_LSSupportsOpeningDocumentsInPlace": "YES",
             "INFOPLIST_KEY_NSLocalNetworkUsageDescription": "iCube uses your local network to discover DSU controllers, to share your library with nearby devices, and to hand a game off to another device. Transfers between devices are not encrypted.",
             "INFOPLIST_KEY_NSPhotoLibraryAddUsageDescription": "Used to save gameplay clips you record with Instant Replay.",
