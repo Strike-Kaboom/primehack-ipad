@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <cstddef>
 #include <cstring>
@@ -36,6 +37,30 @@ AVAudioEngineSound* AVAudioEngineSound::s_active = nullptr;
 namespace
 {
 constexpr int kSurroundChannels = 6;
+
+// PrimeHack for iPad: decoding the stereo mix to 5.1 and rendering it as six virtual speakers on
+// headphones comes out a few dB quieter than the plain stereo mix. +4 dB brings it back to about
+// the same loudness; a soft knee above 0.8 keeps peaks from clipping.
+constexpr float kSpatialMakeupGain = 1.6f;
+constexpr float kSoftKnee = 0.8f;
+
+void ApplySpatialMakeupGain(float* samples, size_t count)
+{
+  constexpr float headroom = 1.0f - kSoftKnee;
+  for (size_t i = 0; i < count; ++i)
+  {
+    const float x = samples[i] * kSpatialMakeupGain;
+    const float magnitude = std::fabs(x);
+    if (magnitude <= kSoftKnee)
+    {
+      samples[i] = x;
+      continue;
+    }
+    const float limited = kSoftKnee + headroom * std::tanh((magnitude - kSoftKnee) / headroom);
+    samples[i] = std::copysign(limited, x);
+  }
+}
+
 /// Frames per scheduled buffer (10.7 ms at 48 kHz).
 constexpr uint32_t kChunkFrames = 512;
 /// Buffer groups kept scheduled ahead of the player.
@@ -660,6 +685,8 @@ void AVAudioEngineSound::audioThreadMain()
         std::fill(m_float_temp.begin(), m_float_temp.end(), 0.0f);
     }
     m_dsp.Process(m_float_temp.data(), chunk);
+    if (mode == Mode::Spatial)
+      ApplySpatialMakeupGain(m_float_temp.data(), m_float_temp.size());
 
     const int slot = pool_cursor;
     pool_cursor = (pool_cursor + 1) % kPoolSize;
