@@ -170,6 +170,17 @@ public:
   void* m_reserved_region = nullptr;
   std::size_t m_reserved_region_size = 0;
 #endif
+
+#if !defined(__APPLE__)
+public:
+  // PrimeHack for iPad: Memory::Init's alias check uses iCube's Darwin view modes. Other hosts (the
+  // Linux CPU differential test) have a single mode, so an aliasing check failure ends in the same
+  // "even in plain mode" panic as before.
+  enum class DarwinMode { MachEntry, Remap, Plain };
+  static void SetDarwinMode(DarwinMode) {}
+  static DarwinMode GetDarwinMode() { return DarwinMode::Plain; }
+  static const char* DarwinModeName() { return "native"; }
+#endif
 };
 
 // This class represents a single fixed-size memory region where the individual memory pages are

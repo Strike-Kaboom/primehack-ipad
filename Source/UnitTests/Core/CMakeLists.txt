@@ -1,6 +1,8 @@
 add_dolphin_test(MMIOTest MMIOTest.cpp)
 add_dolphin_test(PageFaultTest PageFaultTest.cpp)
 add_dolphin_test(CoreTimingTest CoreTimingTest.cpp)
+# PrimeHack for iPad: the CPU differential test also runs on non-JIT architectures.
+add_dolphin_test(CpuDiffTest PowerPC/CpuDiffTest.cpp)
 add_dolphin_test(PatchAllowlistTest PatchAllowlistTest.cpp)
 add_dolphin_test(RemoteCacheSourceIDTest RemoteCacheSourceIDTest.cpp)
 add_dolphin_test(StateFileTransactionTest StateFileTransactionTest.cpp)

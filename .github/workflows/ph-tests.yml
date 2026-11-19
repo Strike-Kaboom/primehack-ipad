@@ -1,0 +1,115 @@
+name: PowerPC differential tests
+
+on:
+  push:
+    branches: [ph-tests]
+  workflow_dispatch:
+    inputs:
+      cases:
+        description: Number of seeds per test
+        default: '20000'
+      seed:
+        description: Replay a single seed (decimal or 0x-prefixed)
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  cpu-diff:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 120
+    env:
+      CC: clang-18
+      CXX: clang++-18
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 1500M
+      PH_CPUDIFF_CASES: ${{ inputs.cases || '20000' }}
+      PH_CPUDIFF_SEED: ${{ inputs.seed }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux build dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            clang-18 cmake ninja-build pkg-config ccache libgl-dev libusb-1.0-0-dev \
+            libhidapi-dev libcurl4-openssl-dev liblzma-dev libbz2-dev libzstd-dev
+
+      - name: Fetch the pinned sources used by this configuration
+        run: |
+          modules=(
+            cpp-optparse/cpp-optparse fmt/fmt imgui/imgui implot/implot glslang/glslang
+            tinygltf/tinygltf pugixml/pugixml enet/enet xxhash/xxHash zlib-ng/zlib-ng
+            minizip-ng/minizip-ng lz4/lz4 libspng/libspng SFML/SFML watcher/watcher
+            cpp-ipc/cpp-ipc gtest
+          )
+          git submodule update --init --depth 1 --jobs 6 -- "${modules[@]/#/Externals/}" ||
+            git submodule update --init --jobs 6 -- "${modules[@]/#/Externals/}"
+
+      - uses: actions/cache/restore@v4
+        id: cache
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: cpu-diff-noble-arm64-clang18-v1-${{ github.sha }}
+          restore-keys: cpu-diff-noble-arm64-clang18-v1-
+
+      - name: Configure the native Linux tests
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DENABLE_TESTS=ON -DENABLE_CCACHE=ON -DENABLE_HEADLESS=ON \
+            -DENABLE_QT=OFF -DENABLE_NOGUI=OFF -DENABLE_CLI_TOOL=OFF \
+            -DENABLE_X11=OFF -DENABLE_EGL=OFF -DENABLE_VULKAN=OFF \
+            -DENABLE_ALSA=OFF -DENABLE_PULSEAUDIO=OFF -DENABLE_CUBEB=OFF \
+            -DENABLE_LLVM=OFF -DENABLE_ANALYTICS=OFF -DUSE_DISCORD_PRESENCE=OFF \
+            -DUSE_MGBA=OFF -DUSE_RETRO_ACHIEVEMENTS=OFF -DENABLE_AUTOUPDATE=OFF \
+            -DUSE_UPNP=OFF -DENABLE_EVDEV=OFF -DENABLE_HWDB=OFF -DENABLE_SDL=OFF \
+            -DENABLE_BLUEZ=OFF -DENCODE_FRAMEDUMPS=OFF -DCMAKE_DISABLE_FIND_PACKAGE_SYSTEMD=ON \
+            -DUSE_SYSTEM_LIBS=OFF -DUSE_SYSTEM_ICONV=ON -DUSE_SYSTEM_LIBLZMA=ON \
+            -DUSE_SYSTEM_BZIP2=ON -DUSE_SYSTEM_ZSTD=ON -DUSE_SYSTEM_CURL=ON \
+            -DUSE_SYSTEM_LIBUSB=ON -DUSE_SYSTEM_HIDAPI=ON 2>&1 | tee configure.log
+
+      - name: Build tests
+        id: build
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake --build build --target tests --parallel 3 2>&1 | tee build.log
+          ccache --show-stats
+
+      - uses: actions/cache/save@v4
+        if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
+        with:
+          path: ${{ env.CCACHE_DIR }}
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+
+      - name: Compare CPU cores
+        working-directory: build/Binaries
+        shell: bash
+        run: |
+          set -o pipefail
+          Tests/tests --gtest_filter='CpuDiff*' --gtest_output=xml:cpu-diff.xml 2>&1 | tee ../../cpu-diff.log
+          # Some core initialization errors exit(0). Require a completed result for each suite case.
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("cpu-diff.xml").getroot()
+          ran = {t.get("name") for t in root.findall(".//testcase[@classname='CpuDiff']")
+                 if t.get("result") == "completed" and t.find("failure") is None}
+          required = {"GameCube", "GameCubeFPExceptions", "WiiMem2",
+                      "GameCubeNoFPRF", "GameCubeFPExceptionsNoFPRF", "WiiMem2NoFPRF"}
+          if missing := required - ran:
+              raise SystemExit(f"Missing completed CpuDiff tests: {sorted(missing)}")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: cpu-diff-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            configure.log
+            build.log
+            cpu-diff.log
+            build/Binaries/cpu-diff.xml
+          if-no-files-found: warn
