@@ -209,6 +209,9 @@ namespace CIRProfiler
 // Top-N hot blocks as a human-readable report, ranked by total emulated cycles. Returns a short
 // "(CIR profiler off)"/"(no blocks)" string when nothing was collected. Safe to call any-thread.
 std::string BuildHotBlocksReport(u32 top_n = 40);
+// PrimeHack for iPad: all recorded block addresses and counts in AOT profile order.
+std::string BuildBlockList();
+void SetBeforeShutdownCallback(void (*capture)());
 // Clear all counters. Called on game boot via CachedInterpreter::Init (each run starts fresh).
 // Also exported as a public entry point so a surface can offer on-demand reset if wired later.
 void Reset();

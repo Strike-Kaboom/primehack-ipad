@@ -66,6 +66,8 @@ NSString* const DOLExternalDisplayDidChangeNotification = @"DOLExternalDisplayDi
 namespace CIRProfiler
 {
 std::string BuildHotBlocksReport(u32 top_n);
+std::string BuildBlockList();  // PrimeHack for iPad: full AOT profile.
+void SetBeforeShutdownCallback(void (*capture)());
 void Reset();
 }  // namespace CIRProfiler
 
@@ -198,6 +200,51 @@ static void _ICubeDumpPerfSettings(const char* phase)
   const std::string b = _ICubeBuildPerfSettingsString(phase);
   NSLog(@"%s", b.c_str());
   INFO_LOG_FMT(CORE, "{}", b);
+}
+
+// PrimeHack for iPad: release the stopping core as soon as the export owns its data.
+static NSString* SaveAOTProfile(dispatch_semaphore_t captured)
+{
+  NSString* reason = @"profiler off or no blocks recorded";
+  @try {
+    std::string blocks, gameID;
+    {
+      Common::ScopeGuard done([captured] { if (captured) dispatch_semaphore_signal(captured); });
+      blocks = CIRProfiler::BuildBlockList();
+      if (!blocks.empty())
+        gameID = SConfig::GetInstance().GetGameID();
+    }
+    if (!blocks.empty()) {
+      for (char& c : gameID) {
+        if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9')))
+          c = '_';
+      }
+      NSDateFormatter* stamp = [NSDateFormatter new];
+      stamp.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+      stamp.dateFormat = @"yyyyMMdd-HHmmss";
+      NSString* name = [NSString stringWithFormat:@"hotblocks-%s-%@.txt",
+                        gameID.empty() ? "unknown" : gameID.c_str(), [stamp stringFromDate:NSDate.date]];
+      NSFileManager* fm = NSFileManager.defaultManager;
+      NSError* error = nil;
+      NSURL* docs = [fm URLForDirectory:NSDocumentDirectory inDomain:NSUserDomainMask
+                       appropriateForURL:nil create:YES error:&error];
+      NSURL* dir = [docs URLByAppendingPathComponent:@"AOT" isDirectory:YES];
+      NSURL* file = [dir URLByAppendingPathComponent:name];
+      if (file && [fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:&error] &&
+          [[NSData dataWithBytes:blocks.data() length:blocks.size()] writeToURL:file
+                                                     options:NSDataWritingAtomic error:&error]) {
+        NSLog(@"[AOT profile] Saved %@", file.path);
+        return [NSString stringWithFormat:@"=== AOT PROFILE SAVED: %@ ===\n", name];
+      }
+      reason = error.localizedDescription ?: @"Documents/AOT unavailable";
+    }
+  } @catch (NSException* exception) {
+    reason = exception.reason ?: @"profile export failed";
+  } @catch (...) {
+    reason = @"profile export failed";
+  }
+  NSLog(@"[AOT profile] Not saved: %@", reason);
+  return [NSString stringWithFormat:@"=== AOT PROFILE NOT SAVED: %@ ===\n", reason];
 }
 
 // A lightweight host view that notifies us when its bounds change so we can
@@ -1556,6 +1603,9 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
     const std::string cir = CIRProfiler::BuildHotBlocksReport(40);
     b += "=== CIR HOT BLOCKS ===\n";
     b += cir;
+    if (b.back() != '\n')
+      b += '\n';
+    b += [SaveAOTProfile(nil) UTF8String];
     // Also emit the hot-block report to the log on BOTH platforms (Copy State on iOS only puts the
     // full dump on the clipboard; this guarantees the profiler output is grep-able in the device log).
     NSLog(@"[iCube CIR hotblocks]\n%s", cir.c_str());
@@ -1752,6 +1802,16 @@ static bool IsWiiBoot(const BootParameters& boot)
     return;
   BindTouchscreen(Wiimote::GetConfig(), idx, dq_touch);
   EnforceTouchscreenPointerOnWiimotes();
+}
+
+// PrimeHack for iPad: the run loop can wake after shutdown. Capture at interpreter teardown.
+static void SaveAOTProfileOnStop()
+{
+  dispatch_semaphore_t captured = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    SaveAOTProfile(captured);
+  });
+  dispatch_semaphore_wait(captured, DISPATCH_TIME_FOREVER);
 }
 
 // iCube: block (bounded) until the previous emulation session has fully shut down.
@@ -2050,6 +2110,7 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
         supersededBoot = YES;
         return;
       }
+      CIRProfiler::SetBeforeShutdownCallback(SaveAOTProfileOnStop);
       if (!BootManager::BootCore(system, std::move(local_boot), wsi)) {
         PanicAlertFmt("Failed to init core!");
       }

@@ -9,6 +9,7 @@
 #include <bit>
 #include <cstdio>
 #include <cstring>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <span>
@@ -931,6 +932,8 @@ struct CIRBlockProfile
 
 // File-static instance. Default-constructed empty; only allocated when profiling actually records.
 CIRBlockProfile s_block_profile;
+// PrimeHack for iPad: the coordinator arms one capture before boot.
+std::atomic<void (*)()> s_before_shutdown_capture{nullptr};
 
 // iCube: report-time guest-code reader. Bounds-checks `addr` against the live MEM1/EXRAM sizes BEFORE
 // reading so we never trip a PanicAlert (GetSpanForAddress/GetPointerForRange/Read_U32 all panic on a
@@ -1233,35 +1236,62 @@ void Reset()
   s_block_profile.Clear();
 }
 
-std::string BuildHotBlocksReport(u32 top_n)
+void SetBeforeShutdownCallback(void (*capture)())
 {
-  if (!s_cir_profile)
-    return "(CIR profiler off — set Main.Core.CIRProfile=true / icube.cirProfile and reboot game)\n" + PowerPC::Aot::StatsReport();
+  s_before_shutdown_capture.store(capture);
+}
 
-  // Snapshot non-empty slots. The table never reallocates, so this read is safe even while the CPU
-  // thread keeps writing; we tolerate a slightly inconsistent instant (a perf report, not ledger).
-  struct Entry
-  {
-    u32 pc;
-    u64 runs;
-    u64 cycles;
-  };
+namespace
+{
+struct Entry
+{
+  u32 pc;
+  u64 runs;
+  u64 cycles;
+};
+
+// PrimeHack for iPad: both reports take the same best-effort snapshot of the fixed slot table.
+std::vector<Entry> SnapshotBlocks()
+{
   std::vector<Entry> entries;
-  const u64 grand_cycles = s_block_profile.grand_total_cycles;
-  if (s_block_profile.slots.empty() || grand_cycles == 0)
-    return "(CIR profiler on, no blocks recorded yet)\n" + PowerPC::Aot::StatsReport();
-
-  entries.reserve(1024);
+  entries.reserve(s_block_profile.slots.size());
   for (const auto& s : s_block_profile.slots)
   {
     if (s.pc != CIRBlockProfile::kEmpty && s.run_count != 0)
       entries.push_back({s.pc, s.run_count, s.total_cycles});
   }
-  if (entries.empty())
-    return "(CIR profiler on, no blocks recorded yet)\n" + PowerPC::Aot::StatsReport();
+  std::sort(entries.begin(), entries.end(), [](const Entry& a, const Entry& b) {
+    return a.cycles != b.cycles ? a.cycles > b.cycles : a.pc < b.pc;
+  });
+  return entries;
+}
+}  // namespace
 
-  std::sort(entries.begin(), entries.end(),
-            [](const Entry& a, const Entry& b) { return a.cycles > b.cycles; });
+std::string BuildBlockList()
+{
+  if (!s_cir_profile)
+    return {};
+  const auto entries = SnapshotBlocks();
+  if (entries.empty())
+    return {};
+  std::string out = fmt::format("# unique_blocks={} total_block_runs={} total_cycles={}\n",
+                                entries.size(), s_block_profile.grand_total_runs,
+                                s_block_profile.grand_total_cycles);
+  u32 rank = 0;
+  for (const Entry& e : entries)
+    fmt::format_to(std::back_inserter(out), "{} 0x{:08x} {} {}\n", ++rank, e.pc, e.runs, e.cycles);
+  return out;
+}
+
+std::string BuildHotBlocksReport(u32 top_n)
+{
+  if (!s_cir_profile)
+    return "(CIR profiler off — set Main.Core.CIRProfile=true / icube.cirProfile and reboot game)\n" + PowerPC::Aot::StatsReport();
+
+  const u64 grand_cycles = s_block_profile.grand_total_cycles;
+  const auto entries = SnapshotBlocks();
+  if (entries.empty() || grand_cycles == 0)
+    return "(CIR profiler on, no blocks recorded yet)\n" + PowerPC::Aot::StatsReport();
 
   const u32 n = std::min<u32>(top_n, static_cast<u32>(entries.size()));
   std::ostringstream out;
@@ -1877,6 +1907,10 @@ void CachedInterpreter::Init()
 
 void CachedInterpreter::Shutdown()
 {
+  // PrimeHack for iPad: capture the ending session before releasing any interpreter state.
+  if (auto capture = s_before_shutdown_capture.exchange(nullptr); capture && s_cir_profile)
+    capture();
+  s_cir_profile = false;
   // PrimeHack for iPad: retire pending writers and targets before releasing core resources.
   BumpDynLinkGeneration();
   m_aot.NotifyTapeReuse();  // PrimeHack for iPad: retire the native generation as well.
