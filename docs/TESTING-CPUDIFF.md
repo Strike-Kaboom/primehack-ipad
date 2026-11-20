@@ -1,62 +1,53 @@
 # PowerPC differential tests
 
-`CpuDiff` runs synthetic Gekko programs through Dolphin's reference Interpreter and the iCube Cached Interpreter. A pass means both executors reached an allowed exit with identical observable state for every selected program. The comparison is exact for those inputs, including NaN payloads and signed zero. Random sampling cannot establish equivalence for every possible program.
+`CpuDiff` runs guest programs on the Interpreter and Cached Interpreter from independent copies of the same registers, code and memory. It checks the architectural exit, all GPRs, both raw lanes of every FPR, the full FPSCR, CR, XER, MSR, PC/NPC, LR/CTR, SRR0/1, pending exceptions, DAR, DSISR, GQR0–7, PMCs, reservation state and the scratch bytes. Directed FIFO cases also compare the emitted bytes.
 
-## Run and replay
+The **only accepted register difference** is the four-byte SRR0 offset on an enabled FP program exception. Both PCs and NPCs must be at `0x700`, with no pending exception, the exact FP cause in SRR1, saved FE0 or FE1 set and FPSCR.FEX set. Interpreter SRR0 must equal Cached Interpreter SRR0 plus four. All other fields still have to agree. Each test prints the number accepted and writes the `accepted_fp_srr0` XML property. Equal SRR0 values pass without incrementing the count.
 
-Push the full fork to branch `ph-tests`, or select **PowerPC differential tests** under Actions and run it manually. The manual inputs accept a case count or one replay seed. The workflow builds the native Linux `tests` target on `ubuntu-24.04-arm`. Its artifact includes the available configure, build and test logs, plus the GoogleTest XML when produced. The expected binary path in this fork is `build/Binaries/Tests/tests`. [CI configuration](.github/workflows/ph-tests.yml)
+## Run and reproduce
 
-On a Linux build host, use the package installation, pinned submodule list and CMake invocation in that workflow. From the repository root after configuration, run
+Push the full checkout to `ph-tests` or `ph-tests-*`, or run **PowerPC differential tests** from Actions. The workflow installs clang 18 and libc++ on `ubuntu-24.04-arm`, fetches pinned submodules, builds `tests` and uploads configure, build and test logs and GoogleTest XML. The default comparison has a ten-minute deadline separate from the build. A manual run with a larger case count has the job's longer deadline. [Workflow](.github/workflows/ph-tests.yml)
+
+From a configured full Linux checkout, run
 
 ```sh
 cmake --build build --target tests --parallel 3
 cd build/Binaries
-Tests/tests --gtest_filter='CpuDiff*'
-PH_CPUDIFF_CASES=32 Tests/tests --gtest_filter='CpuDiff*'
-PH_CPUDIFF_SEED=0x101 Tests/tests --gtest_filter=CpuDiff.GameCube
+Tests/tests --gtest_filter='CpuDiff.*'
+PH_CPUDIFF_CASES=32 Tests/tests --gtest_filter='CpuDiff.*'
+PH_CPUDIFF_SEED=0 Tests/tests --gtest_filter=CpuDiff.GameCubeFPExceptions
+PH_CPUDIFF_DIRECTED_CASE=0 Tests/tests --gtest_filter=CpuDiff.DirectedOptimized
 ```
 
-The default is 20,000 distinct seeds, numbered 0 through 19,999. Each of the three guest setups has a separate test for each FPRF mode. A full green default run makes 120,000 comparisons. Each test stops at its first failure and GoogleTest continues with the other modes. Set `PH_CPUDIFF_SEED` to run just that seed in each selected test, even when a count is also set. Both inputs accept unsigned 32-bit decimal or `0x` hex. Counts must be positive. Replay against the same revision because generator changes can change the program for a seed.
+The default runs 2,048 random seeds in each of eight configurations. Five directed tests each run 4,212 programs. The checked-MMU test runs 4,258. A full default run compares 41,702 programs, plus the internal state-reload and native checks. A positive `PH_CPUDIFF_CASES` sets the random count. A nonempty `PH_CPUDIFF_SEED` takes precedence and replays one random program. Empty values select the defaults. The directed tests always run their fixed corpus unless `PH_CPUDIFF_DIRECTED_CASE` selects an index. Use the failing test name and the index or seed from the same revision. All three variables accept decimal and `0x`-prefixed unsigned integers. Leave `DOLPHIN_FORCE_CI` and `DOLPHIN_FORCE_CIR_IR` unset.
 
-Leave the fork's `DOLPHIN_FORCE_CI` and `DOLPHIN_FORCE_CIR_IR` overrides unset. The harness checks the selected core's name before comparing results.
-
-## Cases and operands
-
-The names below enable FPRF updates. Append `NoFPRF` for the corresponding disabled test.
-
-| GoogleTest | Guest setup |
+| GoogleTest suffix | Configuration |
 | --- | --- |
-| `CpuDiff.GameCube` | MEM1 code and scratch. FPSCR exception enables stay clear, including across guest FPSCR writes. |
-| `CpuDiff.GameCubeFPExceptions` | MEM1 with MSR.FE0 and FE1 set, randomized nonempty FPSCR enable masks, and both floating-point exception checks enabled in the core configuration. Every sixteenth seed starts with an enabled divide by zero that must reach the program vector. |
-| `CpuDiff.WiiMem2` | MEM1 code and MEM2 scratch with Broadway's extended BATs and HID4.SBE. FPSCR exception enables stay clear. |
+| `GameCube`, `GameCubeNoFPRF` | MEM1 with FPRF updates on or off |
+| `WiiMem2`, `WiiMem2NoFPRF` | MEM1 code, MEM2 scratch, cached and cache-inhibited Wii BATs |
+| `GameCubeFPExceptions`, `GameCubeFPExceptionsNoFPRF` | Enabled FP exception checks and FPSCR enables. Every sixteenth random seed requires a divide-by-zero trap. |
+| `NoPIC`, `Optimized` | Random programs under the two additional configurations below |
+| `DirectedGameCube`, `DirectedWiiNoFPRF` | Directed corpus with normal pairing and both FPRF policies. The test checks the emitted tape for all 18 FP pair shapes and representative integer pair, CmpBranch and FCmpBranch records. |
+| `DirectedOptimized` | Dead flag and dead FPRF elimination, GP copy fusion, loop fast-forwarding, dynamic target cache, tail links, block-link validation and paired NEON validation. A native MSR check follows on builds advertising JITARM64 or JIT64. |
+| `DirectedNoPIC` | PIC load/store, record chaining, the global target cache and paired NEON off. Specialized FP/PSQ handlers, the shared PSQ fast path and micro-op fusion validation enabled. |
+| `DirectedFPExceptions` | Directed FP inputs and compare branches with FE0/FE1 and FPSCR enables varied |
+| `DirectedMMU` | MMU checking enabled and block linking disabled. Includes alignment, pending and fresh DSI, split-page faults, reserved GQR types, LSQE and failed base updates. |
 
-The harness declares the CPU thread, uses a temporary Dolphin profile, initializes configuration, memory, CoreTiming and the PowerPC manager, and selects the real core. The generator writes 1–24 instructions at `0x80004000`, followed by a relative branch to `0x80005000`. MSR.FP, IR, DR and RI are set. HID2.PSE and LSQE enable paired singles and quantized loads. The BATs reproduce `CBoot::SetupBAT`, including the cache-inhibited mirror. Dolphin's MMU setting and accurate data-cache emulation are off. The cached MEM1 and MEM2 address ranges have direct BAT page mappings on the arm64 runner.
+## Coverage
 
-The generator samples the following families.
+- Integer programs exercise the eligible register/memory pair shapes, standalone and folded constants, logical-immediate and rotate NOPs, dead CR writes, `mcrf`, `mcrxr`, `dcbz`, and matching/mismatching reservations. Random programs retain the integer, CR, string, reservation, indirect-register and FP instruction families.
+- Scalar and paired programs exercise Rc, aliases, all FC indices on A-form arithmetic, exceptional values in either PS lane, signed NaN payloads, signed zero, subnormals, infinities, rounding and narrowing boundaries, FMA ties, conversion limits, NI, sticky bits, FI/FR and destination suppression. The reference uses scalar paired math and generic PSQ. An arm64 directed run with NEON enabled requires a nonzero reported `ps_add` hit percentage.
+- Memory pairs use overlapping registers and addresses. A second, page-table-mapped address for the same RAM forces eligible operands onto the cold path independently. Tests include signed displacement extremes, wraparound, literal zero bases with nonzero GPR0, unaligned and boundary-crossing transfers, PI MMIO and the GP FIFO. PSQ covers all five defined types, all 64 scales, both W values and the indexed and update forms. Ordinary random PSQ stores use a float GQR because an earlier instruction can produce NaN. Directed integer stores own a finite source register. The reserved type cases require the Interpreter handler's specific host diagnostic once per executor.
+- Branches cover the integer compare forms, all eight floating compare fields and four condition bits, ordered/unordered compares, both branch senses, relative and absolute targets, fallthrough, backward and zero displacements, rejected fusion shapes, and changing outcomes at the same compare/branch site. Indirect cases include masked CTR, LR writes, conditional LR/CTR loops, multiple callers and combined CR/CTR tests.
+- Real `mtmsr`, `sc` and `rfi` programs enter a shared subroutine with FP enabled and disabled. The handlers at `0x800` and `0xc00` count visits and restore the saved MSR. The test checks the precise unavailable-instruction address, cumulative charge at both faults, and coexisting compiled blocks for both FP keys. Separate cases cover all 16 entry keys, PMC cycle/load/FP events, self-invalidating code, warm target replacement, single-block erase and tape reuse, a pending indirect fill, colliding targets, guest IBAT and PTE/TLB remaps, a scheduled short slice and a loop exceeding the link hop bound.
+- A CPU-section savestate round trip warms a translation, resets the CPU, reloads the state and replays the program. The same case exercises returning from Interpreter mode and disabling and re-enabling FPRF with a warm PC. The native smoke check covers constant- and register-sourced MSR writes, exception entry and return.
 
-- Integer carry and extended arithmetic, negate, subtract, multiply high/low, signed and unsigned divide, logical immediates, rotates, shifts, count-leading-zero and sign extension. It varies OE and Rc where the opcode defines them.
-- Signed and unsigned compares, CR Boolean operations, field masks, and reads/writes of CR, LR, CTR and XER.
-- Byte, halfword and word loads/stores, signed halfword loads, D/X and update forms, byte reversals, multiple-word and string operations, and word reservation/conditional store.
-- Scalar FP loads and stores including indexed, update and `stfiwx`. Arithmetic covers the Gekko single/double tables, fused multiply-add variants, reciprocal estimates, select, round/convert, compares, move/sign and FPSCR operations.
-- Paired arithmetic, estimates, sums, lane multiplies and multiply-adds, select, merges, moves, sign operations and compares on both lanes. All eight PSQ load/store forms vary W and the GQR index. Load and store GQRs cover float, u8, u16, s8 and s16 with independent six-bit scales.
-- Short forward conditionals, a backward CR branch that clears its own condition, bounded `bdnz[l]` loops, and a local `bl`/`blr` sequence. Directed prefixes also exercise dependent operations, address aliases, reservation success and finite paired-single arithmetic.
+## FIFO and timing
 
-All generated data addresses fall in a 1 KiB scratch region. Two base registers point into its middle through the cached and uncached aliases. An index moves addresses by eight bytes in either direction. Generated updates can move a base at most 192 bytes, and the multiple/string register ranges preserve all address registers. The initial GPRs mix random words with carry, overflow, divide and shift boundary values. FPR lanes contain raw binary64 patterns including zeros, subnormals, infinities, quiet/signaling NaNs, normal limits, exactly represented binary32 limits, finite values near one and random bits. The seed selects all four rounding modes with NI both clear and set over eight consecutive seeds.
+GP stores go to guest address `0xCC008000`. The test initializes the real gather pipe and uses an unlinked processor-interface FIFO in MEM1. Completed 32-byte bursts advance the PI write pointer and write to RAM. The uncommitted suffix lies between the CPU's gather-pipe base and current pointer. Each run resets both and snapshots the committed length and the two byte ranges in stream order. Single-store cases check an independent big-endian byte sequence at each of the 32 initial pipe offsets. Longer sequences cover multiple bursts, float PSQ D/X forms, STFD, update fallback, a split RAM/FIFO mapping and fused byte copies. The optimized profile must record execution of the GP copy handler. [Gather-pipe implementation](Source/Core/Core/HW/GPFifo.cpp)
 
-## Execution and failure output
+One Interpreter step executes one instruction. A cached step can compile without advancing the PC, execute a block, or follow links. Every cached program must encounter a compiled block and consume guest cycles. The directed profile also requires a positive executed-block count. The test compares directed cycle totals using the Interpreter's opcode cycle table and the Cached Interpreter's actual slice charge at 1× clock. Raw Interpreter single-step downcount resets to zero on every step. Host SIMD mode is restored after each program.
 
-The same seed regenerates the entire initial register file, GQRs, code and scratch bytes for both runs. Host FP mode is reapplied from the guest FPSCR before execution. The reference uses scalar paired arithmetic and generic PSQ. The candidate enables NEON paired math, the PSQ float fast path, BAT load/store handling, micro-op fusion and fused pairs. The handlers for NEON and PSQ are shared by the cores, so the harness configures them separately. Each core uses the same FPRF policy and the full FPSCR participates in the comparison in both modes.
+The failure listing includes absolute PCs and instruction words, disassembly for auxiliary code and vectors, register differences, physical RAM offsets and FIFO byte indices. Directed comparison continues with the next family after a mismatch. A future AOT implementation can implement `Executor::Run(const Program&)` and return the same `State`. The SRR0 allowance is an explicit comparison argument for the cached candidate. [Harness and generator](Source/UnitTests/Core/PowerPC/CpuDiffTest.cpp)
 
-Each executor runs through `PowerPCManager::SingleStep`. One cached step can compile a block or execute several guest instructions. The common comparison point is the stop address or, in the exception group, entry to the floating-point program-exception vector at `0x700`. The harness captures the delivered exception before executing any vector code. An out-of-range or unaligned PC, a pending exception, or exhausting 128 dispatches inside the program fails the test even if both cores agree. Guest clock values and dispatch counts are outside the comparison. The generator issues no time-base or decrementer reads.
-
-The listing shows guest PC, instruction word and Dolphin disassembly. The two hex columns are the Interpreter result and Cached Interpreter result. `fN.PS0` and `fN.PS1` are 64-bit encodings. `RAM[...]` is a physical address, so stores through either BAT alias appear in the same column. Every differing GPR, FP lane, CR, XER, FPSCR, LR, CTR, MSR, PC, SRR0/1, pending-exception word, reservation field and scratch byte is printed. Identical exit PCs inside the program indicate a shared failure to finish. Use the printed seed and failing GoogleTest name for replay.
-
-The executor interface takes a `Program` with its initial state and returns a `State`. A future AOT executor can implement that interface and pass its result through the same comparison against the reference batch. [Test and generator](Source/UnitTests/Core/PowerPC/CpuDiffTest.cpp)
-
-## Build status and assumptions
-
-- This Windows scratch copy lacks `Externals/` and `Data/Sys/`, and has no Linux arm64 build environment. The workflow assumes checkout of the full fork with its tracked wrapper CMake files, data directory and fetchable submodule revisions. Actual package resolution, linking, runtime, resource limits and execution counts await CI.
-- There is a source-level Linux build blocker. `MemoryManager::Init` references `MemArena::DarwinMode`, `GetDarwinMode`, `SetDarwinMode` and `DarwinModeName`. `InitFastmemArena` also calls `UsesPlainViews`. These declarations live only in the Apple branch of `MemArena.h`. Disabling the fastmem arena at runtime still compiles those calls. The configure/build logs are uploaded even when this prevents GoogleTest from starting. [Memory initialization](Source/Core/Core/HW/Memmap.cpp) · [Platform declarations](Source/Core/Common/MemArena.h)
-- The paired-single NEON implementation is guarded by `_M_ARM_64 || __aarch64__`. Actual NEON execution also depends on round-to-nearest and operand/result guards. The finite paired prefix targets those guards. The test checks architectural results and the cached BAT mapping. Per-op hit counts would require profiling. [Paired-single implementation](Source/Core/Core/PowerPC/Interpreter/Interpreter_Paired.cpp)
-- The harness leaves HID0.ICE at reset, invalidates cached translations for the entire program window after each rewrite, and disables unconditional branch following so the stop instruction remains observable at a dispatch boundary. It exercises the generated block and its internal branches. Instruction-cache coherency, interrupts, MMIO, page faults, inter-block scheduling and game boot are outside this corpus.
-- An early runtime difference to investigate is SRR0 on an enabled FP trap. In this revision `Interpreter::SingleStepInner` advances PC before the outer step checks remaining exceptions. The cached exception callback explicitly restores the faulting instruction's PC before delivery. A difference there will be reported, including on the directed divide test. Which value is correct on hardware is a separate question from whether these cores agree. [Interpreter stepping](Source/Core/Core/PowerPC/Interpreter/Interpreter.cpp) · [Cached exception delivery](Source/Core/Core/PowerPC/CachedInterpreter/CachedInterpreter.cpp)
+The CPU section uses the current savestate format. A historical savestate fixture and a way to force the private dynamic-cache generation through wrap are unavailable in this checkout. The video loader and XFB cases in the speed report require a graphics harness. [Speed report](CIR_FAST_REPORT.md)

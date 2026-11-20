@@ -6,8 +6,8 @@ on:
   workflow_dispatch:
     inputs:
       cases:
-        description: Number of seeds per test
-        default: '20000'
+        description: Random seeds per configuration (the directed corpus always runs)
+        default: '2048'
       seed:
         description: Replay a single seed (decimal or 0x-prefixed)
         required: false
@@ -27,7 +27,7 @@ jobs:
       LDFLAGS: -stdlib=libc++
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 1500M
-      PH_CPUDIFF_CASES: ${{ inputs.cases || '20000' }}
+      PH_CPUDIFF_CASES: ${{ inputs.cases || '2048' }}
       PH_CPUDIFF_SEED: ${{ inputs.seed }}
     steps:
       - uses: actions/checkout@v4
@@ -79,6 +79,7 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
+          ccache --zero-stats
           cmake --build build --target tests --parallel 3 -- -k 0 2>&1 | tee build.log
           ccache --show-stats
 
@@ -93,15 +94,23 @@ jobs:
         shell: bash
         run: |
           set -o pipefail
-          Tests/tests --gtest_filter='CpuDiff*' --gtest_output=xml:cpu-diff.xml 2>&1 | tee ../../cpu-diff.log
+          # Bound the default comparison separately from build time. Manual larger runs use the job timeout.
+          compare=(Tests/tests --gtest_filter='CpuDiff*' --gtest_output=xml:cpu-diff.xml)
+          if [[ "$PH_CPUDIFF_CASES" == 2048 || -n "$PH_CPUDIFF_SEED" ]]; then
+            compare=(timeout --kill-after=15s 10m "${compare[@]}")
+          fi
+          "${compare[@]}" 2>&1 | tee ../../cpu-diff.log
           # Some core initialization errors exit(0). Require a completed result for each suite case.
           python3 - <<'PY'
           import xml.etree.ElementTree as ET
           root = ET.parse("cpu-diff.xml").getroot()
           ran = {t.get("name") for t in root.findall(".//testcase[@classname='CpuDiff']")
-                 if t.get("result") == "completed" and t.find("failure") is None}
+                 if t.get("result") == "completed" and t.find("failure") is None
+                 and t.find("skipped") is None}
           required = {"GameCube", "GameCubeFPExceptions", "WiiMem2",
-                      "GameCubeNoFPRF", "GameCubeFPExceptionsNoFPRF", "WiiMem2NoFPRF"}
+                      "GameCubeNoFPRF", "GameCubeFPExceptionsNoFPRF", "WiiMem2NoFPRF",
+                      "NoPIC", "Optimized", "DirectedOptimized", "DirectedWiiNoFPRF",
+                      "DirectedGameCube", "DirectedNoPIC", "DirectedFPExceptions", "DirectedMMU"}
           if missing := required - ran:
               raise SystemExit(f"Missing completed CpuDiff tests: {sorted(missing)}")
           PY

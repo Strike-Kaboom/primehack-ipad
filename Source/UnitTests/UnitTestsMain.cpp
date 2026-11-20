@@ -11,7 +11,7 @@ namespace
 bool TestMsgHandler(const char* caption, const char* text, bool yes_no, Common::MsgType style)
 {
   fmt::print(stderr, "{}\n", text);
-  ADD_FAILURE();
+  ADD_FAILURE() << text;
   // Return yes to any question (we don't need Dolphin to break on asserts)
   return true;
 }
