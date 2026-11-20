@@ -121,6 +121,7 @@ jobs:
         working-directory: build/Binaries
         shell: bash
         run: |
+          set +e +o pipefail
           tests=$(Tests/tests --gtest_list_tests --gtest_filter='CpuDiff*' | sed -n 's/^  \([A-Za-z0-9_]*\).*/\1/p')
           for t in $tests; do
             echo "=== CpuDiff.$t"
