@@ -46,13 +46,16 @@ constexpr int kPoolSize = 8;
 constexpr double kInstantiateTimeoutSeconds = 5.0;
 
 // Mixer::MixSurround order: FL FR FC LFE BL BR.
+// PrimeHack for iPad: AVAudioEnvironmentNode's listener faces -Z (+X right, +Y up), so the front
+// speakers belong at negative Z. They were at +Z, behind the head, which swapped front and back and
+// dulled the front channels through the rear HRTF.
 const AVAudio3DPoint kSpeakerPositions[kSurroundChannels] = {
-    {-1.0f, 0.0f, 1.0f},  // FL
-    {1.0f, 0.0f, 1.0f},   // FR
-    {0.0f, 0.0f, 1.5f},   // FC
-    {0.0f, 0.0f, 0.5f},   // LFE (centre, close)
-    {-1.0f, 0.0f, -1.0f}, // BL
-    {1.0f, 0.0f, -1.0f},  // BR
+    {-1.0f, 0.0f, -1.0f}, // FL
+    {1.0f, 0.0f, -1.0f},  // FR
+    {0.0f, 0.0f, -1.5f},  // FC
+    {0.0f, 0.0f, -0.5f},  // LFE (centre, close)
+    {-1.0f, 0.0f, 1.0f},  // BL
+    {1.0f, 0.0f, 1.0f},   // BR
 };
 
 // Mirrors the mapping Mixer.cpp uses for its own decoder.
@@ -189,12 +192,15 @@ bool AVAudioEngineSound::buildGraphLocked()
     m_environment = [[AVAudioEnvironmentNode alloc] init];
     m_environment.distanceAttenuationParameters.distanceAttenuationModel =
         AVAudioEnvironmentDistanceAttenuationModelLinear;
+    // PrimeHack for iPad: virtual speakers at a fixed distance; never fade them with distance.
+    m_environment.distanceAttenuationParameters.rolloffFactor = 0.0f;
     m_environment.outputType = AVAudioEnvironmentOutputTypeAuto;
     [m_engine attachNode:m_environment];
     {
-      // PrimeHack for iPad: six virtual speakers rendered binaurally come out a few dB quieter
-      // than the plain stereo mix. Apple's peak limiter adds the gain back cleanly: it turns the
-      // whole mix down smoothly on loud peaks instead of clipping or bending the waveform.
+      // PrimeHack for iPad: the DPL2 decode and the binaural renderer leave the six virtual
+      // speakers roughly 9-15 dB quieter than the plain stereo mix (Neon's audit, build 37). Apple's
+      // peak limiter adds the gain back cleanly: it turns the whole mix down smoothly on loud peaks
+      // instead of clipping or bending the waveform (build 34's soft clipper did that).
       AudioComponentDescription desc = {};
       desc.componentType = kAudioUnitType_Effect;
       desc.componentSubType = kAudioUnitSubType_PeakLimiter;
@@ -203,10 +209,18 @@ bool AVAudioEngineSound::buildGraphLocked()
       if (limiter)
       {
         AudioUnit au = limiter.audioUnit;
-        AudioUnitSetParameter(au, kLimiterParam_PreGain, kAudioUnitScope_Global, 0, 3.0f, 0);
-        // Short attack keeps the limiter's look-ahead delay to a few milliseconds.
-        AudioUnitSetParameter(au, kLimiterParam_AttackTime, kAudioUnitScope_Global, 0, 0.004f, 0);
-        AudioUnitSetParameter(au, kLimiterParam_DecayTime, kAudioUnitScope_Global, 0, 0.05f, 0);
+        const OSStatus gain =
+            AudioUnitSetParameter(au, kLimiterParam_PreGain, kAudioUnitScope_Global, 0, 12.0f, 0);
+        // 7 ms attack (look-ahead) and the longest decay keep bass transients from pumping.
+        const OSStatus attack =
+            AudioUnitSetParameter(au, kLimiterParam_AttackTime, kAudioUnitScope_Global, 0, 0.007f, 0);
+        const OSStatus decay =
+            AudioUnitSetParameter(au, kLimiterParam_DecayTime, kAudioUnitScope_Global, 0, 0.06f, 0);
+        if (gain != noErr || attack != noErr || decay != noErr)
+        {
+          WARN_LOG_FMT(AUDIO, "AVAudioEngine: spatial limiter parameters failed ({} {} {})", gain,
+                       attack, decay);
+        }
         [m_engine attachNode:limiter];
         m_spatial_limiter = limiter;
       }
