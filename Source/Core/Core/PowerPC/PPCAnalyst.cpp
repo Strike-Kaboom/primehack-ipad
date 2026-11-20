@@ -793,6 +793,10 @@ static IdleLoopKind ClassifyBusyWaitLoop(const CodeBlock* block, const CodeOp* c
     }
   }
 
+  // PrimeHack for iPad: the two shortcuts below are unreachable as written. The loop above returns
+  // on every rejection, and any back-edge they would accept already returned Strict at
+  // i == instructions. Kept unchanged so CIR idle detection stays identical; do not turn the
+  // early returns above into breaks (that would flag mutating loops as idle).
   // Trivial-pattern shortcut: [cmp/cmpl] + [conditional branch back to start]
   // No memory writes, no calls, no CTR use.
   if (instructions >= 1)
@@ -938,7 +942,11 @@ static bool CanCauseGatherPipeInterruptCheck(const CodeOp& op)
 // analyzer from interior loop headers too, with the current CIR options and block limit.
 bool PPCAnalyzer::SpanHasIdleLoop(u32 start, std::span<const u32> words, size_t max_ops) const
 {
-  CodeBuffer buffer;
+  // PrimeHack for iPad: Analyze() needs max_ops slots (32000 ops, ~3 MiB). Keep one buffer per
+  // thread instead of allocating and zero-filling it on every bind; Analyze() resets each op it uses.
+  thread_local CodeBuffer buffer;
+  if (buffer.size() < max_ops)
+    buffer.resize(max_ops);
   std::unordered_set<u32> analyzed_headers;
   BlockStats stats{};
   BlockRegStats gpa{}, fpa{};
@@ -956,12 +964,11 @@ bool PPCAnalyzer::SpanHasIdleLoop(u32 start, std::span<const u32> words, size_t 
     if (header == INVALID_BRANCH_TARGET || header < start || header > pc ||
         !analyzed_headers.insert(header).second)
       continue;
-    buffer.resize(max_ops);
     Analyze(header, &block, &buffer, max_ops);
     for (size_t j = 0; j < block.m_num_instructions; ++j)
     {
       const auto& op = buffer[j];
-      if (op.branchIsStrictIdleLoop && op.address >= header &&
+      if (op.branchIsStrictIdleLoop && op.address >= start &&
           (op.address - start) / 4 < words.size())
         return true;
     }
