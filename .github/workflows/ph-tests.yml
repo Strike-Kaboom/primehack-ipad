@@ -110,6 +110,10 @@ jobs:
             programs=$(grep -c '^P ' "$aot/programs.txt" || true)
             echo "Dumped ${programs:-0} programs"
             [[ "${programs:-0}" -gt 0 ]]
+            # Both suites must have dumped, or the module would cover only one of them.
+            for suite in AotRandom AotDirected; do
+              grep -q "^P $suite " "$aot/programs.txt" || { echo "::error::$suite dumped no programs"; exit 1; }
+            done
 
             python3 -B - "$aot/programs.txt" "$aot/gen" "$((4 * $(nproc)))" <<'PY'
           import os

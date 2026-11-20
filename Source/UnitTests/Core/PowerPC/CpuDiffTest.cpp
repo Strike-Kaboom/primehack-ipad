@@ -2092,7 +2092,8 @@ void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool 
     EXPECT_GT(dumped, 0u);
     return;
   }
-  if (aot)
+  // A single replayed case may be one the runtime declines by design (breakpoints, MSR.FP=0).
+  if (aot && !selected_case)
   {
     const auto& c = aot_coverage;
     // Zero coverage means every program stayed on CIR tapes, e.g. a stale or mismatched module.
