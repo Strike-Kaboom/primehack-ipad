@@ -2167,7 +2167,7 @@ s32 CachedInterpreter::LinkBlock(PowerPC::PowerPCState& ppc_state, const void* p
   // iCube: hot-block profiler (MAIN_CIR_PROFILE, default OFF). This block executed regardless of
   // whether the link is followed below, so record here — once per block exit, mirroring EndBlock.
   // Gated on a single predicted-not-taken bool; never touches the per-instruction fast path.
-  if constexpr (instrumented)
+  if constexpr (instrumented && !accounted)
   {
     if (s_cir_profile) [[unlikely]]
       s_block_profile.Record(operands.entry_pc, operands.downcount);
@@ -6008,7 +6008,7 @@ void CachedInterpreter::EmitAot(u32 pc)
     return;
   for (u32 i = 0; i < code_block.m_num_instructions; ++i)
   {
-    if (m_code_buffer[i].branchIsIdleLoop || m_code_buffer[i].branchIsCtrIdleLoop)
+    if (m_code_buffer[i].branchIsStrictIdleLoop)
       return;
   }
   m_pending_aot = m_aot.Bind(pc, code_block.m_physical_addresses, analyzer, m_code_buffer.size());

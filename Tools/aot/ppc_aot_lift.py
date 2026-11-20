@@ -217,6 +217,8 @@ def switch_descriptor(image, pc):
     ctr = None
     for at in range(max(image.section(pc).base, pc - 96), pc, 4):
         w = image.word(at)
+        if w == 0x60000000:  # nop preserves the reaching definition of r0.
+            continue
         op, d, a, b = w >> 26, w >> 21 & 31, w >> 16 & 31, w >> 11 & 31
         name = opcode(w)
         value = scale = load = None
@@ -359,7 +361,7 @@ def nonreturning_targets(image, roots):
             continue
         w = image.word(pc)
         name = opcode(w)
-        nxt = pc + 4
+        nxt = (pc + 4) & U32
         # Each alternative returns only if all its dependencies can return.
         if name in ("bx", "bcx"):
             dest = destination(pc, w)
@@ -846,7 +848,7 @@ def render(region, symbol, callees=None):
                                   "  " + charge, f"  return finish({nxt:#x}u, PH_DISPATCH);", "}"]
                 else:
                     guard = ("true" if ends_region(w) else
-                             f"(s.Exceptions & ~PH_ASYNC_EXCEPTIONS) || *h.generation != generation || s.npc != {nxt:#x}u")
+                             f"downcount <= 0 || (s.Exceptions & ~PH_ASYNC_EXCEPTIONS) || *h.generation != generation || s.npc != {nxt:#x}u")
                     lines += [f"if ({guard})", "{", "  " + charge,
                               "  return finish(s.npc, PH_DISPATCH);", "}"]
                     if kind == "memory":

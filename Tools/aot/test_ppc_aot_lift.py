@@ -176,6 +176,9 @@ class Translator(unittest.TestCase):
         self.assertEqual(set(r.code), {BASE})
         last = lift.lift_buffer(words(0xec2218fa), 0xfffffffc)[0]
         self.assertNotIn("0x100000000u", lift.render(last, "last"))
+        image = lift.Image([lift.Section(0xfffffffc, words(NOP), True),
+                            lift.Section(0, words(0x48000000), True)], 0xfffffffc)
+        self.assertEqual(lift.nonreturning_targets(image, {0xfffffffc}), {0xfffffffc})
 
     def test_noreturn_with_decodable_data(self):
         # wrapper calls a closed loop; both calls have no normal return path.
@@ -206,6 +209,25 @@ class Translator(unittest.TestCase):
         self.assertEqual(desc(), (table.base, None, True))
         code[6] = 0x38a00000  # li r5,0 overwrites the table base
         self.assertIsNone(desc())
+
+    def test_switch_nop_preserves_r0_scale(self):
+        code, table = relative_switch()
+        code.insert(6, NOP)  # between slwi r0,r3,2 and lwzx r6,r5,r0
+        image = lift.Image([lift.Section(0x4100, words(*code), True), table], 0x4100)
+        self.assertEqual(lift.switch_descriptor(image, 0x4130), (table.base, 2, True))
+        code[6] = 0x38000000  # li r0,0 really does kill the scale
+        image = lift.Image([lift.Section(0x4100, words(*code), True), table], 0x4100)
+        self.assertEqual(lift.switch_descriptor(image, 0x4130), (table.base, None, True))
+
+    def test_downcount_after_memory_callback(self):
+        source = body(0x90640000, 0x38a50001, BLR)  # stw r3,0(r4); addi r5,r5,1
+        callbacks, rest = source.split("check_80003100:;", 1)
+        guard, _ = rest.split("done_80003100:;", 1)
+        self.assertIn("if (called) goto check_80003100;", callbacks)
+        self.assertIn("host_op(0x80003100u, 0x90640000u, h.fallback);", callbacks)
+        self.assertNotIn("downcount <= 0", callbacks.split("if (auto* page", 1)[1])
+        self.assertIn("if (downcount <= 0 ||", guard)
+        self.assertIn("return finish(s.npc, PH_DISPATCH);", guard)
 
     def test_fp_operands_and_fast_path(self):
         for word, expected in ((0xfc205890, {1, 11}), (0xfc802840, {0, 5}),
@@ -341,7 +363,7 @@ NATIVE_SMOKE = r"""#include <cstdlib>
 static PHState s;
 static bool off;
 static PHU32 reads, fallback_pc, fault_pc;
-static bool fault, invalidate;
+static bool fault, invalidate, force_check;
 static PHU64 generation = 1;
 static const PHAotEntry* bound[256 * PH_FEATURE_KEYS];
 static unsigned bursts;
@@ -380,10 +402,12 @@ int main()
     CHECK(s.gather_pipe_ptr[-4] == (expected_fifo_high >> 24) && s.gather_pipe_ptr[-1] == (expected_fifo_high & 255));
     ++bursts;
     s.gather_pipe_ptr = s.gather_pipe_base_ptr;
+    if (force_check) s.downcount = 0;
   };
   h.fallback = [](void*, PHU32 word) {
     fallback_pc = s.pc;
     CHECK(s.npc == s.pc + 4);
+    if (force_check) s.downcount = 0;
     if (invalidate) ++generation;
     if (s.pc == 0x1300)
     {
@@ -447,12 +471,16 @@ int main()
   for (PHU32 sync : {2u, 0x200u}) {
     s.Exceptions = sync; CHECK(run(0x1300) == PH_DECLINE && reads == 2);
   }
-  s.Exceptions = 0; fault = false;
+  // The MMIO callback requests an immediate timing check with only an async bit pending.
+  fault = false; force_check = true; s.Exceptions = 4; s.downcount = 20;
+  CHECK(run(0x1300) == PH_DISPATCH && s.pc == 0x1304 && s.downcount == -1);
+  CHECK(s.gpr[3] == 0x24 && reads == 3);
+  force_check = false; s.Exceptions = 0;
   static unsigned char page[1u << 17]{}; page[0x28] = 0x40; page[0x2c] = 0xbf; page[0x2d] = 0x80;
   const void* pages[] = {page}; PHU32 dbat[] = {3};
   h.logical_pages = pages; h.dbat = dbat; s.msr |= 16; s.gpr[3] = 0x24;
   run(0x1300);
-  CHECK(reads == 2 && s.ps[1].ps0 == std::bit_cast<PHU64>(2.0));
+  CHECK(reads == 3 && s.ps[1].ps0 == std::bit_cast<PHU64>(2.0));
   CHECK(s.ps[1].ps1 == std::bit_cast<PHU64>(-1.0) && s.pc == s.spr[8]);
 
   run(0x1400);
@@ -519,6 +547,10 @@ int main()
   CHECK(bursts == 3 && s.gather_pipe_ptr == fifo + 4 && fifo[0] == 0xc0);
   s.gpr[4] = expected_fifo_high = 0x12345678; s.gather_pipe_ptr = fifo + 28;
   run(0x4700); CHECK(bursts == 4 && s.gather_pipe_ptr == fifo);
+  force_check = true; s.downcount = 20; s.gather_pipe_ptr = fifo + 28;
+  CHECK(run(0x4700) == PH_DISPATCH && s.pc == 0x4704 && s.downcount == -1);
+  CHECK(bursts == 5 && s.gather_pipe_ptr == fifo);
+  force_check = false;
   s.spr[920] = 0x80000000;
 
   for (PHU32 i = 0; i < module->entry_count; ++i) {
@@ -718,6 +750,34 @@ MSVC_BUILTINS = r"""
 
 
 class NativeModule(unittest.TestCase):
+    @unittest.skipUnless(shutil.which("clang++") or shutil.which("cl"), "requires clang++ or MSVC x64")
+    def test_span_has_idle_loop(self):
+        tools = Path(__file__).resolve().parent
+        core = tools.parents[1]/"Source/Core"
+        source = (core/"Core/PowerPC/PPCAnalyst.cpp").read_text(encoding="utf-8")
+        # Compile the production block analyzer with fixture memory, omitting the symbol database
+        # discovery routines and their emulator dependencies.
+        analyzer = (source[source.index("namespace PPCAnalyst"):source.index("bool AnalyzeFunction(")] +
+                    source[source.index("static bool IsMfspr("):source.index("static void FindFunctionsFromBranches(")] +
+                    source[source.index("static bool isCarryOp("):])
+        with tempfile.TemporaryDirectory(dir=tools) as tmp:
+            out = Path(tmp)
+            (out/"block_analyzer.inc").write_text(analyzer, encoding="utf-8")
+            # BitField.h declares formatters. This standalone executable never formats a BitField.
+            (out/"fmt").mkdir()
+            (out/"fmt/format.h").write_text(
+                "#pragma once\nnamespace fmt { template<class> struct formatter; class format_parse_context; }\n")
+            exe = out/("idle.exe" if os.name == "nt" else "idle")
+            fixture = tools/"idle_loop_smoke.cpp"
+            if compiler := shutil.which("clang++"):
+                command = [compiler, "-std=c++20", "-I", out, "-I", core, fixture, "-o", exe]
+            else:
+                command = ["cl", "/nologo", "/std:c++20", "/EHsc", "/I" + str(out),
+                           "/I" + str(core), fixture, "/Fe:" + str(exe)]
+            env = {**os.environ, "TMP": tmp, "TEMP": tmp, "TMPDIR": tmp}
+            subprocess.run(command, check=True, cwd=out, env=env)
+            subprocess.run([exe], check=True, cwd=out, env=env)
+
     @unittest.skipUnless(shutil.which("clang++") or shutil.which("cl"), "requires clang++ or MSVC x64")
     def test_execute(self):
         with tempfile.TemporaryDirectory(dir=Path(__file__).parent) as tmp:

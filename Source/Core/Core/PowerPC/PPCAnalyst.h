@@ -41,6 +41,7 @@ struct CodeOp  // 16B
   BitSet8 crOut;
   bool branchUsesCtr = false;
   bool branchIsIdleLoop = false;
+  bool branchIsStrictIdleLoop = false;
   bool branchIsCtrIdleLoop = false;
   BitSet8 wantsCR;
   bool wantsFPRF = false;
@@ -202,7 +203,6 @@ private:
                                ReorderType type) const;
   void ReorderInstructions(u32 instructions, CodeOp* code) const;
   void SetInstructionStats(CodeBlock* block, CodeOp* code, const GekkoOPInfo* opinfo) const;
-  bool IsBusyWaitLoop(CodeBlock* block, CodeOp* code, size_t instructions) const;
 
   // Options
   u32 m_options = 0;

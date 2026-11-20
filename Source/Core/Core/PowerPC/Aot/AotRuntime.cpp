@@ -181,6 +181,11 @@ void Runtime::Init(Core::System& system, ProfileBlock profile)
   // The translator numbers only addresses with a direct native caller.
   m_bound = std::make_unique<const PHAotEntry*[]>(size_t(m_module->call_slots) * PH_FEATURE_KEYS);
   m_host.bound = m_bound.get();
+  const auto refresh_validation = [this] {
+    m_neon_validate = Config::Get(Config::MAIN_CIR_PS_NEON_VALIDATE);
+  };
+  m_config_callback_id = CPUThreadConfigCallback::AddConfigChangedCallback(refresh_validation);
+  refresh_validation();
   m_stats->entries = m_module->entry_count;
   std::lock_guard lock(s_report_mutex);
   s_report = m_stats;
@@ -189,6 +194,11 @@ void Runtime::Init(Core::System& system, ProfileBlock profile)
 
 void Runtime::Shutdown()
 {
+  if (m_config_callback_id)
+  {
+    CPUThreadConfigCallback::RemoveConfigChangedCallback(*m_config_callback_id);
+    m_config_callback_id.reset();
+  }
   m_module = nullptr;
 #if defined(__unix__) || defined(__APPLE__)
   if (m_library)
@@ -267,7 +277,7 @@ const PHAotEntry* Runtime::Bind(u32 pc, Common::RangeSet<u32>& ranges,
 
 bool Runtime::Eligible() const
 {
-  return Loaded() && !Config::Get(Config::MAIN_CIR_PS_NEON_VALIDATE) &&
+  return Loaded() && !m_neon_validate &&
          !(m_system->GetPPCState().Exceptions & ~PH_ASYNC_EXCEPTIONS) && !m_system->IsMMUMode() && !m_system->IsPauseOnPanicMode() &&
          !m_system->GetPowerPC().GetMemChecks().HasAny() && !m_system->GetPPCState().m_enable_dcache;
 }

@@ -4,11 +4,13 @@
 
 #include <atomic>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 
 #include "Common/CommonTypes.h"
 #include "Common/RangeSet.h"
+#include "Core/CPUThreadConfigCallback.h"
 #include "Core/PowerPC/Aot/AotAbi.h"
 
 namespace PPCAnalyst
@@ -58,6 +60,8 @@ public:
 
 private:
   Core::System* m_system = nullptr;
+  bool m_neon_validate = false;
+  std::optional<CPUThreadConfigCallback::ConfigChangedCallbackID> m_config_callback_id;
   PHU64 m_generation = 1;
   std::unique_ptr<const PHAotEntry*[]> m_bound;
   std::shared_ptr<Counters> m_stats;

@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <map>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include <fmt/format.h>
@@ -735,18 +736,18 @@ void PPCAnalyzer::SetInstructionStats(CodeBlock* block, CodeOp* code,
   }
 }
 
-bool PPCAnalyzer::IsBusyWaitLoop(CodeBlock* block, CodeOp* code, size_t instructions) const
+enum class IdleLoopKind
 {
-  // Very basic algorithm to detect busy wait loops:
-  //   * It loops to itself and does not contain any other branches.
-  //   * It does not write to memory.
-  //   * It only reads from registers it wrote to earlier in the loop, or it
-  //     does not write to these registers.
-  //
-  // Would benefit a lot from basic inlining support - a lot of the most
-  // used busy loops are DSP register interactions, which are bl/cmp/bne
-  // (with the bl target a pure function that follows the above rules). We
-  // don't detect these at the moment.
+  None,
+  Strict,
+  Relaxed
+};
+
+static IdleLoopKind ClassifyBusyWaitLoop(const CodeBlock* block, const CodeOp* code,
+                                         size_t instructions)
+{
+  // Walk the analyzer's instruction order, including followed branches. A strict idle loop
+  // can reload a temporary each iteration, but must preserve every GPR read before its first write.
   std::bitset<32> write_disallowed_regs;
   std::bitset<32> written_regs;
   for (size_t i = 0; i <= instructions; ++i)
@@ -754,9 +755,9 @@ bool PPCAnalyzer::IsBusyWaitLoop(CodeBlock* block, CodeOp* code, size_t instruct
     if (code[i].opinfo->type == OpType::Branch)
     {
       if (code[i].branchUsesCtr)
-        return false;
+        return IdleLoopKind::None;
       if (code[i].branchTo == block->m_address && i == instructions)
-        return true;
+        return IdleLoopKind::Strict;
     }
     // A `nop` is actually a `ori r0, r0, 0`, which would violate the rules (unless `r0` was written
     // earlier).
@@ -769,7 +770,7 @@ bool PPCAnalyzer::IsBusyWaitLoop(CodeBlock* block, CodeOp* code, size_t instruct
       // In the future, some subsets of other instruction types might get
       // supported. Right now, only try loops that have this very
       // restricted instruction set.
-      return false;
+      return IdleLoopKind::None;
     }
     else
     {
@@ -786,7 +787,7 @@ bool PPCAnalyzer::IsBusyWaitLoop(CodeBlock* block, CodeOp* code, size_t instruct
         if (reg == -1)
           continue;
         if (write_disallowed_regs[reg])
-          return false;
+          return IdleLoopKind::None;
         written_regs[reg] = true;
       }
     }
@@ -817,7 +818,7 @@ bool PPCAnalyzer::IsBusyWaitLoop(CodeBlock* block, CodeOp* code, size_t instruct
     const bool last_is_branch = last.opinfo->type == OpType::Branch && !last.branchUsesCtr &&
                                 last.branchTo == block->m_address;
     if (only_cmp && last_is_branch)
-      return true;
+      return IdleLoopKind::Relaxed;
   }
 
   // Allow some benign integer ops before branch back to start (e.g., counter updates), still
@@ -862,9 +863,9 @@ bool PPCAnalyzer::IsBusyWaitLoop(CodeBlock* block, CodeOp* code, size_t instruct
     const bool last_is_branch = last.opinfo->type == OpType::Branch && !last.branchUsesCtr &&
                                 last.branchTo == block->m_address;
     if (benign_body && last_is_branch)
-      return true;
+      return IdleLoopKind::Relaxed;
   }
-  return false;
+  return IdleLoopKind::None;
 }
 
 // Detect simple CTR-controlled tight loops which are safe to fast-forward:
@@ -938,6 +939,7 @@ static bool CanCauseGatherPipeInterruptCheck(const CodeOp& op)
 bool PPCAnalyzer::SpanHasIdleLoop(u32 start, std::span<const u32> words, size_t max_ops) const
 {
   CodeBuffer buffer;
+  std::unordered_set<u32> analyzed_headers;
   BlockStats stats{};
   BlockRegStats gpa{}, fpa{};
   CodeBlock block{};
@@ -946,16 +948,21 @@ bool PPCAnalyzer::SpanHasIdleLoop(u32 start, std::span<const u32> words, size_t 
   block.m_fpa = &fpa;
   for (size_t i = 0; i < words.size(); ++i)
   {
-    const u32 pc = start + static_cast<u32>(4 * i);
-    const u32 header = EvaluateBranchTarget(UGeckoInstruction{words[i]}, pc);
-    if (header == INVALID_BRANCH_TARGET || header < start || header > pc)
+    const UGeckoInstruction inst{words[i]};
+    if (inst.LK)
       continue;
-    const size_t count = std::min(max_ops, size_t((pc - header) / 4) + 1);
-    buffer.resize(count);
-    Analyze(header, &block, &buffer, count);
+    const u32 pc = start + static_cast<u32>(4 * i);
+    const u32 header = EvaluateBranchTarget(inst, pc);
+    if (header == INVALID_BRANCH_TARGET || header < start || header > pc ||
+        !analyzed_headers.insert(header).second)
+      continue;
+    buffer.resize(max_ops);
+    Analyze(header, &block, &buffer, max_ops);
     for (size_t j = 0; j < block.m_num_instructions; ++j)
     {
-      if (buffer[j].branchIsIdleLoop || buffer[j].branchIsCtrIdleLoop)
+      const auto& op = buffer[j];
+      if (op.branchIsStrictIdleLoop && op.address >= header &&
+          (op.address - start) / 4 < words.size())
         return true;
     }
   }
@@ -1105,8 +1112,12 @@ u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
       }
     }
 
-    code[i].branchIsIdleLoop =
-        code[i].branchTo == block->m_address && IsBusyWaitLoop(block, code, i);
+    if (code[i].branchTo == block->m_address)
+    {
+      const auto kind = ClassifyBusyWaitLoop(block, code, i);
+      code[i].branchIsIdleLoop = kind != IdleLoopKind::None;
+      code[i].branchIsStrictIdleLoop = kind == IdleLoopKind::Strict && !inst.LK;
+    }
     code[i].branchIsCtrIdleLoop = Config::Get(Config::MAIN_FAST_FORWARD_CTR_IDLE) &&
                                   code[i].branchTo == block->m_address && code[i].branchUsesCtr &&
                                   IsCtrOnlyTightLoop(block, code, i);
