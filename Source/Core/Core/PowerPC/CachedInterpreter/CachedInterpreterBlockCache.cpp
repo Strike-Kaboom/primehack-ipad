@@ -21,6 +21,8 @@ void CachedInterpreterBlockCache::Init()
 void CachedInterpreterBlockCache::DestroyBlock(JitBlock& block)
 {
   // iCube: every dynamic inline-cache entry may reference this block's tape; kill them all.
+  // PrimeHack for iPad: revoke verified direct callees before reclaiming their tape.
+  static_cast<CachedInterpreter&>(m_jit).InvalidateAot(block);
   CachedInterpreter::BumpDynLinkGeneration();
   m_page_table_targets.erase(block.normalEntry);
   JitBaseBlockCache::DestroyBlock(block);

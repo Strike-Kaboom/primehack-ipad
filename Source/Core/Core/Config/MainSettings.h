@@ -509,6 +509,8 @@ extern const Info<bool> MAIN_CIR_MICROOP_FUSION;
 extern const Info<bool> MAIN_CIR_MICROOP_FUSION_VALIDATE;
 extern const Info<bool> MAIN_CIR_TAIL_LINK;
 extern const Info<bool> MAIN_CIR_PROFILE;
+// PrimeHack for iPad: optional signed native framework.
+extern const Info<bool> MAIN_CIR_AOT;
 extern const Info<bool> MAIN_CIR_DEAD_FLAG_ELIM;
 extern const Info<bool> MAIN_CIR_DEAD_FLAG_ELIM_VALIDATE;
 // iCube IR engine (CPUCore 6) Milestone 2: dead CR-flag elimination as the first IR optimizer pass.

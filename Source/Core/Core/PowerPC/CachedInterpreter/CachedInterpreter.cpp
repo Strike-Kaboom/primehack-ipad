@@ -1236,7 +1236,7 @@ void Reset()
 std::string BuildHotBlocksReport(u32 top_n)
 {
   if (!s_cir_profile)
-    return "(CIR profiler off — set Main.Core.CIRProfile=true / icube.cirProfile and reboot game)\n";
+    return "(CIR profiler off — set Main.Core.CIRProfile=true / icube.cirProfile and reboot game)\n" + PowerPC::Aot::StatsReport();
 
   // Snapshot non-empty slots. The table never reallocates, so this read is safe even while the CPU
   // thread keeps writing; we tolerate a slightly inconsistent instant (a perf report, not ledger).
@@ -1249,7 +1249,7 @@ std::string BuildHotBlocksReport(u32 top_n)
   std::vector<Entry> entries;
   const u64 grand_cycles = s_block_profile.grand_total_cycles;
   if (s_block_profile.slots.empty() || grand_cycles == 0)
-    return "(CIR profiler on, no blocks recorded yet)\n";
+    return "(CIR profiler on, no blocks recorded yet)\n" + PowerPC::Aot::StatsReport();
 
   entries.reserve(1024);
   for (const auto& s : s_block_profile.slots)
@@ -1258,7 +1258,7 @@ std::string BuildHotBlocksReport(u32 top_n)
       entries.push_back({s.pc, s.run_count, s.total_cycles});
   }
   if (entries.empty())
-    return "(CIR profiler on, no blocks recorded yet)\n";
+    return "(CIR profiler on, no blocks recorded yet)\n" + PowerPC::Aot::StatsReport();
 
   std::sort(entries.begin(), entries.end(),
             [](const Entry& a, const Entry& b) { return a.cycles > b.cycles; });
@@ -1325,6 +1325,7 @@ std::string BuildHotBlocksReport(u32 top_n)
       << " gp_fused_pairs=" << s_gp_fused_pairs << " gp_fused_fallbacks=" << s_gp_fused_fallbacks
       << " (gather-pipe copy fusion; the %cyc column CANNOT show this — it is static guest cycles)\n";
   out << Interpreter::BuildPsNeonReport();
+  out << PowerPC::Aot::StatsReport();  // PrimeHack for iPad: native coverage
 
   {
     u64 class_runs[static_cast<int>(CIRDispClass::COUNT)] = {};
@@ -1852,6 +1853,11 @@ void CachedInterpreter::Init()
   // the report builder's disasm append is fully inert. Boot-time one-shot write; never on the hot path.
   s_profile_memory = s_cir_profile ? &m_system.GetMemory() : nullptr;
 
+  // PrimeHack for iPad: feed actual retired basic blocks to the existing hot-block sampler.
+  PowerPC::Aot::Runtime::ProfileBlock profile = nullptr;
+  if (s_cir_profile)
+    profile = [](void*, PHU32 pc, PHU32 cycles) { s_block_profile.Record(pc, cycles); };
+  m_aot.Init(m_system, profile);
   AllocCodeSpace(CODE_SIZE);
   ResetFreeMemoryRanges();
 
@@ -1873,8 +1879,10 @@ void CachedInterpreter::Shutdown()
 {
   // PrimeHack for iPad: retire pending writers and targets before releasing core resources.
   BumpDynLinkGeneration();
+  m_aot.NotifyTapeReuse();  // PrimeHack for iPad: retire the native generation as well.
   s_validate_instance = nullptr;
   m_block_cache.Shutdown();
+  m_aot.Shutdown();  // PrimeHack for iPad: all tape references are gone.
 }
 
 // iCube: the single source of dispatch for specialized ops. Given an already-decoded CirSpecOp `id`,
@@ -2062,7 +2070,29 @@ void CachedInterpreter::SingleStep()
   m_system.GetCoreTiming().Advance();
   // iCube: thread the run-state pointer through for the block-linking safety guard (same source Run()
   // uses). On a single step a linked chain cannot form across the one block, so the guard is inert here.
-  ExecuteOneBlock(m_system.GetCPU().GetStatePtr());
+  // PrimeHack for iPad: a previously bound AOT region must respect a debugger step.
+  m_aot_single_step = true;
+  m_aot_step_deopt = false;
+  const auto before = m_ppc_state.downcount;
+  const auto* state = m_system.GetCPU().GetStatePtr();
+  ExecuteOneBlock(state);
+  if (m_aot_step_deopt && before == m_ppc_state.downcount)
+  {
+    // The old native record retired nothing. Complete this step using a freshly compiled tape.
+    Jit(m_ppc_state.pc);
+    ExecuteOneBlock(state);
+  }
+  m_aot_single_step = false;
+}
+
+bool CachedInterpreter::SingleStepAotForTest()
+{
+  // The CPU differential test drives a stopped core without the UI run loop.
+  const u64 before = m_aot.Executions();
+  m_aot_test_step = true;
+  SingleStep();
+  m_aot_test_step = false;
+  return m_aot.Executions() != before;
 }
 
 s32 CachedInterpreter::StartProfiledBlock(PowerPC::PowerPCState& ppc_state,
@@ -2098,7 +2128,7 @@ s32 CachedInterpreter::EndBlock(PowerPC::PowerPCState& ppc_state,
 // flags only change which per-INSTRUCTION callback is emitted; this changes only the block TERMINAL.
 // They never touch the same operand and ExecuteOneBlock dispatches LinkBlock through the unchanged
 // generic indirect tail, so the two features are orthogonal and may be enabled together.
-template <bool instrumented, int edge, bool tail, int terminal>
+template <bool instrumented, int edge, bool tail, int terminal, bool accounted>
 s32 CachedInterpreter::LinkBlock(PowerPC::PowerPCState& ppc_state, const void* payload)
 {
   const auto& operands = *static_cast<const LinkBlockOperands*>(payload);
@@ -2127,7 +2157,7 @@ s32 CachedInterpreter::LinkBlock(PowerPC::PowerPCState& ppc_state, const void* p
   ppc_state.pc = ppc_state.npc;
   ppc_state.downcount -= operands.downcount;
   // iCube WIN#3: PMC update gated on the game having configured the performance monitor (see EndBlock).
-  if constexpr (instrumented)
+  if constexpr (instrumented && !accounted)
   {
     if (PowerPC::PerformanceMonitorActive(ppc_state))
       PowerPC::UpdatePerformanceMonitor(operands.downcount, operands.num_load_stores,
@@ -5872,7 +5902,10 @@ void CachedInterpreter::FreeRanges()
   // a callback slot whose upper half is a guest pc, i.e. a jump to garbage. Drop the pending fill
   // (and every cached dynamic link) before any range is reused.
   if (!m_block_cache.GetRangesToFree().empty())
+  {
     BumpDynLinkGeneration();
+    m_aot.NotifyTapeReuse();  // PrimeHack for iPad: stop native frames at the same epoch boundary.
+  }
   for (const auto& [from, to] : m_block_cache.GetRangesToFree())
     m_free_ranges.insert(from, to);
   m_block_cache.ClearRangesToFree();
@@ -5942,6 +5975,9 @@ void CachedInterpreter::Jit(u32 em_address, bool clear_cache_and_retry_on_failur
         m_block_cache.RecordTargetTranslations(*b, ops);
       }
       m_block_cache.FinalizeBlock(*b, jo.enableBlocklink, code_block, m_code_buffer);
+      // PrimeHack for iPad: only publish a native call target once its invalidation ranges exist.
+      if (m_pending_aot)
+        m_aot.Publish(*m_pending_aot, static_cast<u32>(b->feature_flags));
 
 #ifdef JIT_LOG_GENERATED_CODE
       LogGeneratedCode();
@@ -5964,6 +6000,77 @@ void CachedInterpreter::Jit(u32 em_address, bool clear_cache_and_retry_on_failur
   std::exit(-1);
 }
 
+// PrimeHack for iPad: bind one verified terminal record. Misses use the normal emitter.
+void CachedInterpreter::EmitAot(u32 pc)
+{
+  if (jo.memcheck || IsDebuggingEnabled() || IsProfilingEnabled() || IsBranchWatchEnabled() ||
+      ((m_aot_single_step || m_system.GetCPU().GetState() != CPU::State::Running) && !m_aot_test_step))
+    return;
+  for (u32 i = 0; i < code_block.m_num_instructions; ++i)
+  {
+    if (m_code_buffer[i].branchIsIdleLoop || m_code_buffer[i].branchIsCtrIdleLoop)
+      return;
+  }
+  m_pending_aot = m_aot.Bind(pc, code_block.m_physical_addresses, analyzer, m_code_buffer.size());
+  if (!m_pending_aot)
+    return;
+  AotOperands ops{{}, this, m_pending_aot, js.curBlock};
+  ops.link.expected_pc = 0xffffffffu;
+  ops.link.feature_flags = static_cast<u32>(js.curBlock->feature_flags);
+  WriteChainable(AnyCallback{ExecuteAot}, &ops, sizeof(ops), 0, 0, 0);
+}
+
+s32 CachedInterpreter::ExecuteAot(PowerPC::PowerPCState& state, const void* payload)
+{
+  const auto& ops = *static_cast<const AotOperands*>(payload);
+  auto& owner = *ops.owner;
+  const bool paused = owner.m_aot_single_step ||
+                      owner.m_system.GetCPU().GetState() != CPU::State::Running;
+  if (!owner.m_aot.Eligible() || (paused && !owner.m_aot_test_step) ||
+      owner.IsDebuggingEnabled() || owner.IsProfilingEnabled() || owner.IsBranchWatchEnabled())
+  {
+    // A guard changed after binding. Re-dispatch through ordinary CIR compilation with
+    // the current debugger, FP and memory settings. This also revokes direct callers.
+    owner.m_aot_step_deopt = owner.m_aot_single_step;
+    owner.m_block_cache.EraseSingleBlock(*ops.block);
+    return 0;
+  }
+
+  const auto generation = owner.m_aot.Generation();
+  const u32 reason = owner.m_aot.Execute(state, *ops.entry);
+  if (reason == PH_DECLINE)
+  {
+    owner.m_aot_step_deopt = owner.m_aot_single_step;
+    owner.m_block_cache.EraseSingleBlock(*ops.block);
+    return 0;
+  }
+  // A host instruction can destroy this record while it is running.
+  if (owner.m_aot_single_step || generation != owner.m_aot.Generation() || reason == PH_DISPATCH ||
+      (state.Exceptions & ~PH_ASYNC_EXCEPTIONS) || !s_block_linking || !s_dyn_linking ||
+      owner.m_system.GetCPU().GetState() != CPU::State::Running)
+    return 0;
+  if (s_chain_links)
+  {
+    if (s_link_instrumented)
+    {
+      CI_MUSTTAIL return LinkBlock<true, 2, true, 0, true>(state, payload);
+    }
+    CI_MUSTTAIL return LinkBlock<false, 2, true, 0>(state, payload);
+  }
+  if (s_link_instrumented)
+  {
+    CI_MUSTTAIL return LinkBlock<true, 2, false, 0, true>(state, payload);
+  }
+  CI_MUSTTAIL return LinkBlock<false, 2, false, 0>(state, payload);
+}
+
+s32 CachedInterpreter::ExecuteAot(std::ostream& stream, const void* payload)
+{
+  const auto& ops = *static_cast<const AotOperands*>(payload);
+  fmt::println(stream, "AOT entry {:#010x}, {} span words", ops.entry->entry_pc, ops.entry->word_count);
+  return sizeof(AnyCallback) + sizeof(ops);
+}
+
 bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 {
   js.blockStart = em_address;
@@ -5981,6 +6088,15 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   auto& power_pc = m_system.GetPowerPC();
   auto& cpu = m_system.GetCPU();
   auto& breakpoints = power_pc.GetBreakPoints();
+
+  // PrimeHack for iPad: without a framework the original tape is emitted verbatim.
+  m_pending_aot = nullptr;
+  if (m_aot.Loaded())
+  {
+    EmitAot(em_address);
+    if (m_pending_aot)
+      return !HasWriteFailed();
+  }
 
   if (IsProfilingEnabled())
     Write(StartProfiledBlock, {js.curBlock->profile_data.get()});
@@ -7625,6 +7741,7 @@ void CachedInterpreter::ClearCache()
 {
   // The whole tape is about to be reused: no pending dynamic-link fill may survive (see FreeRanges).
   BumpDynLinkGeneration();
+  m_aot.NotifyTapeReuse();  // PrimeHack for iPad: invalidate suspended native frames.
   m_block_cache.Clear();
   m_block_cache.ClearRangesToFree();
   ClearCodeSpace();

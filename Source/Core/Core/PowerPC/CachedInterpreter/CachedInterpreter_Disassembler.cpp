@@ -256,6 +256,8 @@ std::size_t CachedInterpreter::Disassemble(const JitBlock& block, std::ostream& 
         static_cast<ErasedDisassemble>(CachedInterpreter::InterpretChained));
     for (const AnyCallback direct : GetInterpretDirectCallbacks())
       add(direct, static_cast<ErasedDisassemble>(CachedInterpreter::InterpretChained));
+    // PrimeHack for iPad: fixed-size native prefix.
+    add(AnyCallback{ExecuteAot}, static_cast<ErasedDisassemble>(ExecuteAot));
     const auto end = std::ranges::sort(sorted_lookup, {}, &LookupKV::first);
     ASSERT_MSG(DYNA_REC, std::ranges::adjacent_find(sorted_lookup, {}, &LookupKV::first) == end,
                "Sorted lookup should not contain duplicate keys.");

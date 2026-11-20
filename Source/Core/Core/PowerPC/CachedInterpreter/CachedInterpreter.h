@@ -11,6 +11,7 @@
 #include "Common/CommonTypes.h"
 #include "Common/Visibility.h"
 #include "Common/RangeSizeSet.h"
+#include "Core/PowerPC/Aot/AotRuntime.h"  // PrimeHack for iPad: native module contract
 #include "Core/PowerPC/CachedInterpreter/CachedInterpreterBlockCache.h"
 #include "Core/PowerPC/CachedInterpreter/CachedInterpreterEmitter.h"
 #include "Core/PowerPC/Interpreter/Interpreter.h"
@@ -274,6 +275,13 @@ public:
   // fallthrough). Entries are validated against a process-wide generation that the block cache
   // bumps on every DestroyBlock, so a freed/reused tape range can never be followed. See LinkBlock.
   static void BumpDynLinkGeneration();
+  // PrimeHack for iPad: differential executor uses the same cache, binder and native record.
+  bool SingleStepAotForTest();
+  // PrimeHack for iPad: withdraw this verified address and feature key.
+  void InvalidateAot(const JitBlock& block)
+  {
+    m_aot.Invalidate(block.effectiveAddress, static_cast<u32>(block.feature_flags));
+  }
 
 private:
   // iCube: state_ptr is the CPU run-state pointer (CPU::State*, from CPUManager::GetStatePtr). It is
@@ -306,6 +314,16 @@ private:
   struct EndBlockOperands;
   // iCube: operands for the block-linking trampoline (MAIN_CIR_BLOCK_LINKING). See LinkBlock.
   struct LinkBlockOperands;
+  // PrimeHack for iPad: fixed-size, terminal native record.
+  struct AotOperands;
+  PowerPC::Aot::Runtime m_aot;
+  bool m_aot_single_step = false;
+  bool m_aot_step_deopt = false;
+  bool m_aot_test_step = false;
+  const PHAotEntry* m_pending_aot = nullptr;
+  void EmitAot(u32 pc);
+  static s32 ExecuteAot(PowerPC::PowerPCState& state, const void* payload);
+  static s32 ExecuteAot(std::ostream& stream, const void* payload);
   struct InterpretOperands;
   // iCube: specialized-only payload (MAIN_CIR_SPECIALIZED_OPS). Layout-COMPATIBLE prefix with
   // InterpretOperands plus a trailing compact op-id, so the dispatch switch in ExecuteOneBlock can
@@ -385,7 +403,7 @@ private:
   // (npc = the static target; bl also sets LR). `instrumented` (performance monitor, hot-block
   // profiler, link validation) is chosen at emit time: the profiler/validate switches are fixed at
   // Init and the perfmon state is one of the block's feature flags.
-  template <bool instrumented, int edge, bool tail, int terminal>
+  template <bool instrumented, int edge, bool tail, int terminal, bool accounted = false>
   static s32 LinkBlock(PowerPC::PowerPCState& ppc_state, const void* payload);
   // Null for combinations that do not exist (terminal 1 needs edge 2; terminals 2/3 need edge 1).
   static AnyCallback GetLinkBlockCallback(int edge, bool tail, bool instrumented, int terminal);
@@ -907,4 +925,13 @@ struct CachedInterpreter::CheckCtrIdleOperands
   CoreTiming::CoreTimingManager& core_timing;
   u32 idle_pc;         // PC of the CTR-branch at loop end
   u32 fallthrough_pc;  // PC after the branch (loop exit)
+};
+
+// PrimeHack for iPad: the existing dynamic linker uses the callback slot immediately before link.
+struct CachedInterpreter::AotOperands
+{
+  LinkBlockOperands link{};
+  CachedInterpreter* owner;
+  const PHAotEntry* entry;
+  const JitBlock* block;
 };

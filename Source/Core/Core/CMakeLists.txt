@@ -515,6 +515,10 @@ add_library(core
   PowerPC/BreakPoints.cpp
   PowerPC/BreakPoints.h
   PowerPC/CachedInterpreter/CachedInterpreter_Disassembler.cpp
+  # PrimeHack for iPad: optional signed native framework host.
+  PowerPC/Aot/AotRuntime.cpp
+  PowerPC/Aot/AotRuntime.h
+  PowerPC/Aot/AotAbi.h
   PowerPC/CachedInterpreter/CachedInterpreter.cpp
   PowerPC/CachedInterpreter/CachedInterpreter.h
   PowerPC/CachedInterpreter/CachedInterpreterIR.cpp
@@ -723,6 +727,9 @@ elseif(_M_ARM_64)
   )
 endif()
 
+if(CMAKE_DL_LIBS) # PrimeHack for iPad: load the optional AOT module.
+  target_link_libraries(core PRIVATE ${CMAKE_DL_LIBS})
+endif()
 target_link_libraries(core
 PUBLIC
   audiocommon

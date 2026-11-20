@@ -933,6 +933,35 @@ static bool CanCauseGatherPipeInterruptCheck(const CodeOp& op)
          op.opinfo->type == OpType::StorePS;
 }
 
+// An AOT function can enter a loop without dispatching at its header. Run the normal
+// analyzer from interior loop headers too, with the current CIR options and block limit.
+bool PPCAnalyzer::SpanHasIdleLoop(u32 start, std::span<const u32> words, size_t max_ops) const
+{
+  CodeBuffer buffer;
+  BlockStats stats{};
+  BlockRegStats gpa{}, fpa{};
+  CodeBlock block{};
+  block.m_stats = &stats;
+  block.m_gpa = &gpa;
+  block.m_fpa = &fpa;
+  for (size_t i = 0; i < words.size(); ++i)
+  {
+    const u32 pc = start + static_cast<u32>(4 * i);
+    const u32 header = EvaluateBranchTarget(UGeckoInstruction{words[i]}, pc);
+    if (header == INVALID_BRANCH_TARGET || header < start || header > pc)
+      continue;
+    const size_t count = std::min(max_ops, size_t((pc - header) / 4) + 1);
+    buffer.resize(count);
+    Analyze(header, &block, &buffer, count);
+    for (size_t j = 0; j < block.m_num_instructions; ++j)
+    {
+      if (buffer[j].branchIsIdleLoop || buffer[j].branchIsCtrIdleLoop)
+        return true;
+    }
+  }
+  return false;
+}
+
 u32 PPCAnalyzer::Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer,
                          std::size_t block_size) const
 {

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <span>
 #include <vector>
 
 #include "Common/BitSet.h"
@@ -186,6 +187,7 @@ public:
   void SetFloatExceptionsEnabled(bool enabled) { m_enable_float_exceptions = enabled; }
   void SetDivByZeroExceptionsEnabled(bool enabled) { m_enable_div_by_zero_exceptions = enabled; }
   u32 Analyze(u32 address, CodeBlock* block, CodeBuffer* buffer, std::size_t block_size) const;
+  bool SpanHasIdleLoop(u32 start, std::span<const u32> words, size_t max_ops) const;
 
 private:
   enum class ReorderType

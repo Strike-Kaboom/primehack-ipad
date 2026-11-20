@@ -1200,6 +1200,8 @@ const Info<bool> MAIN_CIR_TAIL_LINK{{System::Main, "Core", "CIRTailLink"}, false
 // ExecuteOneBlock is byte-for-byte untouched and the flag-off build pays nothing measurable. Flip ON
 // (config key or the icube.cirProfile NSUserDefault) for a profiling session, then Copy State.
 const Info<bool> MAIN_CIR_PROFILE{{System::Main, "Core", "CIRProfile"}, false};
+// PrimeHack for iPad: optional signed native framework.
+const Info<bool> MAIN_CIR_AOT{{System::Main, "Core", "CIRAot"}, true};
 // iCube: CachedInterpreter dead CR-flag elimination. PowerPC `.`(Rc) integer ops set CR0 and FP Rc ops
 // set CR1; the analyzer (PPCAnalyst) already proves which of those CR results are OVERWRITTEN before any
 // branch/mfcr reads them (op.crDiscardable) and resets that set to empty at every exception/block-exit/
