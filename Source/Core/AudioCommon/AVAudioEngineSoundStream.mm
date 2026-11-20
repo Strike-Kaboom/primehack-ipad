@@ -200,7 +200,8 @@ bool AVAudioEngineSound::buildGraphLocked()
       // PrimeHack for iPad: the DPL2 decode and the binaural renderer leave the six virtual
       // speakers roughly 9-15 dB quieter than the plain stereo mix (Neon's audit, build 37). Apple's
       // peak limiter adds the gain back cleanly: it turns the whole mix down smoothly on loud peaks
-      // instead of clipping or bending the waveform (build 34's soft clipper did that).
+      // instead of clipping or bending the waveform (build 34's soft clipper did that). +10 dB, not more:
+      // the -Z speaker fix already recovers some front level, and more gain makes bass hits pump.
       AudioComponentDescription desc = {};
       desc.componentType = kAudioUnitType_Effect;
       desc.componentSubType = kAudioUnitSubType_PeakLimiter;
@@ -210,7 +211,7 @@ bool AVAudioEngineSound::buildGraphLocked()
       {
         AudioUnit au = limiter.audioUnit;
         const OSStatus gain =
-            AudioUnitSetParameter(au, kLimiterParam_PreGain, kAudioUnitScope_Global, 0, 12.0f, 0);
+            AudioUnitSetParameter(au, kLimiterParam_PreGain, kAudioUnitScope_Global, 0, 10.0f, 0);
         // 7 ms attack (look-ahead) and the longest decay keep bass transients from pumping.
         const OSStatus attack =
             AudioUnitSetParameter(au, kLimiterParam_AttackTime, kAudioUnitScope_Global, 0, 0.007f, 0);
