@@ -540,6 +540,24 @@ void JitArm64::MSRUpdated(ARM64Reg msr)
   SetJumpTarget(dr_unset);
 }
 
+ARM64Reg JitArm64::PrepareReturnKey(u32 return_pc, ARM64Reg return_pc_reg)
+{
+  const u64 flags = u64{m_ppc_state.feature_flags} << 32;
+  // Cleanup and profiling may call out, and DoDownCount uses W0/W1.
+  if (return_pc_reg == ARM64Reg::INVALID_REG || CALLER_SAVED_GPRS[DecodeReg(return_pc_reg)])
+  {
+    MOVI2R(ARM64Reg::X1, flags | return_pc);
+    return ARM64Reg::X1;
+  }
+
+  const ARM64Reg pc = EncodeRegTo64(return_pc_reg);
+  if (flags == 0)
+    return pc;
+
+  ORRI2R(ARM64Reg::X1, pc, flags, ARM64Reg::X0);
+  return ARM64Reg::X1;
+}
+
 void JitArm64::WriteExit(u32 destination, bool LK, u32 exit_address_after_return,
                          ARM64Reg exit_address_after_return_reg)
 {
@@ -557,21 +575,8 @@ void JitArm64::WriteExit(u32 destination, bool LK, u32 exit_address_after_return
   if (LK)
   {
     // Push {ARM_PC (64-bit); PPC_PC (32-bit); feature_flags (32-bit)} on the stack
-    ARM64Reg reg_to_push = ARM64Reg::X1;
-    const u64 feature_flags = m_ppc_state.feature_flags;
-    if (exit_address_after_return_reg == ARM64Reg::INVALID_REG)
-    {
-      MOVI2R(ARM64Reg::X1, feature_flags << 32 | exit_address_after_return);
-    }
-    else if (feature_flags == 0)
-    {
-      reg_to_push = EncodeRegTo64(exit_address_after_return_reg);
-    }
-    else
-    {
-      ORRI2R(ARM64Reg::X1, EncodeRegTo64(exit_address_after_return_reg), feature_flags << 32,
-             ARM64Reg::X1);
-    }
+    const ARM64Reg reg_to_push =
+        PrepareReturnKey(exit_address_after_return, exit_address_after_return_reg);
     constexpr s32 adr_offset = JitArm64BlockCache::BLOCK_LINK_SIZE + sizeof(u32) * 2;
     host_address_after_return = GetCodePtr() + adr_offset;
     ADR(ARM64Reg::X0, adr_offset);
@@ -665,21 +670,8 @@ void JitArm64::WriteExit(Arm64Gen::ARM64Reg dest, bool LK, u32 exit_address_afte
   else
   {
     // Push {ARM_PC (64-bit); PPC_PC (32-bit); feature_flags (32-bit)} on the stack
-    ARM64Reg reg_to_push = ARM64Reg::X1;
-    const u64 feature_flags = m_ppc_state.feature_flags;
-    if (exit_address_after_return_reg == ARM64Reg::INVALID_REG)
-    {
-      MOVI2R(ARM64Reg::X1, feature_flags << 32 | exit_address_after_return);
-    }
-    else if (feature_flags == 0)
-    {
-      reg_to_push = EncodeRegTo64(exit_address_after_return_reg);
-    }
-    else
-    {
-      ORRI2R(ARM64Reg::X1, EncodeRegTo64(exit_address_after_return_reg), feature_flags << 32,
-             ARM64Reg::X1);
-    }
+    const ARM64Reg reg_to_push =
+        PrepareReturnKey(exit_address_after_return, exit_address_after_return_reg);
     constexpr s32 adr_offset = sizeof(u32) * 3;
     const u8* host_address_after_return = GetCodePtr() + adr_offset;
     ADR(ARM64Reg::X0, adr_offset);
@@ -1192,7 +1184,7 @@ bool JitArm64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
   auto& cpu = m_system.GetCPU();
 
   js.isLastInstruction = false;
-  js.firstFPInstructionFound = false;
+  js.firstFPInstructionFound = (b->feature_flags & FEATURE_FLAG_MSR_FP) != 0;
   js.assumeNoPairedQuantize = false;
   js.blockStart = em_address;
   js.fifoBytesSinceCheck = 0;

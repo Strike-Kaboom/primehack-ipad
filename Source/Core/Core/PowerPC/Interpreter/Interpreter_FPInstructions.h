@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cmath>
 #include <utility>
 
 #include "Core/PowerPC/Interpreter/Interpreter_FPUtils.h"
@@ -133,7 +134,7 @@ inline void ConvertToInteger(PowerPC::PowerPCState& ppc_state, Inst inst, Roundi
     {
       // Also sets FPSCR[XX]
       SetFI(ppc_state, 1);
-      ppc_state.fpscr.FR = fabs(di) > fabs(b);
+      ppc_state.fpscr.FR = std::fabs(di) > std::fabs(b);
     }
   }
 
@@ -540,7 +541,7 @@ inline void frspx(PowerPC::PowerPCState& ppc_state, Inst inst)
   else
   {
     SetFI(ppc_state, b != rounded);
-    ppc_state.fpscr.FR = fabs(rounded) > fabs(b);
+    ppc_state.fpscr.FR = std::fabs(rounded) > std::fabs(b);
     if constexpr (fprf)
       ppc_state.UpdateFPRFSingle(rounded);
     ppc_state.ps[inst.FD].Fill(rounded);
@@ -591,7 +592,7 @@ inline void fmrx(PowerPC::PowerPCState& ppc_state, Inst inst)
 template <bool fprf, typename Inst>
 inline void fabsx(PowerPC::PowerPCState& ppc_state, Inst inst)
 {
-  ppc_state.ps[inst.FD].SetPS0(fabs(ppc_state.ps[inst.FB].PS0AsDouble()));
+  ppc_state.ps[inst.FD].SetPS0(std::fabs(ppc_state.ps[inst.FB].PS0AsDouble()));
 
   // This is a binary instruction. Does not alter FPSCR
   if (inst.Rc)

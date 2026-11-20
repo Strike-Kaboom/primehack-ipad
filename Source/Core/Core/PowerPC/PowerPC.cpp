@@ -231,6 +231,7 @@ void PowerPCManager::InitializeCPUCore(CPUCore cpu_core)
   }
 
   m_mode = m_cpu_core_base == &interpreter ? CoreMode::Interpreter : CoreMode::JIT;
+  RefreshFPRFPolicy();
 }
 
 std::span<const CPUCore> AvailableCPUCores()
@@ -336,6 +337,7 @@ void PowerPCManager::Shutdown()
   m_system.GetJitInterface().Shutdown();
   m_system.GetInterpreter().Shutdown();
   m_cpu_core_base = nullptr;
+  RefreshFPRFPolicy();
 }
 
 void PowerPCManager::RegisterVmcallWithIndex(int index, vm_call pfn) {
@@ -368,6 +370,12 @@ CoreMode PowerPCManager::GetMode() const
   return !m_cpu_core_base_is_injected ? m_mode : CoreMode::Interpreter;
 }
 
+void PowerPCManager::RefreshFPRFPolicy()
+{
+  g_fprf_updates_off = !m_cpu_core_base_is_injected && m_cpu_core_base &&
+                       m_cpu_core_base->DisablesFPRFUpdates();
+}
+
 void PowerPCManager::ApplyMode()
 {
   auto& interpreter = m_system.GetInterpreter();
@@ -387,6 +395,7 @@ void PowerPCManager::ApplyMode()
       m_cpu_core_base = &interpreter;
     break;
   }
+  RefreshFPRFPolicy();
 }
 
 void PowerPCManager::SetMode(CoreMode new_mode)
@@ -425,9 +434,10 @@ void PowerPCManager::InjectExternalCPUCore(CPUCoreBase* new_cpu)
     return;
   }
 
-  new_cpu->Init();
   m_cpu_core_base = new_cpu;
   m_cpu_core_base_is_injected = true;
+  RefreshFPRFPolicy();
+  new_cpu->Init();
 }
 
 void PowerPCManager::SingleStep()

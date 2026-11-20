@@ -339,6 +339,7 @@ protected:
                                       BitSet32 fpr_caller_save);
 
   // Exits
+  Arm64Gen::ARM64Reg PrepareReturnKey(u32 return_pc, Arm64Gen::ARM64Reg return_pc_reg);
   void
   WriteExit(u32 destination, bool LK = false, u32 exit_address_after_return = 0,
             Arm64Gen::ARM64Reg exit_address_after_return_reg = Arm64Gen::ARM64Reg::INVALID_REG);

@@ -12,5 +12,6 @@ public:
   virtual void ClearCache() = 0;
   virtual void Run() = 0;
   virtual void SingleStep() = 0;
+  virtual bool DisablesFPRFUpdates() const { return false; }
   virtual const char* GetName() const = 0;
 };

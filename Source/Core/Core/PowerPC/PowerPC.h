@@ -280,6 +280,7 @@ public:
   void VmcallDefaultFn(u32 param);
 
   CoreMode GetMode() const;
+  void RefreshFPRFPolicy();
   // [NOT THREADSAFE] CPU Thread or CPU::PauseAndLock or Core::State::Uninitialized
   void SetMode(CoreMode _coreType);
   const char* GetCPUName() const;
@@ -439,11 +440,8 @@ inline void SetDeadFPRFElimHint(bool value)
   g_dead_fprf_elim_hint = value;
 }
 
-// PrimeHack for iPad: FPRF emulation is off for this session. "FPRF" (MAIN_FPRF, default False)
-// already means this for both JITs (JitArm64::SetFPRFIfNeeded returns at once when !m_fprf), but
-// the interpreters ignored it and classified every FP result. The Cached Interpreter sets this from
-// JitBase::m_fprf (Init / ClearCache) and clears it in Shutdown, so a game whose INI sets
-// FPRF = True keeps the full behaviour. Compares are unaffected: they write FPCC directly.
+// The active built-in Cached Interpreter can suppress result classification via MAIN_FPRF.
+// PowerPCManager refreshes this on core selection and when that core refreshes its configuration.
 inline bool g_fprf_updates_off = false;
 
 // iCube: quantized paired-single FLOAT fast-path enable (MAIN_CIR_PSQ_FASTPATH) and its self-validation

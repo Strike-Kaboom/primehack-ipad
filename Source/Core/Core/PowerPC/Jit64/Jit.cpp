@@ -919,7 +919,7 @@ bool Jit64::SetEmitterStateToFreeCodeRegion()
 
 bool Jit64::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 {
-  js.firstFPInstructionFound = false;
+  js.firstFPInstructionFound = (b->feature_flags & FEATURE_FLAG_MSR_FP) != 0;
   js.isLastInstruction = false;
   js.blockStart = em_address;
   js.fifoBytesSinceCheck = 0;

@@ -530,6 +530,7 @@ add_library(core
   PowerPC/Interpreter/ExceptionUtils.h
   PowerPC/Interpreter/Interpreter_Branch.cpp
   PowerPC/Interpreter/Interpreter_FloatingPoint.cpp
+  PowerPC/Interpreter/Interpreter_FPInstructions.h
   PowerPC/Interpreter/Interpreter_FPUtils.h
   PowerPC/Interpreter/FPUSelfTest.cpp
   PowerPC/Interpreter/FPUSelfTest.h

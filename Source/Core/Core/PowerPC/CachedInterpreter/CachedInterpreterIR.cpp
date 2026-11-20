@@ -2793,7 +2793,7 @@ void CachedInterpreterIR::Jit(u32 em_address, bool clear_cache_and_retry_on_fail
 bool CachedInterpreterIR::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
 {
   js.blockStart = em_address;
-  js.firstFPInstructionFound = false;
+  js.firstFPInstructionFound = (b->feature_flags & FEATURE_FLAG_MSR_FP) != 0;
   js.fifoBytesSinceCheck = 0;
   js.downcountAmount = 0;
   js.numLoadStoreInst = 0;

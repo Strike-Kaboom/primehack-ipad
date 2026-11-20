@@ -22,17 +22,30 @@ void CachedInterpreterBlockCache::DestroyBlock(JitBlock& block)
 {
   // iCube: every dynamic inline-cache entry may reference this block's tape; kill them all.
   CachedInterpreter::BumpDynLinkGeneration();
+  m_page_table_targets.erase(block.normalEntry);
   JitBaseBlockCache::DestroyBlock(block);
 
   if (block.near_begin != block.near_end)
     m_ranges_to_free_on_next_codegen.emplace_back(block.near_begin, block.near_end);
 }
 
-// PrimeHack for iPad: IBATUpdated destroys the blocks. Page-table/TLB updates need not do so.
-bool CachedInterpreterBlockCache::CanCacheTarget(u32 pc, CPUEmuFeatureFlags flags) const
+// IBAT changes invalidate the tape. A page-table change can leave it alive, including when
+// a followed branch reached a page-table mapping from a BAT-mapped entry point.
+void CachedInterpreterBlockCache::RecordTargetTranslations(const JitBlock& block,
+                                                          std::span<const PPCAnalyst::CodeOp> ops)
 {
-  return !(flags & FEATURE_FLAG_MSR_IR) ||
-         (m_jit.m_mmu.GetIBATTable()[pc >> PowerPC::BAT_INDEX_SHIFT] & PowerPC::BAT_MAPPED_BIT);
+  if (!(block.feature_flags & FEATURE_FLAG_MSR_IR))
+    return;
+
+  const auto& ibat = m_jit.m_mmu.GetIBATTable();
+  for (const auto& op : ops)
+  {
+    if (!(ibat[op.address >> PowerPC::BAT_INDEX_SHIFT] & PowerPC::BAT_MAPPED_BIT))
+    {
+      m_page_table_targets.insert(block.normalEntry);
+      return;
+    }
+  }
 }
 
 void CachedInterpreterBlockCache::ClearRangesToFree()
@@ -55,7 +68,7 @@ void CachedInterpreterBlockCache::WriteLinkBlock(const JitBlock::LinkData& sourc
   //     block's code memory is freed/poisoned. This is the path that prevents a stale rel from ever
   //     pointing into reclaimed code: every block-freeing route (Clear, ErasePhysicalRange,
   //     EraseSingleBlock) funnels through DestroyBlock -> UnlinkBlock -> WriteLinkBlock(.., nullptr).
-  if (!dest || !CanCacheTarget(dest->effectiveAddress, dest->feature_flags))
+  if (!dest || !CanCacheTarget(dest->normalEntry))
   {
     CachedInterpreter::PatchLinkBlockRel(source.exitPtrs, 0);
     return;

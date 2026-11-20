@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <span>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -20,8 +22,11 @@ public:
 
   void DestroyBlock(JitBlock& block) override;
 
-  // PrimeHack for iPad: only remember targets whose translation lasts until cache invalidation.
-  bool CanCacheTarget(u32 pc, CPUEmuFeatureFlags flags) const;
+  void RecordTargetTranslations(const JitBlock& block, std::span<const PPCAnalyst::CodeOp> ops);
+  bool CanCacheTarget(const u8* entry) const
+  {
+    return m_page_table_targets.empty() || !m_page_table_targets.contains(entry);
+  }
 
   void ClearRangesToFree();
 
@@ -34,5 +39,6 @@ private:
   void WriteLinkBlock(const JitBlock::LinkData& source, const JitBlock* dest) override;
   void WriteDestroyBlock(const JitBlock& block) override;
 
+  std::unordered_set<const u8*> m_page_table_targets;
   std::vector<std::pair<u8*, u8*>> m_ranges_to_free_on_next_codegen;
 };
