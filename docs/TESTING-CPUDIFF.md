@@ -6,7 +6,7 @@ On an enabled FP program exception, **Interpreter SRR0 must equal Cached Interpr
 
 ## Run and reproduce
 
-Push the full checkout to `ph-tests` or `ph-tests-*`, or run **PowerPC differential tests** from Actions. The workflow installs clang 18 and libc++ on `ubuntu-24.04-arm`, fetches pinned submodules, builds `tests` and uploads configure, build and test logs and GoogleTest XML. The default comparison has a ten-minute deadline separate from the build. A manual run with a larger case count has the job's longer deadline. [Workflow](.github/workflows/ph-tests.yml)
+Push the full checkout to `ph-tests` or `ph-tests-*`, or run **PowerPC differential tests** from Actions. The workflow installs clang 18 and libc++ on `ubuntu-24.04-arm`, fetches pinned submodules, builds `tests`, builds the AOT test module and uploads configure, build, AOT build and test logs, GoogleTest XML, the program dump and `aot_stats.json`. The default comparison has a ten-minute deadline separate from the build, and the default AOT comparison has twenty minutes. A manual run with a larger case count has the job's longer deadline. [Workflow](.github/workflows/ph-tests.yml)
 
 From a configured full Linux checkout, run
 
@@ -32,6 +32,28 @@ The default runs 2,048 random seeds in each of eight configurations. Five direct
 | `DirectedNoPIC` | PIC load/store, record chaining, the global target cache and paired NEON off. Specialized FP/PSQ handlers, the shared PSQ fast path and micro-op fusion validation enabled. |
 | `DirectedFPExceptions` | Directed FP inputs and compare branches with FE0/FE1 and FPSCR enables varied |
 | `DirectedMMU` | MMU checking enabled and block linking disabled. Compares fresh DSI, pending DSI on PSQ operations, split-page faults, reserved GQR types, LSQE and failed base updates. |
+| `AotRandom`, `AotDirected` | `GameCube` random seeds and the `DirectedGameCube` corpus on the Interpreter and on the Cached Interpreter with the AOT module bound. See below. |
+
+## AOT executor
+
+`AotRandom` and `AotDirected` run the same generated programs as Interpreter vs. Cached Interpreter+AOT and compare them exactly as above. The candidate is the real Cached Interpreter with `Main.Core.CIRAot` on, stepped through `CachedInterpreter::SingleStepAotForTest`, so binding, hash verification, `Publish`, native execution and fallback are production code. Every other suite sets `CIRAot` off, so the module variable cannot change them. Both AOT suites use the GameCube configuration because the runtime declines MMU mode and NEON validation. AOT mode skips the CIR-only tape-record, profiler and `ps_add` NEON checks, since a native record replaces the tape.
+
+A run needs two passes from the same binary and the same `PH_CPUDIFF_*` values.
+
+```sh
+cd build/Binaries
+mkdir -p /tmp/aot && rm -f /tmp/aot/programs.txt  # the dump appends
+PH_CPUDIFF_AOT_DUMP=/tmp/aot/programs.txt Tests/tests --gtest_filter='CpuDiff.Aot*'
+# Lift programs.txt with ppc_aot_lift.lift_buffer and write_outputs, then compile
+# aot_sources.txt into aot_test.so (see the "Build the AOT test module" workflow step).
+DOLPHIN_CIR_AOT_MODULE=/tmp/aot/aot_test.so Tests/tests --gtest_filter='CpuDiff.Aot*'
+```
+
+- **Dump pass.** With `PH_CPUDIFF_AOT_DUMP` set, each AOT suite appends the programs it would compare, after the known-divergence filter, and runs no core. Each program is a `P <suite> <index>` line followed by one `S <pc> <word>...` line per code segment (the body and every auxiliary segment), all in hexadecimal. The dump takes precedence over a module.
+- **Module.** The workflow lifts every distinct segment with `lift_buffer(data, pc)` and writes the module with `write_outputs`. It compiles with clang++-18 `-O2 -fPIC -ffp-contract=off -fno-fast-math -frounding-math -fno-math-errno -fno-strict-aliasing`, which are the FP and aliasing flags of `Tools/aot/build_aot_framework.ps1` and of the native test in `Tools/aot/test_ppc_aot_lift.py`. It links `aot_test.so` with `-Wl,--no-undefined` and checks the `PHAot_GetModule` export. Most programs start at `0x80004000`, so the module has many entries at that PC. The runtime selects the one whose span hash matches guest memory. A translator exception on one segment becomes a workflow warning and that segment stays on the Cached Interpreter.
+- **Comparison pass.** `DOLPHIN_CIR_AOT_MODULE` must be an absolute path, because `dlopen` searches library paths for a bare file name. A set variable whose module does not load, for example after an ABI mismatch, fails the test. The suites skip only when neither variable is set.
+- **Coverage.** The executor reads `PowerPC::Aot::StatsReport()` around each program and counts the steps in which `SingleStepAotForTest` saw a new record execution. Each suite prints `AOT coverage:` and records `aot_programs`, `aot_native_programs`, `aot_native_steps`, `aot_binds`, `aot_record_executions` and `aot_hash_mismatches`. It fails if no entry was bound, no record executed or no program ran native code. Hash mismatches are expected, because every bind at a shared PC tries other programs' entries first. The candidate column of a failure report shows the native step count for that program, so `CIR+AOT (0 native steps)` identifies a divergence on the Cached Interpreter path.
+- **Size.** `PH_CPUDIFF_AOT_CASES` sets the random seed count (default 512) for both passes. `PH_CPUDIFF_SEED` and `PH_CPUDIFF_DIRECTED_CASE` select single programs as in the other suites. A module built from a larger selection also serves a smaller one. A program missing from the module only runs on the Cached Interpreter. The workflow requires both suites to complete with nonzero native coverage.
 
 ## Known directed divergences
 
@@ -61,6 +83,6 @@ GP stores go to guest address `0xCC008000`. The test initializes the real gather
 
 One Interpreter step executes one instruction. A cached step can compile without advancing the PC, execute a block, or follow links. Every cached program must encounter a compiled block and consume guest cycles. The directed profile also requires a positive executed-block count. The test compares directed cycle totals using the Interpreter's opcode cycle table and the Cached Interpreter's actual slice charge at 1× clock. Raw Interpreter single-step downcount resets to zero on every step. Host SIMD mode is restored after each program.
 
-The failure listing includes absolute PCs and instruction words, disassembly for auxiliary code and vectors, register differences, physical RAM offsets and FIFO byte indices. Directed comparison continues with the next family after a mismatch. A future AOT implementation can implement `Executor::Run(const Program&)` and return the same `State`. The SRR0 allowance is an explicit comparison argument for the cached candidate. [Harness and generator](Source/UnitTests/Core/PowerPC/CpuDiffTest.cpp)
+The failure listing includes absolute PCs and instruction words, disassembly for auxiliary code and vectors, register differences, physical RAM offsets and FIFO byte indices. Directed comparison continues with the next family after a mismatch. The AOT executor implements `Executor::Run(const Program&)` and returns the same `State`. It uses the same SRR0 allowance as the cached candidate. [Harness and generator](Source/UnitTests/Core/PowerPC/CpuDiffTest.cpp)
 
 The CPU section uses the current savestate format. A historical savestate fixture and a way to force the private dynamic-cache generation through wrap are unavailable in this checkout. The video loader and XFB cases in the speed report require a graphics harness. [Speed report](CIR_FAST_REPORT.md)

@@ -11,6 +11,9 @@ on:
       seed:
         description: Replay a single seed (decimal or 0x-prefixed)
         required: false
+      aot_cases:
+        description: Random seeds lifted into the AOT module and compared by CpuDiff.AotRandom
+        default: '512'
 
 permissions:
   contents: read
@@ -18,7 +21,7 @@ permissions:
 jobs:
   cpu-diff:
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 120
+    timeout-minutes: 150
     env:
       CC: clang-18
       CXX: clang++-18
@@ -29,6 +32,8 @@ jobs:
       CCACHE_MAXSIZE: 1500M
       PH_CPUDIFF_CASES: ${{ inputs.cases || '2048' }}
       PH_CPUDIFF_SEED: ${{ inputs.seed }}
+      # PrimeHack for iPad: the dump pass and the AOT comparison must select the same programs.
+      PH_CPUDIFF_AOT_CASES: ${{ inputs.aot_cases || '512' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -83,6 +88,112 @@ jobs:
           cmake --build build --target tests --parallel 3 -- -k 0 2>&1 | tee build.log
           ccache --show-stats
 
+      # PrimeHack for iPad: pass 1 dumps the programs of CpuDiff.AotRandom and CpuDiff.AotDirected,
+      # the translator's Python API lifts them, and clang++-18 links one shared library.
+      - name: Build the AOT test module
+        id: aot_module
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          aot="$GITHUB_WORKSPACE/build/aot"
+          rm -rf "$aot"
+          mkdir -p "$aot/gen" "$aot/obj"
+          {
+            # Dump mode writes programs only. Neither core runs and no module is loaded.
+            (
+              cd build/Binaries
+              env -u DOLPHIN_CIR_AOT_MODULE PH_CPUDIFF_AOT_DUMP="$aot/programs.txt" \
+                timeout --kill-after=15s 10m Tests/tests --gtest_filter='CpuDiff.Aot*' \
+                --gtest_output=xml:"$aot/dump.xml"
+            )
+            programs=$(grep -c '^P ' "$aot/programs.txt" || true)
+            echo "Dumped ${programs:-0} programs"
+            [[ "${programs:-0}" -gt 0 ]]
+
+            python3 -B - "$aot/programs.txt" "$aot/gen" "$((4 * $(nproc)))" <<'PY'
+          import os
+          import sys
+          import traceback
+          from pathlib import Path
+
+          sys.path.insert(0, str(Path(os.environ["GITHUB_WORKSPACE"], "Tools", "aot")))
+          import ppc_aot_lift as lift
+
+          dump, out, shards = Path(sys.argv[1]), Path(sys.argv[2]), int(sys.argv[3])
+          programs, segments = 0, {}
+          for number, line in enumerate(dump.read_text(encoding="ascii").splitlines(), 1):
+              fields = line.split()
+              if not fields:
+                  continue
+              if fields[0] == "P":
+                  programs += 1
+              elif fields[0] == "S" and len(fields) > 2:
+                  data = b"".join(lift.WORD.pack(int(word, 16)) for word in fields[2:])
+                  segments.setdefault((int(fields[1], 16), data), number)
+              else:
+                  raise SystemExit(f"{dump}:{number}: malformed line {line!r}")
+
+          # Many programs share code at CODE. The runtime picks the entry whose span hash matches.
+          regions, failures = [], []
+          for (pc, data), number in sorted(segments.items()):
+              try:
+                  found = lift.lift_buffer(data, pc)
+              except Exception:
+                  failures.append((number, pc, traceback.format_exc(limit=4)))
+                  continue
+              for region in found:
+                  try:
+                      lift.render(region, "probe")
+                  except Exception:
+                      failures.append((number, region.start, traceback.format_exc(limit=4)))
+                      continue
+                  regions.append(region)
+          for number, pc, error in failures[:20]:
+              print(f"::warning::translator failed on programs.txt:{number} at {pc:#010x}: "
+                    f"{error.strip().splitlines()[-1]}")
+              print(error)
+          if not regions:
+              raise SystemExit("The translator produced no regions")
+          functions, entries, stats = lift.write_outputs(regions, out, shards)
+          lifted = sum(n for (_, kind), n in stats.items() if kind == "lifted")
+          fallback = sum(n for (_, kind), n in stats.items() if kind == "fallback")
+          print(f"{programs} programs, {len(segments)} distinct code segments, {functions} regions, "
+                f"{entries} entries, {lifted} lifted and {fallback} fallback instructions, "
+                f"{len(failures)} translator failures")
+          PY
+
+            mapfile -t sources < "$aot/gen/aot_sources.txt"
+            if [[ ${#sources[@]} -lt 2 || "${sources[-1]}" != aot_registry.cpp ]]; then
+              echo "::error::Incomplete aot_sources.txt"
+              exit 1
+            fi
+            for source in "${sources[@]}"; do
+              if [[ ! "$source" =~ ^aot_(shard_[0-9]+|registry)\.cpp$ ]]; then
+                echo "::error::Invalid source in aot_sources.txt: $source"
+                exit 1
+              fi
+            done
+            # Semantic flags of Tools/aot/build_aot_framework.ps1 and the native test in
+            # test_ppc_aot_lift.py, for a Linux arm64 shared object instead of an iOS framework.
+            flags=(-std=c++20 -O2 -fPIC -stdlib=libc++ -fvisibility=hidden -fno-exceptions -fno-rtti
+                   -fno-threadsafe-statics -fno-stack-protector -ffp-contract=off -fno-fast-math
+                   -frounding-math -fno-math-errno -fno-strict-aliasing
+                   -I "$GITHUB_WORKSPACE/Source/Core/Core/PowerPC/Aot")
+            launcher=()
+            if command -v ccache >/dev/null; then launcher=(ccache); fi
+            echo "Compiling ${#sources[@]} generated sources"
+            printf '%s\n' "${sources[@]}" |
+              xargs -P "$(nproc)" -I '{}' "${launcher[@]}" clang++-18 "${flags[@]}" \
+                -c "$aot/gen/{}" -o "$aot/obj/{}.o"
+            clang++-18 -shared -fPIC -stdlib=libc++ -Wl,--as-needed -Wl,--no-undefined -Wl,-z,now \
+              -o "$aot/aot_test.so" "$aot"/obj/*.o -lm
+            nm -D --defined-only "$aot/aot_test.so" | grep -w PHAot_GetModule
+            ls -l "$aot/aot_test.so"
+            cp "$aot/gen/aot_stats.json" "$aot/aot_stats.json"
+            echo "module=$aot/aot_test.so" >> "$GITHUB_OUTPUT"
+          } 2>&1 | tee aot-build.log
+
       - uses: actions/cache/save@v4
         if: ${{ !cancelled() && steps.cache.outputs.cache-hit != 'true' && (steps.build.outcome == 'success' || steps.build.outcome == 'failure') }}
         with:
@@ -90,12 +201,15 @@ jobs:
           key: ${{ steps.cache.outputs.cache-primary-key }}
 
       - name: Compare CPU cores
+        id: compare
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         working-directory: build/Binaries
         shell: bash
         run: |
           set -o pipefail
           # Bound the default comparison separately from build time. Manual larger runs use the job timeout.
-          compare=(Tests/tests --gtest_filter='CpuDiff*' --gtest_output=xml:cpu-diff.xml)
+          # The AOT suites run in their own step with the module loaded.
+          compare=(Tests/tests --gtest_filter='CpuDiff*:-CpuDiff.Aot*' --gtest_output=xml:cpu-diff.xml)
           if [[ "$PH_CPUDIFF_CASES" == 2048 || -n "$PH_CPUDIFF_SEED" ]]; then
             compare=(timeout --kill-after=15s 10m "${compare[@]}")
           fi
@@ -115,11 +229,56 @@ jobs:
               raise SystemExit(f"Missing completed CpuDiff tests: {sorted(missing)}")
           PY
 
-      # PrimeHack for iPad: when a case crashes or fails, rerun each test under gdb for a backtrace.
-      - name: Backtrace failing CPU tests
-        if: failure() && steps.build.outcome == 'success'
+      # PrimeHack for iPad: Interpreter vs. Cached Interpreter with the AOT module bound.
+      - name: Compare CPU cores with AOT-compiled programs
+        id: compare_aot
+        if: ${{ !cancelled() && steps.aot_module.outcome == 'success' }}
         working-directory: build/Binaries
         shell: bash
+        env:
+          DOLPHIN_CIR_AOT_MODULE: ${{ steps.aot_module.outputs.module }}
+        run: |
+          set -o pipefail
+          compare=(Tests/tests --gtest_filter='CpuDiff.Aot*' --gtest_output=xml:cpu-diff-aot.xml)
+          if [[ "$PH_CPUDIFF_AOT_CASES" == 512 || -n "$PH_CPUDIFF_SEED" ]]; then
+            compare=(timeout --kill-after=15s 20m "${compare[@]}")
+          fi
+          env -u PH_CPUDIFF_AOT_DUMP "${compare[@]}" 2>&1 | tee ../../cpu-diff-aot.log
+          # Both AOT suites are required. A skip means the module variable did not arrive.
+          python3 - <<'PY'
+          import xml.etree.ElementTree as ET
+          root = ET.parse("cpu-diff-aot.xml").getroot()
+
+          def prop(case, name):
+              value = case.get(name)
+              for p in case.iter("property"):
+                  if p.get("name") == name:
+                      value = p.get("value")
+              return int(value or 0)
+
+          ran = {t.get("name"): t for t in root.findall(".//testcase[@classname='CpuDiff']")
+                 if t.get("result") == "completed" and t.find("failure") is None
+                 and t.find("skipped") is None}
+          required = {"AotRandom", "AotDirected"}
+          if missing := required - ran.keys():
+              raise SystemExit(f"Missing completed CpuDiff AOT tests: {sorted(missing)}")
+          for name in sorted(required):
+              case = ran[name]
+              native = prop(case, "aot_native_programs")
+              print(f"{name}: {native} of {prop(case, 'aot_programs')} programs ran native code, "
+                    f"{prop(case, 'aot_binds')} binds, {prop(case, 'aot_record_executions')} "
+                    f"record executions")
+              if native == 0 or prop(case, "aot_binds") == 0:
+                  raise SystemExit(f"{name} reported zero native AOT coverage")
+          PY
+
+      # PrimeHack for iPad: when a case crashes or fails, rerun each test under gdb for a backtrace.
+      - name: Backtrace failing CPU tests
+        if: ${{ failure() && (steps.compare.outcome == 'failure' || steps.compare_aot.outcome == 'failure') }}
+        working-directory: build/Binaries
+        shell: bash
+        env:
+          DOLPHIN_CIR_AOT_MODULE: ${{ steps.aot_module.outputs.module }}
         run: |
           set +e +o pipefail
           tests=$(Tests/tests --gtest_list_tests --gtest_filter='CpuDiff*' | sed -n 's/^  \([A-Za-z0-9_]*\).*/\1/p')
@@ -136,7 +295,12 @@ jobs:
           path: |
             configure.log
             build.log
+            aot-build.log
             cpu-diff.log
+            cpu-diff-aot.log
             cpu-diff-gdb.log
             build/Binaries/cpu-diff.xml
+            build/Binaries/cpu-diff-aot.xml
+            build/aot/programs.txt
+            build/aot/aot_stats.json
           if-no-files-found: warn

@@ -6,6 +6,7 @@
 #include <array>
 #include <charconv>
 #include <cstdlib>
+#include <fstream>
 #include <initializer_list>
 #include <iterator>
 #include <optional>
@@ -35,6 +36,7 @@
 #include "Core/HW/Memmap.h"
 #include "Core/HW/ProcessorInterface.h"
 #include "Core/HW/Sram.h"
+#include "Core/PowerPC/Aot/AotRuntime.h"
 #include "Core/PowerPC/CachedInterpreter/CachedInterpreter.h"
 #include "Core/PowerPC/BreakPoints.h"
 #include "Core/PowerPC/Gekko.h"
@@ -1239,10 +1241,14 @@ public:
 class DolphinExecutor final : public Executor
 {
 public:
+  // PrimeHack for iPad: aot steps the Cached Interpreter through SingleStepAotForTest, which lets
+  // the loaded DOLPHIN_CIR_AOT_MODULE bind and run native records. All other executors keep the
+  // runtime unloaded, whatever the environment says.
   DolphinExecutor(Core::System& system, PowerPC::CPUCore core, bool fprf, bool enables, Mode mode,
-                  bool init_mmio = false)
+                  bool init_mmio = false, bool aot = false)
       : m_system(system), m_cached(core == PowerPC::CPUCore::CachedInterpreter),
-        m_check_records(m_cached && mode == Mode::Normal && !enables)
+        m_aot(aot && m_cached),
+        m_check_records(m_cached && !m_aot && mode == Mode::Normal && !enables)
   {
     Config::SetCurrent(Config::MAIN_CPU_CORE, core);
     Config::SetCurrent(Config::MAIN_FPRF, fprf);
@@ -1250,6 +1256,8 @@ public:
     Config::SetCurrent(Config::MAIN_DIVIDE_BY_ZERO_EXCEPTIONS, enables);
     Config::SetCurrent(Config::MAIN_CIR_PS_NEON, m_cached && mode != Mode::NoPIC);
     Config::SetCurrent(Config::MAIN_CIR_PSQ_FASTPATH, m_cached);
+    // Runtime::Init reads this when PowerPC::Init creates the Cached Interpreter.
+    Config::SetCurrent(Config::MAIN_CIR_AOT, m_aot);
     // PSQ is a shared handler with a process-global switch. The plain Interpreter doesn't reset it.
     PowerPC::SetPsqFastpathEnabled(false);
     system.GetCoreTiming().Init();
@@ -1287,6 +1295,9 @@ public:
   }
 
   std::string_view Name() const override { return m_system.GetPowerPC().GetCPUName(); }
+
+  // Steps in which SingleStepAotForTest observed a new native record execution.
+  u64 NativeSteps() const { return m_native_steps; }
 
   State Run(const Program& program) override
   {
@@ -1426,7 +1437,16 @@ private:
       // documented guest charge from the fetched opcode table for the directed timing cases.
       if (!m_cached && !program.label.empty())
         cycles += PPCTables::GetOpInfo(m_system.GetMMU().Read_Opcode(pc), pc)->num_cycles;
-      m_system.GetPowerPC().SingleStep();
+      if (m_aot)
+      {
+        // RunCases checked the core name. The JIT core is the Cached Interpreter in JIT mode.
+        auto& core = static_cast<CachedInterpreter&>(*m_system.GetJitInterface().GetCore());
+        m_native_steps += core.SingleStepAotForTest();
+      }
+      else
+      {
+        m_system.GetPowerPC().SingleStep();
+      }
       if (m_cached)
       {
         saw_block |= m_system.GetJitInterface().GetBlockCount() != 0;
@@ -1496,10 +1516,116 @@ private:
 
   Core::System& m_system;
   bool m_cached;
+  bool m_aot;
   bool m_check_records;
+  u64 m_native_steps = 0;
   std::optional<Sram> m_saved_sram;
   CoreTiming::EventType* m_slice_event = nullptr;
   bool m_slice_fired = false;
+};
+
+// PrimeHack for iPad: AOT executor. The comparison runs the Cached Interpreter with the module named
+// by DOLPHIN_CIR_AOT_MODULE. That module is lifted from the programs which PH_CPUDIFF_AOT_DUMP
+// wrote in an earlier pass. Runtime counters prove whether native records were bound and executed.
+struct AotCounters
+{
+  u64 entries = 0, binds = 0, executions = 0, interpreter_calls = 0, mismatches = 0, rejected = 0;
+};
+
+// StatsReport is empty unless a Runtime has loaded a valid module (Runtime::Init creates the
+// counters only after dlopen, the ABI check and PHAot_GetModule succeed).
+std::optional<AotCounters> ReadAotCounters()
+{
+  const std::string report = PowerPC::Aot::StatsReport();
+  if (report.empty())
+    return std::nullopt;
+  auto value = [&](std::string_view key) -> u64 {
+    const size_t start = report.find(key);
+    u64 result = 0;
+    if (start != std::string::npos)
+    {
+      std::from_chars(report.data() + start + key.size(), report.data() + report.size(),
+                      result);
+    }
+    return result;
+  };
+  return AotCounters{value(" entries="),           value(" binds="),
+                     value(" record_executions="), value(" interpreter_calls="),
+                     value(" hash_mismatches="),   value(" rejected_spans=")};
+}
+
+struct AotCoverage
+{
+  u64 programs = 0, native_programs = 0, native_steps = 0, entries = 0;
+  AotCounters delta;
+};
+
+// One "P" line per program and one "S <pc> <words>" line per code segment, all hexadecimal.
+// The workflow lifts every distinct segment with ppc_aot_lift.lift_buffer(data, pc).
+void AppendProgram(std::ostream& out, std::string_view suite, u32 index, const Program& p)
+{
+  out << fmt::format("P {} {}\n", suite, index);
+  auto segment = [&](u32 pc, const std::vector<u32>& words) {
+    if (words.empty())
+      return;
+    std::string line = fmt::format("S {:08x}", pc);
+    for (const u32 word : words)
+      line += fmt::format(" {:08x}", word);
+    out << line << '\n';
+  };
+  segment(p.initial.pc, p.words);
+  for (const auto& seg : p.extra)
+    segment(seg.pc, seg.words);
+}
+
+class AotExecutor final : public Executor
+{
+public:
+  AotExecutor(Core::System& system, bool fprf, bool enables, Mode mode, bool init_mmio,
+              AotCoverage& coverage)
+      : m_inner(system, PowerPC::CPUCore::CachedInterpreter, fprf, enables, mode, init_mmio, true),
+        m_coverage(coverage)
+  {
+    if (const auto counters = ReadAotCounters())
+    {
+      m_loaded = counters->entries != 0;
+      m_coverage.entries = counters->entries;
+    }
+  }
+
+  bool Loaded() const { return m_loaded; }
+  std::string_view Name() const override { return m_name; }
+
+  State Run(const Program& program) override
+  {
+    const AotCounters before = ReadAotCounters().value_or(AotCounters{});
+    const u64 steps = m_inner.NativeSteps();
+    State result = m_inner.Run(program);
+    const AotCounters after = ReadAotCounters().value_or(AotCounters{});
+    // A runtime re-initialization restarts its counters.
+    auto delta = [](u64 old_value, u64 new_value) {
+      return new_value >= old_value ? new_value - old_value : new_value;
+    };
+    const u64 native = m_inner.NativeSteps() - steps;
+    auto& c = m_coverage;
+    ++c.programs;
+    c.native_programs += native != 0;
+    c.native_steps += native;
+    c.delta.binds += delta(before.binds, after.binds);
+    c.delta.executions += delta(before.executions, after.executions);
+    c.delta.interpreter_calls += delta(before.interpreter_calls, after.interpreter_calls);
+    c.delta.mismatches += delta(before.mismatches, after.mismatches);
+    c.delta.rejected += delta(before.rejected, after.rejected);
+    // Name() labels the candidate column of a failure report for this program.
+    m_name = fmt::format("CIR+AOT ({} native steps)", native);
+    return result;
+  }
+
+private:
+  DolphinExecutor m_inner;
+  AotCoverage& m_coverage;
+  bool m_loaded = false;
+  std::string m_name = "CIR+AOT";
 };
 
 std::string Listing(const Program& p)
@@ -1711,19 +1837,51 @@ void CheckNativeMSR(Core::System& system)
   }
 }
 
-void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool directed = false)
+// PrimeHack for iPad: aot selects the AOT suites. With PH_CPUDIFF_AOT_DUMP set they append the
+// exact programs they would compare to that file and stop. Otherwise DOLPHIN_CIR_AOT_MODULE must
+// name the module lifted from that dump. They skip only when neither variable is set.
+constexpr u32 DEFAULT_AOT_CASES = 512;
+
+void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool directed = false,
+              bool aot = false)
 {
   u32 first = 0;
-  u32 count = 2048;
+  u32 count = aot ? DEFAULT_AOT_CASES : 2048;
+  const char* cases_variable = aot ? "PH_CPUDIFF_AOT_CASES" : "PH_CPUDIFF_CASES";
   if (const char* replay = std::getenv("PH_CPUDIFF_SEED"); replay && *replay)
   {
     ASSERT_TRUE(ParseU32(replay, first)) << "Invalid PH_CPUDIFF_SEED: " << replay;
     count = 1;
   }
-  else if (const char* cases = std::getenv("PH_CPUDIFF_CASES"); cases && *cases)
+  else if (const char* cases = std::getenv(cases_variable); cases && *cases)
   {
-    ASSERT_TRUE(ParseU32(cases, count) && count > 0) << "Invalid PH_CPUDIFF_CASES: " << cases;
+    ASSERT_TRUE(ParseU32(cases, count) && count > 0)
+        << "Invalid " << cases_variable << ": " << cases;
   }
+
+  std::string dump_path, module_path;
+  if (aot)
+  {
+    if (const char* dump = std::getenv("PH_CPUDIFF_AOT_DUMP"))
+      dump_path = dump;
+    if (const char* module = std::getenv("DOLPHIN_CIR_AOT_MODULE"))
+      module_path = module;
+    if (dump_path.empty() && module_path.empty())
+    {
+      GTEST_SKIP() << "DOLPHIN_CIR_AOT_MODULE is unset. Build the module from the programs written "
+                      "with PH_CPUDIFF_AOT_DUMP (see TESTING-CPUDIFF.md).";
+    }
+  }
+  const bool dumping = !dump_path.empty();
+  std::ofstream dump_file;
+  u64 dumped = 0;
+  if (dumping)
+  {
+    dump_file.open(dump_path, std::ios::out | std::ios::app);
+    ASSERT_TRUE(dump_file.is_open()) << "Cannot open PH_CPUDIFF_AOT_DUMP=" << dump_path;
+  }
+  const std::string test_name = testing::UnitTest::GetInstance()->current_test_info()->name();
+  AotCoverage aot_coverage;
 
   const std::string profile = File::CreateTempDir();
   ASSERT_FALSE(profile.empty());
@@ -1802,6 +1960,24 @@ void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool 
     fmt::print("Accepted FP program-exception SRR0 differences: {}\n", accepted);
     testing::Test::RecordProperty("accepted_fp_srr0", std::to_string(accepted));
   });
+  // Report AOT coverage even when a comparison stops the test early.
+  Common::ScopeGuard report_aot([&] {
+    if (!aot || dumping)
+      return;
+    const auto& c = aot_coverage;
+    fmt::print("AOT coverage: {} of {} programs executed native code in {} steps. Module entries={} "
+               "binds={} record_executions={} interpreter_calls={} hash_mismatches={} "
+               "rejected_spans={}\n",
+               c.native_programs, c.programs, c.native_steps, c.entries, c.delta.binds,
+               c.delta.executions, c.delta.interpreter_calls, c.delta.mismatches,
+               c.delta.rejected);
+    testing::Test::RecordProperty("aot_programs", std::to_string(c.programs));
+    testing::Test::RecordProperty("aot_native_programs", std::to_string(c.native_programs));
+    testing::Test::RecordProperty("aot_native_steps", std::to_string(c.native_steps));
+    testing::Test::RecordProperty("aot_binds", std::to_string(c.delta.binds));
+    testing::Test::RecordProperty("aot_record_executions", std::to_string(c.delta.executions));
+    testing::Test::RecordProperty("aot_hash_mismatches", std::to_string(c.delta.mismatches));
+  });
   const u32 batch_size = directed ? count : 2048;
   for (u64 offset = 0; offset < count; offset += batch_size)
   {
@@ -1826,6 +2002,14 @@ void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool 
     }
     const u32 n = static_cast<u32>(seeds.size());
     auto program = [&](u32 seed) { return directed ? corpus[seed] : Generate(seed, wii, enables); };
+    if (dumping)
+    {
+      // Same selection as the comparison below, so the module covers exactly these programs.
+      for (const u32 seed : seeds)
+        AppendProgram(dump_file, test_name, seed, program(seed));
+      dumped += n;
+      continue;
+    }
     std::vector<State> reference;
     reference.reserve(n);
     {
@@ -1842,10 +2026,23 @@ void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool 
         ASSERT_FALSE(testing::Test::HasFailure()) << fmt::format("FPRF={}\n{}", fprf, Listing(p));
       }
     }
-    DolphinExecutor cached(system, PowerPC::CPUCore::CachedInterpreter, fprf, enables, mode,
-                          directed);
+    std::optional<DolphinExecutor> cached;
+    std::optional<AotExecutor> native;
+    if (aot)
+      native.emplace(system, fprf, enables, mode, directed, aot_coverage);
+    else
+      cached.emplace(system, PowerPC::CPUCore::CachedInterpreter, fprf, enables, mode, directed);
+    Executor& candidate = native ? static_cast<Executor&>(*native) : *cached;
     ASSERT_STREQ(system.GetPowerPC().GetCPUName(), "Cached Interpreter");
     ASSERT_EQ(PowerPC::g_fprf_updates_off, !fprf);
+    if (native)
+    {
+      // A set variable whose module cannot be loaded is a failure, never a skip.
+      ASSERT_TRUE(native->Loaded())
+          << "DOLPHIN_CIR_AOT_MODULE=" << module_path
+          << " was not loaded. Use an absolute path to a shared library exporting PHAot_GetModule "
+             "that was built against this PowerPCState layout and AotAbi.h.";
+    }
 #ifndef _ARCH_32
     // MMU::DBATUpdated populates direct pages on 64-bit hosts. W/I aliases can use a slow path.
     auto& memory = system.GetMemory();
@@ -1865,7 +2062,7 @@ void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool 
         SCOPED_TRACE(fmt::format(
             "{}={} {}", directed ? "PH_CPUDIFF_DIRECTED_CASE" : "PH_CPUDIFF_SEED", seed, p.label));
         ASSERT_NO_FATAL_FAILURE(
-            Compare(cached, p, reference[i], seed, fprf, enables, accepted, true));
+            Compare(candidate, p, reference[i], seed, fprf, enables, accepted, true));
       }
     };
     if (!directed)
@@ -1882,8 +2079,27 @@ void RunCases(bool wii, bool enables, bool fprf, Mode mode = Mode::Normal, bool 
       compare_range(begin, end);
       begin = end;
     }
-    if (!selected_case)
+    // The CIR profile and NEON counters describe CIR tapes, which native records replace.
+    if (!selected_case && !aot)
       CheckDirectedProfile(mode);
+  }
+  if (dumping)
+  {
+    dump_file.flush();
+    ASSERT_TRUE(dump_file.good()) << "Failed writing PH_CPUDIFF_AOT_DUMP=" << dump_path;
+    fmt::print("Dumped {} {} programs to {}\n", dumped, test_name, dump_path);
+    testing::Test::RecordProperty("aot_dumped_programs", std::to_string(dumped));
+    EXPECT_GT(dumped, 0u);
+    return;
+  }
+  if (aot)
+  {
+    const auto& c = aot_coverage;
+    // Zero coverage means every program stayed on CIR tapes, e.g. a stale or mismatched module.
+    EXPECT_GT(c.delta.binds, 0u) << "No AOT entry was bound. Rebuild the module from this binary's "
+                                    "PH_CPUDIFF_AOT_DUMP output with the same PH_CPUDIFF_* values.";
+    EXPECT_GT(c.delta.executions, 0u) << "No bound AOT record executed";
+    EXPECT_GT(c.native_programs, 0u) << "No program executed native code";
   }
   if (directed && !selected_case && mode == Mode::Optimized)
     CheckNativeMSR(system);
@@ -1957,5 +2173,17 @@ TEST(CpuDiff, DirectedFPExceptions)
 TEST(CpuDiff, DirectedMMU)
 {
   RunCases(false, false, true, Mode::Checked, true);
+}
+
+// PrimeHack for iPad: Interpreter vs. Cached Interpreter with native AOT records. The runtime
+// declines MMU mode and NEON validation, so both use the GameCube configuration.
+TEST(CpuDiff, AotRandom)
+{
+  RunCases(false, false, true, Mode::Normal, false, true);
+}
+
+TEST(CpuDiff, AotDirected)
+{
+  RunCases(false, false, true, Mode::Normal, true, true);
 }
 } // namespace
