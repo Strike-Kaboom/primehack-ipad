@@ -17,8 +17,6 @@
 #include <vector>
 
 #include <fmt/format.h>
-#include <gtest/gtest-spi.h>
-#include <gtest/gtest.h>
 
 #include "Common/ChunkFile.h"
 #include "Common/CommonTypes.h"
@@ -46,6 +44,11 @@
 #include "Core/System.h"
 #include "UICommon/UICommon.h"
 #include "VideoCommon/CommandProcessor.h"
+
+// PrimeHack for iPad: gtest last. Its TEST macro collides with x64Emitter::TEST, which
+// CachedInterpreter.h pulls in through JitBase.h.
+#include <gtest/gtest-spi.h>
+#include <gtest/gtest.h>
 
 namespace
 {
