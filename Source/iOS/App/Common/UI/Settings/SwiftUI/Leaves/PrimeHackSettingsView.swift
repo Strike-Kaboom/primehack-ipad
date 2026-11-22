@@ -256,6 +256,17 @@ struct PrimeHackSettingsView: View {
       items.append(SettingsRow.caption("primehack-jit-message", message))
     }
 
+    // PrimeHack for iPad: diagnostics without hunting through in-game menus.
+    items.append(
+      SettingsRow.action(
+        "primehack-jit-diagnostics",
+        L("Copy diagnostics"),
+        L("Copies the emulator's state to the clipboard and saves it to Files › PrimeHack › Diagnostics › copy-state.txt. A running game also saves auto-60s.txt and auto-180s.txt there by itself."),
+        icon: "doc.on.clipboard",
+        run: { EmulationCoordinator.copyStateToClipboard() }
+      )
+    )
+
     items.append(
       SettingsRow.destination(
         "primehack-jit-setup",

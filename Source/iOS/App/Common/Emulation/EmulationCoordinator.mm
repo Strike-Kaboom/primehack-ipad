@@ -77,6 +77,7 @@ void Reset();
 #import "HostNotifications.h"
 #import "HostQueue.h"
 #import "JitManager.h"
+#import "JitManager+Debugger.h"
 #import "LocalizationUtil.h"
 #import "MainSceneCoordinator.h"
 #import "TVControllerMappingBridge.h"
@@ -1435,7 +1436,8 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
 
 // Build a chat-ready plaintext state block and place it on the general pasteboard. Sections:
 // GAME / HARDWARE / LIVE PERF / SETTINGS (SETTINGS reuses _ICubeBuildPerfSettingsString).
-+ (void)copyStateToClipboard {
+// PrimeHack for iPad: the state dump as text, for Copy State and the saved diagnostics files.
++ (NSString*)diagnosticsText {
   std::string b;
   b.reserve(2048);
 
@@ -1561,7 +1563,36 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
     NSLog(@"[iCube CIR hotblocks]\n%s", cir.c_str());
   }
 
-  NSString* text = [NSString stringWithUTF8String:b.c_str()];
+  // PrimeHack for iPad: which CPU engine runs and whether a debugger is still attached (JIT diagnosis).
+  {
+    JitManager* jm = [JitManager shared];
+    b += "=== JIT ===\n";
+    b += "  cpu_core_now=" + std::to_string(static_cast<int>(Config::Get(Config::MAIN_CPU_CORE))) +
+         " (0=Interpreter 1=JIT64 4=JITARM64 5=CachedInterpreter)\n";
+    b += std::string("  acquired_jit=") + (jm.acquiredJit ? "1" : "0") +
+         " debugger_attached_now=" + ([jm checkIfDebuggerAttachedNow] ? "1" : "0") +
+         " txm_authorized=" + (jm.txmAuthorized ? "1" : "0") +
+         " builtin_jit=" + (jm.builtInJitEnabled ? "1" : "0") + "\n";
+  }
+  return [NSString stringWithUTF8String:b.c_str()];
+}
+
+// PrimeHack for iPad: Documents/Diagnostics/<name>.txt, visible in the Files app.
++ (void)saveDiagnosticsText:(NSString*)text name:(NSString*)name {
+  NSFileManager* fm = NSFileManager.defaultManager;
+  NSURL* docs = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
+  if (!docs || !text)
+    return;
+  NSURL* dir = [docs URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
+  [fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
+  [[text dataUsingEncoding:NSUTF8StringEncoding]
+      writeToURL:[dir URLByAppendingPathComponent:[name stringByAppendingString:@".txt"]]
+      atomically:YES];
+}
+
++ (void)copyStateToClipboard {
+  NSString* text = [self diagnosticsText];
+  [self saveDiagnosticsText:text name:@"copy-state"];
 #if TARGET_OS_TV
   // tvOS has no UIPasteboard; the perf-state dump still goes to the log/OSD.
   NSLog(@"[iCube perf-state]\n%@", text);
@@ -2060,6 +2091,18 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
       }
       if (!BootManager::BootCore(system, std::move(local_boot), wsi)) {
         PanicAlertFmt("Failed to init core!");
+      } else {
+        // PrimeHack for iPad: snapshots of a running game, 1 and 3 minutes in, to Documents/Diagnostics.
+        for (const int seconds : {60, 180}) {
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)seconds * NSEC_PER_SEC),
+                         dispatch_get_main_queue(), ^{
+                           if (Core::GetState(Core::System::GetInstance()) != Core::State::Running)
+                             return;
+                           [EmulationCoordinator
+                               saveDiagnosticsText:[EmulationCoordinator diagnosticsText]
+                                              name:[NSString stringWithFormat:@"auto-%ds", seconds]];
+                         });
+        }
       }
     });
   });

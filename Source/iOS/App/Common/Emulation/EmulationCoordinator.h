@@ -59,6 +59,9 @@ NS_ASSUME_NONNULL_BEGIN
 /// Build a chat-ready plaintext state dump (GAME / HARDWARE / LIVE PERF / SETTINGS) and place it on
 /// the general pasteboard. Used by the "Copy State" button in the in-emulation perf overlay.
 + (void)copyStateToClipboard;
+/// PrimeHack for iPad: the same dump as text, and a helper that saves text to Documents/Diagnostics/<name>.txt.
++ (NSString*)diagnosticsText;
++ (void)saveDiagnosticsText:(NSString*)text name:(NSString*)name;
 
 @end
 
