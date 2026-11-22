@@ -261,7 +261,7 @@ struct PrimeHackSettingsView: View {
       SettingsRow.action(
         "primehack-jit-diagnostics",
         L("Copy diagnostics"),
-        L("Copies the emulator's state to the clipboard and saves it to Files › PrimeHack › Diagnostics › copy-state.txt. A running game also saves auto-60s.txt and auto-180s.txt there by itself."),
+        L("Copies the emulator's state to the clipboard. Nothing is saved to a file."),
         icon: "doc.on.clipboard",
         run: { EmulationCoordinator.copyStateToClipboard() }
       )

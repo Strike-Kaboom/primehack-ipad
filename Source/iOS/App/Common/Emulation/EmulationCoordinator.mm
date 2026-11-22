@@ -1577,22 +1577,8 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
   return [NSString stringWithUTF8String:b.c_str()];
 }
 
-// PrimeHack for iPad: Documents/Diagnostics/<name>.txt, visible in the Files app.
-+ (void)saveDiagnosticsText:(NSString*)text name:(NSString*)name {
-  NSFileManager* fm = NSFileManager.defaultManager;
-  NSURL* docs = [fm URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
-  if (!docs || !text)
-    return;
-  NSURL* dir = [docs URLByAppendingPathComponent:@"Diagnostics" isDirectory:YES];
-  [fm createDirectoryAtURL:dir withIntermediateDirectories:YES attributes:nil error:nil];
-  [[text dataUsingEncoding:NSUTF8StringEncoding]
-      writeToURL:[dir URLByAppendingPathComponent:[name stringByAppendingString:@".txt"]]
-      atomically:YES];
-}
-
 + (void)copyStateToClipboard {
   NSString* text = [self diagnosticsText];
-  [self saveDiagnosticsText:text name:@"copy-state"];
 #if TARGET_OS_TV
   // tvOS has no UIPasteboard; the perf-state dump still goes to the log/OSD.
   NSLog(@"[iCube perf-state]\n%@", text);
@@ -2091,18 +2077,6 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
       }
       if (!BootManager::BootCore(system, std::move(local_boot), wsi)) {
         PanicAlertFmt("Failed to init core!");
-      } else {
-        // PrimeHack for iPad: snapshots of a running game, 1 and 3 minutes in, to Documents/Diagnostics.
-        for (const int seconds : {60, 180}) {
-          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)seconds * NSEC_PER_SEC),
-                         dispatch_get_main_queue(), ^{
-                           if (Core::GetState(Core::System::GetInstance()) != Core::State::Running)
-                             return;
-                           [EmulationCoordinator
-                               saveDiagnosticsText:[EmulationCoordinator diagnosticsText]
-                                              name:[NSString stringWithFormat:@"auto-%ds", seconds]];
-                         });
-        }
       }
     });
   });
