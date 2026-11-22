@@ -4,7 +4,7 @@
 <dict>
 	<key>com.apple.developer.icloud-container-identifiers</key>
 	<array>
-		<string>iCloud.com.joemattiello.iCube</string>
+		<string>iCloud.com.strikekaboom.primehack</string>
 		<string>iCloud.com.joemattiello.iFly</string>
 		<string>iCloud.org.provenance-emu.provenance</string>
 	</array>
@@ -23,7 +23,7 @@
 	<true/>
 	<key>com.apple.developer.ubiquity-container-identifiers</key>
 	<array>
-		<string>iCloud.com.joemattiello.iCube</string>
+		<string>iCloud.com.strikekaboom.primehack</string>
 		<string>iCloud.com.joemattiello.iFly</string>
 		<string>iCloud.org.provenance-emu.provenance</string>
 	</array>
@@ -33,7 +33,7 @@
 	<true/>
 	<key>com.apple.security.application-groups</key>
 	<array>
-		<string>group.com.joemattiello.icube</string>
+		<string>group.com.strikekaboom.primehack</string>
 		<string>group.org.provenance-emu.provenance</string>
 	</array>
 	<key>com.apple.security.assets.movies.read-only</key>

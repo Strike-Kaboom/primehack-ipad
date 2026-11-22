@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 #import "SharedDefaults.h"
 
-NSString * const DOLAppGroupIdentifier = @"group.com.joemattiello.icube";
+NSString * const DOLAppGroupIdentifier = @"group.com.strikekaboom.primehack";
 
 NSUserDefaults *DOLSharedUserDefaults(void) {
   static NSUserDefaults *shared = nil;

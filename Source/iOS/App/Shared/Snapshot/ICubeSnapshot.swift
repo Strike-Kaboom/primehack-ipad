@@ -5,7 +5,7 @@ import PVLibrarySnapshot
 /// Group equal to DOLAppGroupIdentifier in Common/SharedDefaults.m.
 enum ICubeSnapshot {
     static let configuration = LibrarySnapshotConfiguration(
-        appGroupIdentifier: "group.com.joemattiello.icube",
+        appGroupIdentifier: "group.com.strikekaboom.primehack",
         launchURLScheme: "dolphinios",
         telemetrySubsystem: "com.joemattiello.iCube"
     )

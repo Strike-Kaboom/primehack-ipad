@@ -62,7 +62,7 @@ let configTable: [AppConfig] = [
     AppConfig(name: "Debug (Non-Jailbroken)",         debug: true,  bundleId: "com.joemattiello.iCube-debug",            entitlements: dfEnt),
     AppConfig(name: "Debug (Jailbroken)",             debug: true,  bundleId: "com.joemattiello.iCube-debug-jb",         entitlements: dfEnt),
     AppConfig(name: "Debug (AppStore)",               debug: true,  bundleId: "com.joemattiello.iCube",                  entitlements: appStoreEnt),
-    AppConfig(name: "Release (Non-Jailbroken)",       debug: false, bundleId: "com.joemattiello.iCube",                  entitlements: dfEnt),
+    AppConfig(name: "Release (Non-Jailbroken)",       debug: false, bundleId: "com.strikekaboom.primehack",              entitlements: dfEnt),  // PrimeHack for iPad: own app ID, so the real iCube can sit beside it
     AppConfig(name: "Release (Beta, Non-Jailbroken)", debug: false, bundleId: "com.joemattiello.iCube-njb-patreon-beta", entitlements: dfEnt),
     AppConfig(name: "Release (Jailbroken)",           debug: false, bundleId: "com.joemattiello.iCube-jb",               entitlements: dfEnt),
     AppConfig(name: "Release (TrollStore)",           debug: false, bundleId: "com.joemattiello.iCube-ts",               entitlements: dfEnt),

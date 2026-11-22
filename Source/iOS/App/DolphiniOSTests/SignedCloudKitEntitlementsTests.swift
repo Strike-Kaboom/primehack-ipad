@@ -9,7 +9,7 @@ import XCTest
 #endif
 
 final class SignedCloudKitEntitlementsTests: XCTestCase {
-  private let identifier = "iCloud.com.joemattiello.iCube"
+  private let identifier = "iCloud.com.strikekaboom.primehack"
   private var valid: [String: Any] {
     ["com.apple.developer.icloud-services": ["CloudKit"],
      "com.apple.developer.icloud-container-identifiers": [identifier],
