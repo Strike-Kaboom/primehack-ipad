@@ -284,6 +284,42 @@ let macOutliveWindowScript: TargetScript = .post(
     basedOnDependencyAnalysis: false
 )
 
+// PrimeHack for iPad: embed StikJIT.framework in iCube.app/Frameworks so iCubeJITHelper.appex
+// loads it via @executable_path/../../Frameworks and sideloaders (SideStore) re-sign it.
+// Upstream StikJIT 1.9.0 ships without an Info.plist, so we synthesise one here.
+let embedStikJITScript: TargetScript = .post(
+    script: #"""
+    set -e
+    [ "${PLATFORM_NAME:-}" = "iphoneos" ] || exit 0
+    SRC="$SRCROOT/../Externals/StikJIT.xcframework/ios-arm64/StikJIT.framework"
+    DST="$TARGET_BUILD_DIR/$FRAMEWORKS_FOLDER_PATH/StikJIT.framework"
+    rm -rf "$DST"
+    mkdir -p "$(dirname "$DST")"
+    ditto "$SRC" "$DST"
+    if [ ! -f "$DST/Info.plist" ]; then
+      P="$DST/Info.plist"
+      /usr/libexec/PlistBuddy \
+        -c 'Add :CFBundleExecutable string StikJIT' \
+        -c "Add :CFBundleIdentifier string ${PRODUCT_BUNDLE_IDENTIFIER}.StikJIT" \
+        -c 'Add :CFBundleName string StikJIT' \
+        -c 'Add :CFBundlePackageType string FMWK' \
+        -c 'Add :CFBundleInfoDictionaryVersion string 6.0' \
+        -c 'Add :CFBundleShortVersionString string 1.0' \
+        -c 'Add :CFBundleVersion string 1' \
+        -c 'Add :CFBundleSupportedPlatforms array' \
+        -c 'Add :CFBundleSupportedPlatforms:0 string iPhoneOS' \
+        -c 'Add :MinimumOSVersion string 26.0' \
+        "$P" >/dev/null
+      plutil -convert binary1 "$P"
+    fi
+    if [ -n "${EXPANDED_CODE_SIGN_IDENTITY:-}" ] && [ "${CODE_SIGNING_ALLOWED:-}" != "NO" ]; then
+      codesign --force --sign "$EXPANDED_CODE_SIGN_IDENTITY" --timestamp=none "$DST"
+    fi
+    """#,
+    name: "Embed StikJIT",
+    basedOnDependencyAnalysis: false
+)
+
 // MARK: - iCube app target
 
 let iCube = Target.target(
@@ -366,9 +402,11 @@ let iCube = Target.target(
         .folderReference(path: "../../../Data/Sys"),
         .folderReference(path: "Project/Assets/compiled_shaders"),
         .folderReference(path: "Common/Resources/WikiContent"),
+        // PrimeHack for iPad: third-party licence notices for built-in JIT (StikJIT, idevice, Madeira).
+        "Common/Resources/Licenses/THIRD-PARTY-JIT.md",
     ],
     entitlements: nil, // per-config via CODE_SIGN_ENTITLEMENTS in appConfigs
-    scripts: preScripts + [uploadDsymScript, macOutliveWindowScript],
+    scripts: preScripts + [uploadDsymScript, macOutliveWindowScript, embedStikJITScript],
     dependencies: [
         .xcframework(path: "../../../build/xcframework/PVlibDolphin.xcframework"),
         // MoltenVK (Vulkan-on-Metal ICD) is iOS-only: the prebuilt xcframework has only
@@ -432,7 +470,9 @@ let iCube = Target.target(
     ] + (APP_EMBEDS_APPEX ? [.target(name: "LiveActivityExtension", condition: .when([.ios]))] : [])
       + [.target(name: "iCubeTopShelf", condition: .when([.tvos]))]
       + [.target(name: "iCubeThumbnail", condition: .when([.ios, .catalyst]))]
-      + [.target(name: "iCubeQuickLookPreview", condition: .when([.ios, .catalyst]))],
+      + [.target(name: "iCubeQuickLookPreview", condition: .when([.ios, .catalyst]))]
+      // PrimeHack for iPad: built-in JIT helper appex (iOS only).
+      + [.target(name: "iCubeJITHelper", condition: .when([.ios]))],
     settings: .settings(
         base: projectBase.merging([
             "ARCHS": "arm64",
@@ -742,6 +782,45 @@ let preview = extensionTarget(
     frameworks: ["QuickLook"]
 )
 
+// PrimeHack for iPad: classic NSExtension JIT helper (com.apple.ar.viewer, FALSEPREDICATE, XPC!).
+// Links StikJIT.framework on iphoneos (embedded in iCube.app/Frameworks and loaded via
+// @executable_path/../../Frameworks) and carries ONLY get-task-allow in its entitlements.
+let jitHelper = Target.target(
+    name: "iCubeJITHelper",
+    destinations: [.iPhone, .iPad],
+    product: .appExtension,
+    bundleId: "com.joemattiello.iCube.JITHelper", // placeholder; real per-config ids in extensionConfigs
+    deploymentTargets: .multiplatform(iOS: "26.0"),
+    infoPlist: .file(path: "../Extensions/iCubeJITHelper/Info.plist"),
+    sources: [
+        .glob("../Extensions/iCubeJITHelper/**/*.swift"),
+        .glob("Common/Jit/BuiltInJitMessages.swift"),
+    ],
+    entitlements: .file(path: "Project/Entitlements/JITHelper.entitlements"),
+    dependencies: [],
+    settings: .settings(
+        base: [
+            "APPLICATION_EXTENSION_API_ONLY": "YES",
+            "SKIP_INSTALL": "YES",
+            "SWIFT_VERSION": "5.0",
+            "SWIFT_OBJC_BRIDGING_HEADER": "",
+            "SWIFT_OBJC_INTEROP_MODE": "objc",
+            "CODE_SIGN_STYLE": "Automatic",
+            "DEVELOPMENT_TEAM": "S32Z3HMYVQ",
+            "ENABLE_USER_SCRIPT_SANDBOXING": "YES",
+            "TARGETED_DEVICE_FAMILY": "1,2",
+            "GENERATE_INFOPLIST_FILE": "NO",
+            "INFOPLIST_FILE": "../Extensions/iCubeJITHelper/Info.plist",
+            "MARKETING_VERSION": "1.0.0",
+            "CURRENT_PROJECT_VERSION": "13",
+            "LD_RUNPATH_SEARCH_PATHS": ["$(inherited)", "@executable_path/../../Frameworks"],
+            "FRAMEWORK_SEARCH_PATHS[sdk=iphoneos*]": ["$(inherited)", "$(SRCROOT)/../Externals/StikJIT.xcframework/ios-arm64"],
+            "OTHER_LDFLAGS[sdk=iphoneos*]": ["$(inherited)", "-framework", "StikJIT"],
+        ],
+        configurations: extensionConfigs(suffix: "JITHelper")
+    )
+)
+
 // MARK: - Schemes
 
 let appStoreEnvVars: [String: EnvironmentVariable] = [ : ]
@@ -889,6 +968,6 @@ let project = Project(
         configurations: projectConfigs,
         defaultSettings: .recommended
     ),
-    targets: [iCube, liveActivity, iCubeTests, topShelf, thumbnail, preview],
+    targets: [iCube, liveActivity, iCubeTests, topShelf, thumbnail, preview, jitHelper],
     schemes: schemes
 )

@@ -1995,6 +1995,14 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
       {
         Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::CachedInterpreter);
       }
+      // PrimeHack for iPad: when built-in JIT was enabled for this session and JIT is ready for
+      // this run, promote CurrentRun to JITARM64 even if the saved Base core is Cached Interpreter.
+      // Leaves the user's persisted Base setting untouched so boots without JIT behave identically.
+      else if (jitManager.acquiredJit && !txmInterpreterFallback && jitManager.builtInJitEnabled &&
+               current_core != PowerPC::CPUCore::JITARM64)
+      {
+        Config::SetCurrent(Config::MAIN_CPU_CORE, PowerPC::CPUCore::JITARM64);
+      }
     }
 
     [DOLSentryTelemetryBridge

@@ -23,6 +23,7 @@ typedef NS_ENUM(NSInteger, DOLJitType) {
 @property (readwrite, assign) bool jitSupported;
 @property (readwrite, assign) bool debuggerAttached;
 @property (readwrite, assign) bool txmAuthorized;
+@property (readwrite, assign) bool builtInJitEnabled;
 
 @end
 
@@ -164,6 +165,12 @@ typedef NS_ENUM(NSInteger, DOLJitType) {
   if (authorized) {
     self.acquisitionError = nil;
   }
+}
+
+// PrimeHack for iPad: session-only flag so EmulationCoordinator promotes CurrentRun to JITARM64
+// without mutating the user's persisted Base CPU core setting.
+- (void)markBuiltInJitEnabled:(bool)enabled {
+  self.builtInJitEnabled = enabled;
 }
 
 @end

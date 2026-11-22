@@ -70,7 +70,9 @@ enum PrimeHackSettingsChange: Equatable {
 
 /// Pure: snapshot in, changes out.
 enum PrimeHackSettingsModelBuilder {
-  static func make(state s: PrimeHackSettingsState, apply: @escaping (PrimeHackSettingsChange) -> Void) -> MenuModel {
+  static func make(state s: PrimeHackSettingsState,
+                   jitSection: MenuSection? = nil,
+                   apply: @escaping (PrimeHackSettingsChange) -> Void) -> MenuModel {
     let whole: (Double) -> String = { String(Int($0.rounded())) }
     let degrees: (Double) -> String = { "\(Int($0.rounded()))°" }
 
@@ -171,22 +173,120 @@ enum PrimeHackSettingsModelBuilder {
     ])
 
     let credits = MenuSection(id: "primehack-credits", items: [
-      SettingsRow.caption("primehack-credit", L("PrimeHack by shiiion, SirMangler and contributors. Running on iCube, DolphiniOS and Dolphin. GPLv2+.")),
+      SettingsRow.caption("primehack-credit", L("PrimeHack by shiiion, SirMangler and contributors. Running on iCube, DolphiniOS and Dolphin. Built-in JIT uses StikJIT, idevice and portions of Madeira. GPLv3+.")),
     ])
 
-    return MenuModel(sections: [controls, visuals, gameplay, cheats, credits])
+    var sections: [MenuSection] = []
+    if let jitSection {
+      sections.append(jitSection)
+    }
+    sections.append(contentsOf: [controls, visuals, gameplay, cheats, credits])
+    return MenuModel(sections: sections)
   }
 }
 
 /// PrimeHack settings. Values live in Dolphin's Config, so they persist like any other setting.
 struct PrimeHackSettingsView: View {
   @State private var state = PrimeHackSettingsState()
+  #if os(iOS)
+  @ObservedObject private var jit = BuiltInJitCoordinator.shared
+  #endif
 
   var body: some View {
-    SettingsLeafScreen(model: PrimeHackSettingsModelBuilder.make(state: state, apply: apply), title: L("PrimeHack"), sync: sync)
+    SettingsLeafScreen(model: PrimeHackSettingsModelBuilder.make(state: state, jitSection: makeJitSection(), apply: apply),
+                       title: L("PrimeHack"), sync: sync)
+  }
+
+  /// PrimeHack for iPad: built-in JIT section (status, Enable JIT, and JIT Setup).
+  private func makeJitSection() -> MenuSection? {
+    #if os(iOS) && !targetEnvironment(macCatalyst)
+    guard JitManager.shared().jitSupported else { return nil }
+
+    let statusBadge: String
+    let statusDescription: String
+    if jit.isJitActive {
+      statusBadge = L("JIT active")
+      statusDescription = jit.isGameRunning
+        ? L("JIT is active and will apply from the next game start.")
+        : L("JIT is active for this session. Games will boot with the JIT core.")
+    } else if jit.isBusy {
+      statusBadge = L("Working…")
+      statusDescription = jit.statusMessage ?? L("Enabling JIT…")
+    } else {
+      statusBadge = L("Cached Interpreter")
+      statusDescription = L("Games are currently using the Cached Interpreter.")
+    }
+
+    var items: [MenuItem] = [
+      SettingsRow.action(
+        "primehack-jit-status",
+        L("Status"),
+        statusDescription,
+        enabled: false,
+        badge: statusBadge,
+        run: {}
+      ),
+      SettingsRow.action(
+        "primehack-jit-enable",
+        L("Enable JIT"),
+        L("Enables JIT for this session using the built-in helper. First-time setup needs internet for the Developer Disk Image."),
+        icon: "bolt.fill",
+        enabled: !jit.isBusy && !jit.isJitActive,
+        badge: jit.isJitActive ? L("Active") : (jit.isBusy ? L("Working…") : nil),
+        disabledReason: jit.isJitActive
+          ? L("JIT is already active for this session.")
+          : L("Enabling JIT…"),
+        run: { jit.enableJIT() }
+      ),
+    ]
+
+    if jit.offerOpenLocalDevVPN && !jit.isJitActive {
+      items.append(
+        SettingsRow.action(
+          "primehack-jit-open-vpn",
+          L("Open LocalDevVPN"),
+          L("Opens LocalDevVPN so you can connect the local tunnel, then returns to PrimeHack."),
+          icon: "network",
+          run: { jit.openLocalDevVPN() }
+        )
+      )
+    }
+
+    if let message = jit.errorMessage ?? jit.statusMessage {
+      items.append(SettingsRow.caption("primehack-jit-message", message))
+    }
+
+    items.append(
+      SettingsRow.destination(
+        "primehack-jit-setup",
+        L("JIT Setup"),
+        L("Import a pairing file, check LocalDevVPN, and prepare or reset the Developer Disk Image."),
+        icon: "wrench.and.screwdriver",
+        view: AnyView(BuiltInJitSetupView())
+      )
+    )
+
+    let footer: String
+    if jit.isJitActive && jit.isGameRunning {
+      footer = L("JIT is active. Because a game is running, it will apply from the next game start.")
+    } else if jit.isJitActive {
+      footer = L("JIT is active. The next game you start will use the JIT core.")
+    } else if !jit.pairingImported {
+      footer = L("Import a pairing file in JIT Setup first, then connect LocalDevVPN and tap Enable JIT.")
+    } else {
+      footer = L("Speeds up games using the built-in JIT helper. Needs LocalDevVPN connected.")
+    }
+
+    return MenuSection(id: "primehack-jit", header: L("JIT"), footer: footer, items: items)
+    #else
+    return nil
+    #endif
   }
 
   private func sync() {
+    #if os(iOS)
+    jit.refreshStatus()
+    #endif
     var s = PrimeHackSettingsState()
     s.enabled = PrimeHackBridge.enabled()
     s.controllerOnly = ControllerManager.controllerOnly()

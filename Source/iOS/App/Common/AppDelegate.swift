@@ -43,6 +43,11 @@ class AppDelegate: UIResponder, UIApplicationDelegate {
     BackgroundGameDownloader.shared.activate()
     RemoteGameDownloads.shared.start()
     #if os(iOS)
+    // PrimeHack for iPad: create Documents/JIT with README.txt on first launch and import any
+    // dropped pairingFile.plist into the Keychain.
+    BuiltInJitPairingStore.ensureDropFolderExists()
+    _ = try? BuiltInJitPairingStore.importFromDropFolderIfPresent()
+
     // Seed local bundled skins after the user folder exists, without delaying launch or changing picks.
     Task { @MainActor in
       do {

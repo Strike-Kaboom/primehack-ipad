@@ -4,6 +4,7 @@
 #include "Common/MemoryUtil.h"
 
 #include <algorithm>
+#include <atomic>
 #include <csetjmp>
 #include <csignal>
 #include <cstdlib>
@@ -48,6 +49,9 @@ constexpr size_t EXECUTABLE_REGION_SIZE = 160 * 1024 * 1024;
 
 static u8* g_rx_region = nullptr;
 static ptrdiff_t g_rw_region_diff = 0;
+// PrimeHack for iPad: thread-safe flag set by the built-in JIT helper path to skip the legacy
+// brk #0x69 probe and speak universal.js (brk #0xf00d) directly.
+static std::atomic<bool> g_force_universal_txm{false};
 
 // Xcode/StikDebug detection flag.
 // Set to 1 (true) just before the broker handshake brk.  Under StikDebug the
@@ -396,11 +400,12 @@ void AllocateExecutableMemoryRegion_LuckTXM()
     // post-brk check can detect Xcode mode (where TXM is never authorized).
     dolphin_txm_auth_status = 1;
 
-    // DOL_JIT_TXM_UNIVERSAL=1 skips the legacy probe and issues brk #0xf00d
-    // directly (for setups known to use universal.js, avoiding the benign
+    // DOL_JIT_TXM_UNIVERSAL=1 (or SetForceUniversalTXM_LuckTXM(true)) skips the legacy probe
+    // and issues brk #0xf00d directly (for setups known to use universal.js, avoiding the benign
     // "legacy 0x69 rejected" log line that script prints).
     const char* force_universal = getenv("DOL_JIT_TXM_UNIVERSAL");
-    if (force_universal && force_universal[0] == '1')
+    if (g_force_universal_txm.load(std::memory_order_acquire) ||
+        (force_universal && force_universal[0] == '1'))
     {
       TxmUniversalPrepareAll(rx_ptr, size);
       TxmUniversalDetach();
@@ -548,5 +553,31 @@ bool IsTXMJITAvailable_LuckTXM()
 uintptr_t GetTXMRegionMappedAddress_LuckTXM()
 {
   return g_rx_region_mapped_at;
+}
+
+// PrimeHack for iPad: toggle universal.js-only handshake without mutating environ.
+void SetForceUniversalTXM_LuckTXM(bool force)
+{
+  g_force_universal_txm.store(force, std::memory_order_release);
+}
+
+// PrimeHack for iPad: SIGTRAP-guarded CMD_DETACH (brk #0xf00d, x16=0) so an attached
+// universal.js broker detaches cleanly even if the RX region was already authorised or skipped.
+void DetachUniversalTXMBroker_LuckTXM()
+{
+  struct sigaction old_action{};
+  struct sigaction new_action{};
+  new_action.sa_handler = TxmSigtrapHandler;
+  sigemptyset(&new_action.sa_mask);
+  new_action.sa_flags = 0;
+  sigaction(SIGTRAP, &new_action, &old_action);
+
+  g_txm_trapped = 0;
+  if (sigsetjmp(g_txm_jmp, 1) == 0)
+  {
+    TxmUniversalDetach();
+  }
+
+  sigaction(SIGTRAP, &old_action, nullptr);
 }
 }  // namespace Common

@@ -83,6 +83,11 @@ bool IsTXMJITAvailable_LuckTXM();
 // Where the kernel last mapped the RX region (0 if never), including a mapping rejected for
 // sitting past the broker's 36-bit address limit. For diagnostics only.
 uintptr_t GetTXMRegionMappedAddress_LuckTXM();
+// PrimeHack for iPad: allow the built-in JIT path to force the universal.js protocol
+// (skipping the legacy brk #0x69 probe) without mutating process-wide environment variables,
+// and to issue a SIGTRAP-guarded CMD_DETACH if a broker is still attached.
+void SetForceUniversalTXM_LuckTXM(bool force);
+void DetachUniversalTXMBroker_LuckTXM();
 
 // Returns true when LuckTXM is in use and TXM authorization succeeded (StikDebug
 // intercepted brk #0x69).  Returns false when running under Xcode (LLDB script

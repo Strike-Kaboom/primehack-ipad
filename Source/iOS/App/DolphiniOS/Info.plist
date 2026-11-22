@@ -105,6 +105,8 @@
 	<array>
 		<string>stikdebug</string>
 		<string>stikjit</string>
+		<!-- PrimeHack for iPad: LocalDevVPN tunnel opener for built-in JIT. -->
+		<string>localdevvpn</string>
 		<!-- Sibling emulator apps (see Common/Ecosystem/EcosystemSchemes.swift):
 		     Provenance for gameInfo callbacks and the "Send to Provenance" probe,
 		     iFly for the Connected Apps settings leaf. -->
