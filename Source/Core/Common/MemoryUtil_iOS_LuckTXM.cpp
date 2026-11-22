@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <mutex>
 #include <csetjmp>
 #include <csignal>
 #include <cstdlib>
@@ -355,8 +356,13 @@ static bool AllocateExecutableMemoryRegion_LuckTXM_NoBrk()
 
 namespace Common
 {
+// PrimeHack for iPad: the built-in Enable JIT flow and a game boot can both reach the handshake;
+// it shares globals and the process SIGTRAP handler, so only one may run at a time.
+static std::mutex s_txm_handshake_mutex;
+
 void AllocateExecutableMemoryRegion_LuckTXM()
 {
+  std::lock_guard<std::mutex> handshake_lock(s_txm_handshake_mutex);
   if (g_rx_region)
   {
     return;
@@ -565,6 +571,7 @@ void SetForceUniversalTXM_LuckTXM(bool force)
 // universal.js broker detaches cleanly even if the RX region was already authorised or skipped.
 void DetachUniversalTXMBroker_LuckTXM()
 {
+  std::lock_guard<std::mutex> handshake_lock(s_txm_handshake_mutex);
   struct sigaction old_action{};
   struct sigaction new_action{};
   new_action.sa_handler = TxmSigtrapHandler;

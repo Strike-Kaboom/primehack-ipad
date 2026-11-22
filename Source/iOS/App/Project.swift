@@ -308,7 +308,7 @@ let embedStikJITScript: TargetScript = .post(
         -c 'Add :CFBundleVersion string 1' \
         -c 'Add :CFBundleSupportedPlatforms array' \
         -c 'Add :CFBundleSupportedPlatforms:0 string iPhoneOS' \
-        -c 'Add :MinimumOSVersion string 26.0' \
+        -c 'Add :MinimumOSVersion string 17.4' \
         "$P" >/dev/null
       plutil -convert binary1 "$P"
     fi

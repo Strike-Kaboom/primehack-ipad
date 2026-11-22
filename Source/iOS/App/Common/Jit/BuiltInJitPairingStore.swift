@@ -74,7 +74,8 @@ enum BuiltInJitPairingStore {
   /// Returns the stored RPPairing plist bytes from the Keychain, first importing
   /// `Documents/JIT/pairingFile.plist` if the user placed one there.
   static func data() throws -> Data {
-    _ = try importFromDropFolderIfPresent()
+    // A bad dropped file must not hide a pairing file that is already saved (it is set aside below).
+    _ = try? importFromDropFolderIfPresent()
     var result: AnyObject?
     let status = SecItemCopyMatching([
       kSecClass as String: kSecClassGenericPassword,
@@ -99,8 +100,16 @@ enum BuiltInJitPairingStore {
     let file = folder.appendingPathComponent(dropFileName)
     let manager = FileManager.default
     guard manager.fileExists(atPath: file.path) else { return false }
-    let bytes = try Data(contentsOf: file)
-    try store(bytes)
+    do {
+      let bytes = try Data(contentsOf: file)
+      try store(bytes)
+    } catch {
+      // PrimeHack for iPad: set an unusable file aside so it is not retried on every read.
+      let rejected = folder.appendingPathComponent("pairingFile.invalid.plist")
+      try? manager.removeItem(at: rejected)
+      try? manager.moveItem(at: file, to: rejected)
+      throw error
+    }
     try? manager.removeItem(at: file)
     NSLog("[PrimeHackJIT] Imported pairing file from Documents/JIT into the Keychain")
     return true

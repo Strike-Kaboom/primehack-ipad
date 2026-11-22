@@ -268,6 +268,14 @@ final class BuiltInJitCoordinator: ObservableObject {
       return
     }
 
+    // PrimeHack for iPad: another JIT tool (StikDebug, Xcode) is already attached. Starting the helper
+    // now would race it, so leave JIT to that tool; the next game start uses it.
+    if JitManager.shared().checkIfDebuggerAttachedNow() {
+      errorMessage = L("Another JIT tool (such as StikDebug) is already attached to PrimeHack. Start a game to use it, or close PrimeHack fully and try the built-in button again.")
+      statusMessage = nil
+      return
+    }
+
     let pairingData: Data
     do {
       pairingData = try BuiltInJitPairingStore.data()
