@@ -59,7 +59,7 @@ NS_ASSUME_NONNULL_BEGIN
 /// Tells EmulationCoordinator to select the JIT ARM64 CPU core for the run (via CurrentRun)
 /// even when the user's saved Base CPU core is Cached Interpreter.
 @property (readonly, assign) bool builtInJitEnabled;
-- (void)markBuiltInJitEnabled:(bool)enabled;
+- (void)markBuiltInJitEnabled:(bool)enabled NS_SWIFT_NAME(markBuiltInJitEnabled(_:));
 
 @end
 
