@@ -12,4 +12,4 @@
 
 // Branding (leaf overrides Common defaults): sideload build.
 DOL_APP_DISPLAY_NAME = PrimeHack
-DOL_APP_ICON_ASSET_NAME = AppIconSideload
+DOL_APP_ICON_ASSET_NAME = AppIconPrimeHack
