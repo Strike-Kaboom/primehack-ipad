@@ -84,16 +84,52 @@ void FpsControls::run_mod(Game game, Region region) {
   }
 
   // PrimeHack for iPad: tell the app whether the player is in control (not on the pause menu, map
-  // or inventory) and whether they're in morph ball, for the DualSense adaptive triggers.
+  // or inventory), morph ball state, and active visor for DualSense adaptive triggers & lightbar.
   u32 player_state = 0;
   if (game != Game::MENU && game != Game::INVALID_GAME) {
     LOOKUP_DYN(player);
     if (player != 0 && !input_disabled()) {
       player_state |= kPlayerStateInControl;
       LOOKUP_DYN(ball_state);
-      if (read32(ball_state) != 0) {
+      if (ball_state != 0 && read32(ball_state) != 0) {
         player_state |= kPlayerStateMorphBall;
       }
+      PublishedVisor visor = PublishedVisor::Combat;
+      if (game == Game::PRIME_1) {
+        LOOKUP_DYN(active_visor);
+        if (active_visor != 0) {
+          switch (read32(active_visor)) {
+            case 2u: visor = PublishedVisor::Scan; break;
+            case 3u: visor = PublishedVisor::Thermal; break;
+            case 1u: visor = PublishedVisor::XRay; break;
+            default: visor = PublishedVisor::Combat; break;
+          }
+        }
+      } else if (game == Game::PRIME_2) {
+        LOOKUP_DYN(active_visor);
+        if (active_visor != 0) {
+          switch (read32(active_visor)) {
+            case 2u: visor = PublishedVisor::Scan; break;
+            case 3u: visor = PublishedVisor::Dark; break;
+            case 1u: visor = PublishedVisor::Echo; break;
+            default: visor = PublishedVisor::Combat; break;
+          }
+        }
+      } else if (game == Game::PRIME_3 || game == Game::PRIME_3_STANDALONE) {
+        LOOKUP_DYN(active_visor);
+        if (active_visor != 0) {
+          switch (read32(active_visor)) {
+            case 1u: visor = PublishedVisor::Scan; break;
+            case 2u: visor = PublishedVisor::Command; break;
+            case 3u: visor = PublishedVisor::XRay; break;
+            default: visor = PublishedVisor::Combat; break;
+          }
+        }
+      }
+      if (visor == PublishedVisor::Scan) {
+        player_state |= kPlayerStateScanVisor;
+      }
+      player_state |= (static_cast<u32>(visor) << kPlayerStateVisorShift) & kPlayerStateVisorMask;
     }
   }
   PublishPlayerState(player_state);

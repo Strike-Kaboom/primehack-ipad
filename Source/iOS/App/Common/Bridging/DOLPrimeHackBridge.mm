@@ -28,6 +28,11 @@
 
 @implementation DOLPrimeHackBridge
 
++ (BOOL)enabledForCurrentRun
+{
+  return prime::IsPrimeHackEnabledForRun();
+}
+
 + (BOOL)inGameplay
 {
   // PrimeHack for iPad: an atomic the CPU thread publishes each frame. False on the Trilogy menu,
@@ -38,6 +43,18 @@
 + (BOOL)inMorphBall
 {
   return (prime::GetPublishedPlayerState() & prime::kPlayerStateMorphBall) != 0;
+}
+
++ (BOOL)inScanVisor
+{
+  return (prime::GetPublishedPlayerState() & prime::kPlayerStateScanVisor) != 0;
+}
+
++ (NSInteger)activeVisorKind
+{
+  const u32 state = prime::GetPublishedPlayerState();
+  return static_cast<NSInteger>((state & prime::kPlayerStateVisorMask) >>
+                                prime::kPlayerStateVisorShift);
 }
 
 // Controls
@@ -54,6 +71,16 @@ PH_BOOL(lockCameraInMotionPuzzles, setLockCameraInMotionPuzzles, LOCKCAMERA_IN_P
 PH_BOOL(fovEnabled, setFovEnabled, FOV_ENABLE)
 PH_INT(fov, setFov, FOV, 1, 170)
 PH_BOOL(showGameCubeCrosshair, setShowGameCubeCrosshair, GC_SHOW_CROSSHAIR)
++ (NSInteger)gameCubeCrosshairColor
+{
+  return static_cast<NSInteger>(static_cast<u32>(Config::Get(Config::GC_CROSSHAIR_COLOR_RGBA)));
+}
++ (void)setGameCubeCrosshairColor:(NSInteger)value
+{
+  Config::SetBaseOrCurrent(Config::GC_CROSSHAIR_COLOR_RGBA,
+                           static_cast<int>(static_cast<u32>(value)));
+  Config::Save();
+}
 PH_BOOL(disableBloom, setDisableBloom, DISABLE_BLOOM)
 PH_BOOL(reduceBloom, setReduceBloom, REDUCE_BLOOM)
 PH_INT(bloomIntensity, setBloomIntensity, BLOOM_INTENSITY, 0, 100)

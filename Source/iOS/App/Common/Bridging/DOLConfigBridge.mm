@@ -1381,6 +1381,7 @@ static bool HasCurrentRunLayer()
   del(Config::FOV_ENABLE);
   del(Config::FOV);
   del(Config::GC_SHOW_CROSSHAIR);
+  del(Config::GC_CROSSHAIR_COLOR_RGBA);
   del(Config::DISABLE_BLOOM);
   del(Config::REDUCE_BLOOM);
   del(Config::BLOOM_INTENSITY);
@@ -1590,6 +1591,7 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
     @"fast_forward_speed_percent",
     @"primehack_controller_only",
     @"primehack_adaptive_triggers",
+    @"primehack_dualsense_lightbar",
   ];
   for (NSString* k in gameplayKeys) {
     [d removeObjectForKey:k];

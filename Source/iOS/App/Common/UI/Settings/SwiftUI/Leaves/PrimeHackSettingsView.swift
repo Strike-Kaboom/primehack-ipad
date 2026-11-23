@@ -8,6 +8,7 @@ struct PrimeHackSettingsState: Equatable {
   var enabled = true
   var controllerOnly = true
   var adaptiveTriggers = true
+  var dualSenseLightbar = true
   var horizontalSensitivity = 45.0
   var verticalSensitivity = 35.0
   var invertX = false
@@ -17,6 +18,7 @@ struct PrimeHackSettingsState: Equatable {
   var fovEnabled = false
   var fov = 60.0
   var gcCrosshair = false
+  var gcCrosshairColor = 0x4b7ea331
   var disableBloom = false
   var reduceBloom = true
   var bloomIntensity = 65.0
@@ -38,6 +40,15 @@ struct PrimeHackSettingsState: Equatable {
   static let sensitivityRange = 1.0 ... 100.0
   static let fovRange = 1.0 ... 170.0
   static let bloomIntensityRange = 0.0 ... 100.0
+  static let defaultGCCrosshairColor = 0x4b7ea331
+  static let gcCrosshairColorOptions: [(String, Int)] = [
+    (L("Default (Blue)"), 0x4b7ea331),
+    (L("Cyan"), 0x38d9ffc8),
+    (L("Green"), 0x40e870c8),
+    (L("Amber"), 0xffb830c8),
+    (L("Red"), 0xff4545c8),
+    (L("White"), 0xffffffc8),
+  ]
 }
 
 /// One user edit. The view applies it to its snapshot AND to Config; the builder only emits it.
@@ -45,6 +56,7 @@ enum PrimeHackSettingsChange: Equatable {
   case enabled(Bool)
   case controllerOnly(Bool)
   case adaptiveTriggers(Bool)
+  case dualSenseLightbar(Bool)
   case horizontalSensitivity(Double)
   case verticalSensitivity(Double)
   case invertX(Bool)
@@ -53,6 +65,7 @@ enum PrimeHackSettingsChange: Equatable {
   case fovEnabled(Bool)
   case fov(Double)
   case gcCrosshair(Bool)
+  case gcCrosshairColor(Int)
   case disableBloom(Bool)
   case reduceBloom(Bool)
   case bloomIntensity(Double)
@@ -81,7 +94,7 @@ enum PrimeHackSettingsModelBuilder {
     let percent: (Double) -> String = { "\(Int($0.rounded()))%" }
 
     let controls = MenuSection(id: "primehack-controls", header: L("Controls"),
-                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam. L1 + D-Pad picks a visor: Up Combat, Left Scan, Down Thermal/Dark, Right X-Ray/Echo. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map."),
+                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam. L1 + D-Pad picks a visor: Up Combat, Left Scan, Down Thermal/Dark, Right X-Ray/Echo. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map. Hold L1 + R3 in Trilogy to centre camera pitch."),
                                items: [
       SettingsRow.toggle("primehack-enabled", L("PrimeHack Controls"), s.enabled,
                          L("FPS-style camera control and quick beam and visor selection in the Metroid Prime games. Takes effect when a game starts."),
@@ -92,6 +105,9 @@ enum PrimeHackSettingsModelBuilder {
       SettingsRow.toggle("primehack-adaptive-triggers", L("Adaptive Triggers (DualSense)"), s.adaptiveTriggers,
                          L("R2 clicks like a trigger when you fire and hums as a charge builds; L2 pushes back lightly for lock-on. Only in the Metroid Prime games, never in menus."),
                          defaultValue: true, set: { apply(.adaptiveTriggers($0)) }),
+      SettingsRow.toggle("primehack-dualsense-lightbar", L("DualSense Lightbar"), s.dualSenseLightbar,
+                         L("Softly tints the DualSense lightbar to match your active visor or Morph Ball during Prime gameplay, and restores it in menus or when paused."),
+                         defaultValue: true, set: { apply(.dualSenseLightbar($0)) }),
       SettingsRow.stepper("primehack-h-sens", L("Look Sensitivity (Horizontal)"), s.horizontalSensitivity,
                           range: PrimeHackSettingsState.sensitivityRange, step: 1, format: whole,
                           L("How fast the right stick turns the camera left and right."),
@@ -122,6 +138,13 @@ enum PrimeHackSettingsModelBuilder {
       SettingsRow.toggle("primehack-crosshair", L("Crosshair (GameCube)"), s.gcCrosshair,
                          L("Draws a crosshair in Metroid Prime and Prime 2 on GameCube, which have none of their own."),
                          defaultValue: false, set: { apply(.gcCrosshair($0)) }),
+      SettingsRow.picker("primehack-crosshair-color", L("Crosshair Colour (GameCube)"),
+                         PrimeHackSettingsState.gcCrosshairColorOptions, s.gcCrosshairColor,
+                         L("Colour of the crosshair in Metroid Prime and Prime 2 on GameCube."),
+                         enabled: s.gcCrosshair,
+                         defaultValue: PrimeHackSettingsState.defaultGCCrosshairColor,
+                         disabledReason: L("Enable Crosshair (GameCube) first."),
+                         set: { apply(.gcCrosshairColor($0)) }),
       SettingsRow.toggle("primehack-reduce-bloom", L("Reduce Bloom"), s.reduceBloom,
                          L("Tones down the glow spread in Metroid Prime 3."),
                          defaultValue: true, set: { apply(.reduceBloom($0)) }),
@@ -310,6 +333,7 @@ struct PrimeHackSettingsView: View {
     s.enabled = PrimeHackBridge.enabled()
     s.controllerOnly = ControllerManager.controllerOnly()
     s.adaptiveTriggers = PrimeHackAdaptiveTriggers.isEnabled()
+    s.dualSenseLightbar = PrimeHackAdaptiveTriggers.isLightbarEnabled()
     s.horizontalSensitivity = Double(PrimeHackBridge.stickHorizontalSensitivity())
     s.verticalSensitivity = Double(PrimeHackBridge.stickVerticalSensitivity())
     s.invertX = PrimeHackBridge.invertX()
@@ -318,6 +342,7 @@ struct PrimeHackSettingsView: View {
     s.fovEnabled = PrimeHackBridge.fovEnabled()
     s.fov = Double(PrimeHackBridge.fov())
     s.gcCrosshair = PrimeHackBridge.showGameCubeCrosshair()
+    s.gcCrosshairColor = PrimeHackBridge.gameCubeCrosshairColor()
     s.disableBloom = PrimeHackBridge.disableBloom()
     s.reduceBloom = PrimeHackBridge.reduceBloom()
     s.bloomIntensity = Double(PrimeHackBridge.bloomIntensity())
@@ -342,6 +367,7 @@ struct PrimeHackSettingsView: View {
     case .enabled(let v): state.enabled = v; PrimeHackBridge.setEnabled(v)
     case .controllerOnly(let v): state.controllerOnly = v; ControllerManager.setControllerOnly(v)
     case .adaptiveTriggers(let v): state.adaptiveTriggers = v; PrimeHackAdaptiveTriggers.setEnabled(v)
+    case .dualSenseLightbar(let v): state.dualSenseLightbar = v; PrimeHackAdaptiveTriggers.setLightbarEnabled(v)
     case .horizontalSensitivity(let v): state.horizontalSensitivity = v; PrimeHackBridge.setStickHorizontalSensitivity(Int(v.rounded()))
     case .verticalSensitivity(let v): state.verticalSensitivity = v; PrimeHackBridge.setStickVerticalSensitivity(Int(v.rounded()))
     case .invertX(let v): state.invertX = v; PrimeHackBridge.setInvertX(v)
@@ -350,6 +376,7 @@ struct PrimeHackSettingsView: View {
     case .fovEnabled(let v): state.fovEnabled = v; PrimeHackBridge.setFovEnabled(v)
     case .fov(let v): state.fov = v; PrimeHackBridge.setFov(Int(v.rounded()))
     case .gcCrosshair(let v): state.gcCrosshair = v; PrimeHackBridge.setShowGameCubeCrosshair(v)
+    case .gcCrosshairColor(let v): state.gcCrosshairColor = v; PrimeHackBridge.setGameCubeCrosshairColor(v)
     case .disableBloom(let v): state.disableBloom = v; PrimeHackBridge.setDisableBloom(v)
     case .reduceBloom(let v): state.reduceBloom = v; PrimeHackBridge.setReduceBloom(v)
     case .bloomIntensity(let v): state.bloomIntensity = v; PrimeHackBridge.setBloomIntensity(Int(v.rounded()))

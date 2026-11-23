@@ -58,9 +58,22 @@ Game GetActiveGame();
 Region GetActiveRegion();
 
 // PrimeHack for iPad: the player's state, published by the CPU thread every frame for the app
-// (DualSense adaptive triggers). Safe to read from any thread.
-constexpr u32 kPlayerStateInControl = 1;  // in a Prime game, player loaded, no pause/map/inventory
-constexpr u32 kPlayerStateMorphBall = 2;
+// (DualSense adaptive triggers & lightbar). Safe to read from any thread.
+constexpr u32 kPlayerStateInControl = 1u << 0;  // in a Prime game, player loaded, no pause/map/inventory
+constexpr u32 kPlayerStateMorphBall = 1u << 1;
+constexpr u32 kPlayerStateScanVisor = 1u << 2;
+constexpr u32 kPlayerStateVisorShift = 8u;
+constexpr u32 kPlayerStateVisorMask = 0x7u << kPlayerStateVisorShift;
+enum class PublishedVisor : u32
+{
+  Combat = 0,
+  Scan = 1,
+  Thermal = 2,
+  XRay = 3,
+  Dark = 4,
+  Echo = 5,
+  Command = 6,
+};
 u32 GetPublishedPlayerState();
 void PublishPlayerState(u32 state);
 bool IsPrimeHackEnabledForRun();

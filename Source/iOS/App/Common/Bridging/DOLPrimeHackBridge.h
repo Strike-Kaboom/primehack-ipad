@@ -11,8 +11,11 @@ NS_SWIFT_NAME(PrimeHackBridge)
 @interface DOLPrimeHackBridge : NSObject
 
 // PrimeHack for iPad: current emulation state.
++ (BOOL)enabledForCurrentRun;
 + (BOOL)inGameplay;
 + (BOOL)inMorphBall;
++ (BOOL)inScanVisor;
++ (NSInteger)activeVisorKind;
 
 // Controls
 + (BOOL)enabled;
@@ -35,6 +38,8 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (void)setFov:(NSInteger)value;
 + (BOOL)showGameCubeCrosshair;
 + (void)setShowGameCubeCrosshair:(BOOL)value;
++ (NSInteger)gameCubeCrosshairColor;
++ (void)setGameCubeCrosshairColor:(NSInteger)value;
 + (BOOL)disableBloom;
 + (void)setDisableBloom:(BOOL)value;
 + (BOOL)reduceBloom;
