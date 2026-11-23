@@ -326,8 +326,15 @@ bool Motor::StartEngine()
   dispatch_async(HapticsQueue(), ^{
     @autoreleasepool
     {
-      if (const auto state = weak_state.lock())
-        state->StartEngineOnQueue();
+      const auto state = weak_state.lock();
+      if (!state)
+        return;
+      {
+        std::lock_guard<std::mutex> guard(state->lock);
+        if (state->destroyed)
+          return;
+      }
+      state->StartEngineOnQueue();
     }
   });
   return true;

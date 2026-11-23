@@ -511,7 +511,7 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
   if (_metalLayer) {
     _metalLayer.framebufferOnly = YES;
     if ([_metalLayer respondsToSelector:@selector(setAllowsNextDrawableTimeout:)]) {
-      _metalLayer.allowsNextDrawableTimeout = NO;
+      _metalLayer.allowsNextDrawableTimeout = YES;
     }
     if ([_metalLayer respondsToSelector:@selector(setMaximumDrawableCount:)]) {
       _metalLayer.maximumDrawableCount = tripleBuffering ? 3 : 2;
@@ -961,14 +961,14 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
           PerformanceMetrics::ClassifyBound(speed, maxSpeed, speedThreshold));
       const PerformanceMetrics::Bound bound = PerformanceMetrics::GetBound();
 
-      // If the CPU thread is visibly waiting on GPU sync/flushes (>= 5% blocked) or
+      // If the CPU thread is visibly waiting on GPU sync/flushes (>= 15% blocked) or
       // kernel-measured CPU utilization is under 75%, underclocking the CPU will not raise
       // game speed — gate CPU underclocking so GPU stalls / transient hiccups don't ratchet
       // the CPU clock below 1.0.
       const double cpuBlockedPct = StallMetrics::GetLastCpuBlockedPct();
       const double cpuUtilPct = StallMetrics::GetLastCpuUtilPct();
       const bool cpuClockCanHelp =
-          (cpuBlockedPct < 5.0) && !(cpuUtilPct >= 0.0 && cpuUtilPct < 75.0);
+          (cpuBlockedPct < 15.0) && !(cpuUtilPct >= 0.0 && cpuUtilPct < 75.0);
 
       const CFTimeInterval now = CACurrentMediaTime();
       const auto resetWindow = ^{
@@ -1140,6 +1140,11 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
           const float applied_now = MIN(self->_acCPU, ceiling);
           if (!meetsFStar) {
             if (!self->_acVerifyProbedUp) {
+              if (!cpuClockCanHelp) {
+                // Non-CPU/GPU-sync stall during Verify: re-observe rather than dropping the seed.
+                resetWindow();
+                break;
+              }
               // The seed no longer meets f* (the host got slower — thermal/scene). f* dropped:
               // descend one step and settle (still bounded, not a full re-sweep).
               if (applied_now - sweepStep >= ACCpuFloor) {

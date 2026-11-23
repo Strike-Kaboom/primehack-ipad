@@ -56,16 +56,30 @@ void ViewModifier::adjust_viewmodel(float fov, u32 arm_address, u32 znear_addres
     }
   }
 
+  auto restore_previous_znear = [&]() {
+    if (znear_patched && mem_check(saved_znear_addr) &&
+        read32(saved_znear_addr) == saved_znear_patched_val) {
+      write32(saved_znear_val, saved_znear_addr);
+    }
+    znear_patched = false;
+  };
+
   if (apply_znear) {
     if (!znear_patched || saved_znear_addr != znear_address) {
-      saved_znear_addr = znear_address;
-      saved_znear_val = read32(znear_address);
-      znear_patched = true;
+      // Restore the prior camera's znear before switching (e.g. first-person <-> Morph Ball)
+      // so returning to it later doesn't capture our already-patched znear as its "original".
+      restore_previous_znear();
+      const u32 current = read32(znear_address);
+      if (current != znear_value) {
+        saved_znear_addr = znear_address;
+        saved_znear_val = current;
+        saved_znear_patched_val = znear_value;
+        znear_patched = true;
+      }
     }
     write32(znear_value, znear_address);
-  } else if (znear_patched && saved_znear_addr == znear_address) {
-    write32(saved_znear_val, znear_address);
-    znear_patched = false;
+  } else if (znear_patched) {
+    restore_previous_znear();
   }
 
   writef32(left, arm_address);

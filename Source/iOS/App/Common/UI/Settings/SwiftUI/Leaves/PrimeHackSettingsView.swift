@@ -106,7 +106,7 @@ enum PrimeHackSettingsModelBuilder {
                          L("R2 clicks like a trigger when you fire and hums as a charge builds; L2 pushes back lightly for lock-on. Only in the Metroid Prime games, never in menus."),
                          defaultValue: true, set: { apply(.adaptiveTriggers($0)) }),
       SettingsRow.toggle("primehack-dualsense-lightbar", L("DualSense Lightbar"), s.dualSenseLightbar,
-                         L("Softly tints the DualSense lightbar to match your active visor or Morph Ball during Prime gameplay, and restores it in menus or when paused."),
+                         L("Softly tints the DualSense lightbar for Morph Ball and (in Trilogy / Prime 3) your active visor, and restores it in menus or when paused."),
                          defaultValue: true, set: { apply(.dualSenseLightbar($0)) }),
       SettingsRow.stepper("primehack-h-sens", L("Look Sensitivity (Horizontal)"), s.horizontalSensitivity,
                           range: PrimeHackSettingsState.sensitivityRange, step: 1, format: whole,

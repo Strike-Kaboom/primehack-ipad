@@ -290,11 +290,13 @@ void CoreAudioSound::RegisterObservers()
                 }
                 else if (self_ptr->m_should_run.load() && !self_ptr->m_unit_running.load())
                 {
-                  [session setActive:YES error:nil];
-                  if ((!self_ptr->m_unit && !self_ptr->OpenUnitLocked()) ||
-                      !self_ptr->StartUnitLocked())
+                  if ([session setActive:YES error:nil])
                   {
-                    self_ptr->RebuildLocked();
+                    if ((!self_ptr->m_unit && !self_ptr->OpenUnitLocked()) ||
+                        !self_ptr->StartUnitLocked())
+                    {
+                      self_ptr->RebuildLocked();
+                    }
                   }
                 }
               }];

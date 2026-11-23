@@ -43,9 +43,10 @@ bool sHardcoreEnabled = false;
 #ifdef IPHONEOS
 // PrimeHack for iPad: latched on game start to match InputConfig::LoadConfig() and the Settings UI
 // ("Takes effect when a game starts"), so toggling PrimeHack Controls mid-game cannot desync the
-// mods from the active controller mapping.
-bool sPrimeHackEnabledForRun = true;
-bool sPrimeHackEnabledLatched = false;
+// mods from the active controller mapping. Atomic because IsPrimeHackEnabledForRun() is polled on
+// the main thread by PrimeHackAdaptiveTriggers.
+std::atomic<bool> sPrimeHackEnabledForRun{true};
+std::atomic<bool> sPrimeHackEnabledLatched{false};
 #endif
 // PrimeHack for iPad: see PublishPlayerState.
 std::atomic<u32> sPublishedPlayerState{0};
@@ -437,9 +438,10 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
   const Region active_region = sActiveRegion.load(std::memory_order_relaxed);
 
 #ifdef IPHONEOS
-  if (!sPrimeHackEnabledLatched && active_game != Game::INVALID_GAME) {
-    sPrimeHackEnabledForRun = Config::Get(Config::PRIMEHACK_ENABLE);
-    sPrimeHackEnabledLatched = true;
+  if (!sPrimeHackEnabledLatched.load(std::memory_order_acquire) &&
+      active_game != Game::INVALID_GAME) {
+    sPrimeHackEnabledForRun.store(Config::Get(Config::PRIMEHACK_ENABLE), std::memory_order_relaxed);
+    sPrimeHackEnabledLatched.store(true, std::memory_order_release);
   }
   EnforceIOSControllerLayout(active_game);
 #endif
@@ -548,7 +550,9 @@ Region GetActiveRegion() {
 
 bool IsPrimeHackEnabledForRun() {
 #ifdef IPHONEOS
-  return sPrimeHackEnabledLatched ? sPrimeHackEnabledForRun : Config::Get(Config::PRIMEHACK_ENABLE);
+  return sPrimeHackEnabledLatched.load(std::memory_order_acquire)
+             ? sPrimeHackEnabledForRun.load(std::memory_order_relaxed)
+             : Config::Get(Config::PRIMEHACK_ENABLE);
 #else
   return Config::Get(Config::PRIMEHACK_ENABLE);
 #endif
@@ -569,8 +573,8 @@ void Shutdown(bool reset_run_latch) {
   sChangesStashed = false;
 #ifdef IPHONEOS
   if (reset_run_latch) {
-    sPrimeHackEnabledForRun = true;
-    sPrimeHackEnabledLatched = false;
+    sPrimeHackEnabledLatched.store(false, std::memory_order_release);
+    sPrimeHackEnabledForRun.store(true, std::memory_order_relaxed);
   }
 #else
   (void)reset_run_latch;
