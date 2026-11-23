@@ -415,6 +415,7 @@ static std::pair<std::string, std::string> ACLastDecisionAndLearned()
   float _acProbeBaseCPU;       // clock just before the predictive jump (restore target if not CPU-bound)
   double _acProbeBaseSpeed;    // achieved speed just before the jump (CPU-bound = lowering raised it)
   BOOL  _acCpuLeverParked;     // GPU/video wall: CPU lever gives no gain -> stop fighting it with clock
+  int   _acHoldFailStreak;     // consecutive failing Hold windows before descending (~6s debounce)
   // Frame-rate starvation guard (AdaptiveClockFrameGuard.h).
   AdaptiveClockFrameGuard::Reference _acRef;  // highest point measured this run and its frame rate
   BOOL _acStarveConfirming;    // tripped: re-measuring at the reference point before parking
@@ -770,14 +771,17 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
   //   small cost of running at full speed, and learned 1.0 for titles that only play well
   //   underclocked (GoldenEye 007 on an iPad Pro A12Z: auto pinned 1.0 in slow motion, a hand-set
   //   0.68 ran at full speed). Purge those learned clocks for the wider thresholds.
+  // schema_v < 8: prior builds had a SyncGPU lost-wakeup hitch (101 ms) and lacked CPU-blocked /
+  //   CPU-util gating and Hold debounce, so a single GPU-sync stall could underclock and persist
+  //   a < 1.0 seed. Purge those poisoned per-game clocks once.
   const NSInteger schema = [defaults integerForKey:@"adaptive_clock_schema_v"];
-  if (schema < 7)
+  if (schema < 8)
   {
     for (NSString* key in [[defaults dictionaryRepresentation] allKeys]) {
       if ([key hasPrefix:@"adaptive_clock_cpu_"] || [key hasPrefix:@"adaptive_clock_vi_"])
         [defaults removeObjectForKey:key];
     }
-    [defaults setInteger:7 forKey:@"adaptive_clock_schema_v"];
+    [defaults setInteger:8 forKey:@"adaptive_clock_schema_v"];
   }
   // Before schema 6, older loops wrote the clock to the Base layer (Dolphin.ini). Since then the
   // controller writes only CurrentRun, so a Base underclock is the user's own setting and is kept.
@@ -835,6 +839,7 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
   _acViRecoveryStalled = NO;
   _acFineConfirmed = NO;
   _acCpuLeverParked = NO;
+  _acHoldFailStreak = 0;
   _acRef = AdaptiveClockFrameGuard::Reference{};
   _acStarveConfirming = NO;
   _acStarveTripRate = 0.0;
@@ -955,6 +960,15 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
       PerformanceMetrics::SetBound(
           PerformanceMetrics::ClassifyBound(speed, maxSpeed, speedThreshold));
       const PerformanceMetrics::Bound bound = PerformanceMetrics::GetBound();
+
+      // If the CPU thread is visibly waiting on GPU sync/flushes (>= 5% blocked) or
+      // kernel-measured CPU utilization is under 75%, underclocking the CPU will not raise
+      // game speed — gate CPU underclocking so GPU stalls / transient hiccups don't ratchet
+      // the CPU clock below 1.0.
+      const double cpuBlockedPct = StallMetrics::GetLastCpuBlockedPct();
+      const double cpuUtilPct = StallMetrics::GetLastCpuUtilPct();
+      const bool cpuClockCanHelp =
+          (cpuBlockedPct < 5.0) && !(cpuUtilPct >= 0.0 && cpuUtilPct < 75.0);
 
       const CFTimeInterval now = CACurrentMediaTime();
       const auto resetWindow = ^{
@@ -1175,7 +1189,14 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
             break;
           }
 
-          // Doesn't keep up here. Prefer a predictive jump (one window vs many coarse steps, lands on
+          // Doesn't keep up here. If the CPU thread isn't actually saturated (e.g. blocked on GPU
+          // sync/flushes or <75% util), don't underclock the CPU — wait for the next window.
+          if (!cpuClockCanHelp) {
+            resetWindow();
+            break;
+          }
+
+          // Prefer a predictive jump (one window vs many coarse steps, lands on
           // the fine grid). Only when positively CpuBound: c·max_speed is meaningful only then.
           if (bound == PerformanceMetrics::Bound::CpuBound && !self->_acCpuYielded &&
               maxSpeed > 0.05 && maxSpeed < 0.999) {
@@ -1282,8 +1303,11 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
           if (self->_acPhaseTicks < ACSettleTicks) break;
           if (meetsFStar) {
             self->_acStableCPU = self->_acCPU;
+            self->_acHoldFailStreak = 0;
             self->_acPhase = ACPhase_Hold;
             persistConverged();
+          } else if (!cpuClockCanHelp) {
+            // Non-CPU stall during settle: stay put and re-observe rather than descending.
           } else if (self->_acCPU - sweepStep < ACCpuFloor + 0.001f &&
                      self->_acVI - ACVIStep >= ACViFloor &&
                      bound == PerformanceMetrics::Bound::CpuBound) {
@@ -1326,34 +1350,44 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
               }
               self->_acUpProbeLever = AC_LEVER_NONE;
               self->_acUpCooldown = ACUpFailCooldownEvals;
+              self->_acHoldFailStreak = 0;
             } else if (self->_acCpuLeverParked) {
               // GPU/video wall (FineTune's guard parked the CPU lever): underclocking won't help, so
-              // do NOT re-descend / re-Search — that would just ratchet to slow-mo. Hold at the
-              // baseline clock and keep monitoring; the meetsFStar branch re-arms if the scene lifts.
+              // do NOT re-descend / re-Search — that would just ratchet to slow-mo.
+              self->_acHoldFailStreak = 0;
               persistConverged();
+            } else if (!cpuClockCanHelp) {
+              // CPU is blocked on GPU or under-utilized: transient stall, not CPU saturation.
+              self->_acHoldFailStreak = 0;
+            } else if (++self->_acHoldFailStreak < 2) {
+              // Debounce: require 2 consecutive failing Hold windows (~6s) before descending so a
+              // single door/area-load hitch doesn't underclock the game.
             } else if (self->_acCPU - sweepStep < ACCpuFloor + 0.001f &&
                        self->_acVI - ACVIStep >= ACViFloor &&
                        bound == PerformanceMetrics::Bound::CpuBound) {
               // CPU already floored AND positively CPU-bound: shed VI for its distinct refresh-rate
               // effect (step #5). Require CpuBound, not "!= GpuBound", so Unknown never triggers it.
+              self->_acHoldFailStreak = 0;
               applyVI(self->_acVI - ACVIStep);
               self->_acVerifyProbedUp = NO;
               self->_acPhase = ACPhase_Search;
             } else if (self->_acCPU - sweepStep >= ACCpuFloor - 0.001f) {
               // f* dropped: descend one step and re-find by sweeping down from here.
+              self->_acHoldFailStreak = 0;
               applyCPU(self->_acCPU - sweepStep);
               self->_acViRecoveryStalled = NO;   // fresh conditions: re-arm VI recovery.
               self->_acVerifyProbedUp = NO;
               self->_acPhase = ACPhase_Search;
             }
           } else {
+            self->_acHoldFailStreak = 0;
             // At full speed. First: if a prior up-probe is in flight, it HELD -> keep the climb.
             if (self->_acUpProbeLever != AC_LEVER_NONE) {
               self->_acStableCPU = self->_acCPU;
               self->_acUpProbeLever = AC_LEVER_NONE;
             }
-            // Scene is keeping up again: re-arm the CPU lever if a GPU wall had parked it.
-            self->_acCpuLeverParked = NO;
+            // Keep _acCpuLeverParked sticky for this session (re-arms on next boot or manual toggle)
+            // so a single healthy Hold tick doesn't un-park a GPU-walled title into repeated sweeps.
             if (self->_acUpCooldown > 0) {
               self->_acUpCooldown--;
               // NOTE: do NOT clear _acViRecoveryStalled here. Clearing it the instant the cooldown

@@ -25,6 +25,20 @@ std::atomic<bool> s_enabled{true};
 
 namespace
 {
+std::atomic<double> s_last_cpu_blocked_pct{-1.0};
+std::atomic<double> s_last_cpu_util_pct{-1.0};
+
+// Sites that count toward the CPU-thread blocked headline (the dual-core CPU-thread waits +
+// the single-core bbox inline wait). ThreadSleep (peripheral IO) and throttle (intentional
+// idle, reported on its own line) are excluded.
+constexpr bool kCpuBlockingSites[static_cast<std::size_t>(Site::COUNT)] = {
+    true,   // GpuFlushWait
+    true,   // GpuSyncWait
+    true,   // GpuDetWait
+    true,   // BlockingEvent
+    true,   // BBoxFlushWait
+    false,  // ThreadSleep
+};
 // --- Live accumulators (hot path) -------------------------------------------------------------
 // One bucket per Site. Relaxed atomics: the numbers are diagnostic, exactness across the
 // snapshot boundary is not required (a wait straddling the boundary lands in one window or the
@@ -215,10 +229,27 @@ void OnWindowBoundary(u64 window_wall_ns, u64 throttle_sleep_ns)
   s_window.dual_core = Config::Get(Config::MAIN_CPU_THREAD);
   s_window.valid = true;
 
+  if (enabled && window_wall_ns > 0)
+  {
+    double blocked_ns = 0.0;
+    for (std::size_t i = 0; i < kNumSites; ++i)
+    {
+      if (kCpuBlockingSites[i])
+        blocked_ns += static_cast<double>(sites[i].total_ns);
+    }
+    s_last_cpu_blocked_pct.store(100.0 * blocked_ns / static_cast<double>(window_wall_ns),
+                                 std::memory_order_relaxed);
+  }
+  else
+  {
+    s_last_cpu_blocked_pct.store(-1.0, std::memory_order_relaxed);
+  }
+
 #ifdef __APPLE__
   const int n = s_thread_count.load(std::memory_order_relaxed);
   s_window.thread_count = 0;
   const double wall_ns = window_wall_ns > 0 ? static_cast<double>(window_wall_ns) : 1.0;
+  double published_cpu_util = -1.0;
   for (int i = 0; i < n && i < kMaxThreads; ++i)
   {
     ThreadEntry& e = s_threads[i];
@@ -229,7 +260,15 @@ void OnWindowBoundary(u64 window_wall_ns, u64 throttle_sleep_ns)
     if (ReadThreadCpuNs(e.port, &cpu_ns))
     {
       if (e.have_last)
+      {
         snap.util_pct = 100.0 * static_cast<double>(cpu_ns - e.last_cpu_ns) / wall_ns;
+        if (e.role)
+        {
+          const std::string_view sv(e.role);
+          if (sv == "CPU thread" || sv == "CPU-GPU thread")
+            published_cpu_util = snap.util_pct;
+        }
+      }
       e.last_cpu_ns = cpu_ns;
       e.have_last = true;
 
@@ -244,7 +283,18 @@ void OnWindowBoundary(u64 window_wall_ns, u64 throttle_sleep_ns)
     s_window.threads[i] = snap;
     s_window.thread_count = i + 1;
   }
+  s_last_cpu_util_pct.store(published_cpu_util, std::memory_order_relaxed);
 #endif
+}
+
+double GetLastCpuBlockedPct()
+{
+  return s_last_cpu_blocked_pct.load(std::memory_order_relaxed);
+}
+
+double GetLastCpuUtilPct()
+{
+  return s_last_cpu_util_pct.load(std::memory_order_relaxed);
 }
 
 std::string FormatReport()
@@ -268,18 +318,6 @@ std::string FormatReport()
       "gpu.flush.wait", "gpu.sync.wait", "gpu.det.wait",
       "video.blocking", "bbox.flush",    "thread.sleep",
   };
-  // Sites that count toward the CPU-thread blocked headline (the dual-core CPU-thread waits +
-  // the single-core bbox inline wait). ThreadSleep (peripheral IO) and throttle (intentional
-  // idle, reported on its own line) are excluded.
-  static constexpr bool kCpuBlocking[kNumSites] = {
-      true,   // GpuFlushWait
-      true,   // GpuSyncWait
-      true,   // GpuDetWait
-      true,   // BlockingEvent
-      true,   // BBoxFlushWait
-      false,  // ThreadSleep
-  };
-
   const char* bound_str = "unknown";
   switch (w.bound)
   {
@@ -339,7 +377,7 @@ std::string FormatReport()
                   kSiteName[i], static_cast<unsigned long long>(s.count), total_ms, max_us, pct,
                   annot);
     out += line;
-    if (kCpuBlocking[i])
+    if (kCpuBlockingSites[i])
       cpu_blocked_ns += static_cast<double>(s.total_ns);
   }
 

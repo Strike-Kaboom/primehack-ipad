@@ -109,6 +109,12 @@ void OnWindowBoundary(u64 window_wall_ns, u64 throttle_sleep_ns);
 // Returns a short "stall metrics off" line if the flag is disabled or no window has rolled yet.
 // Callable from any thread (Obj-C++ included). Kept under ~1.5 KB.
 std::string FormatReport();
+
+// Lock-free accessors for the most recently published window (negative if unavailable).
+// Used by the iOS Adaptive Clock to avoid underclocking the CPU when the CPU thread is
+// blocked on GPU sync/flushes or under-utilized.
+double GetLastCpuBlockedPct();
+double GetLastCpuUtilPct();
 }  // namespace StallMetrics
 
 // Place tightly around JUST the wait call, in its own scope block, e.g.:

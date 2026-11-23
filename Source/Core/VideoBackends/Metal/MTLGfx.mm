@@ -58,6 +58,37 @@ constexpr u32 GPU_TIME_WINDOW = 120;
 std::atomic<u64> s_gpu_ns{0};
 std::atomic<u64> s_upscale_ns{0};
 u32 s_gpu_time_presents = 0;  // Presenting thread only.
+std::atomic<bool> s_shader_post_enabled{false};
+
+void RefreshShaderPostEnabled()
+{
+  @try
+  {
+    s_shader_post_enabled.store(
+        [[NSUserDefaults standardUserDefaults] boolForKey:@"shader_enabled"],
+        std::memory_order_relaxed);
+  }
+  @catch (...)
+  {
+    s_shader_post_enabled.store(false, std::memory_order_relaxed);
+  }
+}
+
+bool IsShaderPostEnabled()
+{
+  static dispatch_once_t s_once;
+  dispatch_once(&s_once, ^{
+    RefreshShaderPostEnabled();
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSUserDefaultsDidChangeNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification*) {
+                  RefreshShaderPostEnabled();
+                }];
+  });
+  return s_shader_post_enabled.load(std::memory_order_relaxed);
+}
 
 void ReportGPUTimes()
 {
@@ -543,14 +574,7 @@ bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
   {
     CheckForSurfaceChange();
     CheckForSurfaceResize();
-    // iCube async present: configure the layer to fail fast instead of blocking the
-    // CPU thread when a drawable isn't ready, then skip the frame if none is available.
-    // Matches feature/icube-testflight. Default on Apple ARM via GFX_ASYNC_PRESENT.
     CAMetalLayer* layer = m_layer;
-    if ([layer respondsToSelector:@selector(setAllowsNextDrawableTimeout:)])
-      layer.allowsNextDrawableTimeout = NO;
-    if ([layer respondsToSelector:@selector(setMaximumDrawableCount:)])
-      layer.maximumDrawableCount = 3;
     id<CAMetalDrawable> next = [layer nextDrawable];
     if (!next && g_ActiveConfig.bAsyncPresent)
     {
@@ -565,15 +589,7 @@ bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
     // composite into the drawable at present time (see PresentBackbuffer). Without this,
     // the chain would sample the live drawable it is about to write into, producing a
     // broken/hazarded image. This is the invasive routing the 2509 rebase dropped.
-    bool use_post = false;
-    @try
-    {
-      use_post = [[NSUserDefaults standardUserDefaults] boolForKey:@"shader_enabled"];
-    }
-    @catch (...)
-    {
-      use_post = false;
-    }
+    const bool use_post = IsShaderPostEnabled();
     if (use_post)
     {
       id<MTLTexture> draw_tex = [m_drawable texture];
@@ -636,15 +652,7 @@ void Metal::Gfx::PresentBackbuffer()
     g_state_tracker->EndRenderPass();
     if (m_drawable)
     {
-      bool use_shader_post = false;
-      @try
-      {
-        use_shader_post = [[NSUserDefaults standardUserDefaults] boolForKey:@"shader_enabled"];
-      }
-      @catch (...)
-      {
-        use_shader_post = false;
-      }
+      const bool use_shader_post = IsShaderPostEnabled();
 
       if (use_shader_post)
       {
@@ -803,6 +811,17 @@ void Metal::Gfx::SetupSurface()
   auto info = GetSurfaceInfo();
 
   [m_layer setDrawableSize:{static_cast<double>(info.width), static_cast<double>(info.height)}];
+  // Configure drawable pooling & timeout once on surface setup rather than per-frame in
+  // BindBackbuffer (which previously dispatched 120 main-queue calls/s through
+  // SafeMainThreadMetalLayer). allowsNextDrawableTimeout = YES lets nextDrawable fail with nil
+  // after 1s instead of blocking indefinitely if the compositor stalls.
+  if (m_layer)
+  {
+    if ([m_layer respondsToSelector:@selector(setAllowsNextDrawableTimeout:)])
+      [m_layer setAllowsNextDrawableTimeout:YES];
+    if ([m_layer respondsToSelector:@selector(setMaximumDrawableCount:)])
+      [m_layer setMaximumDrawableCount:3];
+  }
 
   TextureConfig cfg(info.width, info.height, 1, 1, 1, info.format, AbstractTextureFlag_RenderTarget,
                     AbstractTextureType::Texture_2DArray);
