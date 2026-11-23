@@ -30,7 +30,7 @@ void CustomAssetCache::Initialize()
   // evict cleanly instead of getting the app killed mid-game.
   const size_t proc_avail = os_proc_available_memory();
   if (proc_avail > 0)
-    m_max_ram_available = std::min(m_max_ram_available, proc_avail / 2);
+    m_max_ram_available = std::min<u64>(m_max_ram_available, static_cast<u64>(proc_avail / 2));
 #endif
 
   if (m_max_ram_available == 0)
