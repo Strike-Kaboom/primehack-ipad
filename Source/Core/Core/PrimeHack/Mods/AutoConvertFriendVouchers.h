@@ -42,6 +42,9 @@ public:
     }
 
     const u32 hook_buffer = GuestAllocAligned(kFriendVoucherBufferSize, 2);
+    if (hook_buffer == 0) {
+      return false;
+    }
     const int patch_string =
       Core::System::GetInstance().GetPowerPC().RegisterVmcall(patch_script_achieve_string);
     const u32 vmc_patch_string = gen_vmcall(static_cast<u32>(patch_string), 0);

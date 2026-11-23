@@ -300,6 +300,7 @@ bool AVAudioEngineSound::startEngineLocked()
     return false;
   if (!m_engine.running)
   {
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
     NSError* err = nil;
     if (![m_engine startAndReturnError:&err])
     {
@@ -643,6 +644,12 @@ bool AVAudioEngineSound::SetRunning(bool running)
   {
     {
       std::lock_guard lock(m_guard->mutex);
+      NSError* err = nil;
+      // After a long sleep iOS does not guarantee delivering InterruptionTypeEnded. If the
+      // session activates cleanly on foreground resume, clear a stale interruption latch so
+      // audio cannot stay permanently wedged.
+      if ([[AVAudioSession sharedInstance] setActive:YES error:&err])
+        m_interrupted = false;
       if (!m_interrupted)
       {
         if (m_engine)

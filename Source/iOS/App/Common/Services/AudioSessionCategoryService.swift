@@ -10,4 +10,10 @@ class AudioSessionCategoryService: UIResponder, UIApplicationDelegate {
 
     return true
   }
+
+  func applicationDidBecomeActive(_ application: UIApplication) {
+    // Reactivate AVAudioSession on wake/foreground before PauseArbiter resumes the core so
+    // CoreAudio/AVAudioEngine don't fail with kAudioSessionNotActiveError after a long sleep.
+    AudioSessionManager.shared().setSessionCategory()
+  }
 }

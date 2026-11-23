@@ -68,7 +68,7 @@ void EmuVariableManager::register_variable(const std::string& name) {
 
   const u32 address = GuestAllocAligned(4, 2);
   if (address == 0) {
-    assert("Guest allocator out of space");
+    assert(false && "Guest allocator out of space");
     return;
   }
   variables_list[name] = address;

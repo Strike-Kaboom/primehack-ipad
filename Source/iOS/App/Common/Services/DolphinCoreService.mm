@@ -39,6 +39,7 @@
 #import "PGOFlush.h"
 #import "TVEmulationBridge.h"
 
+#include <atomic>
 #include <chrono>
 #include <cstdlib>
 #include <thread>
@@ -48,6 +49,8 @@ namespace {
 /// How long termination waits for the core to stop before saving and exiting anyway.
 constexpr auto kTerminateStopTimeout = std::chrono::seconds(3);
 constexpr auto kTerminateStopPoll = std::chrono::milliseconds(5);
+std::atomic<bool> s_resumeSaveInFlight{false};
+std::atomic<bool> s_resumeSavedSinceActive{false};
 
 /// Runs before the C++ static destructors inside exit(), saves the config, and ends the process.
 ///
@@ -303,6 +306,11 @@ static inline void SetBaseIfUnspecified(const Config::Info<T>& info, const T& va
   return YES;
 }
 
+- (void)applicationDidBecomeActive:(UIApplication*)application {
+  (void)application;
+  s_resumeSavedSinceActive.store(false, std::memory_order_relaxed);
+}
+
 // Pause and resume on resign/become-active belong to PauseArbiter (MainDisplaySceneDelegate): a second
 // resume path here ran the game behind the pause menu or Settings after an app switch.
 - (void)applicationWillResignActive:(UIApplication*)application {
@@ -310,36 +318,49 @@ static inline void SetBaseIfUnspecified(const Config::Info<T>& info, const T& va
     // Write out the configuration in case we don't get a chance later
     Config::Save();
   });
-}
 
-- (void)applicationDidEnterBackground:(UIApplication*)application {
-  // Kill-safe PGO flush point. A long-running emulator force-killed by iOS while backgrounded
-  // never runs willTerminate/atexit, so background is the reliable place to persist counters.
-  // No-op on a non-instrumented (shipping) core.
-  ICubePGOFlush();
-
-  // "Resume Where I Left Off" used to save only at a clean Quit, so a game the system ended in the
-  // background (memory pressure, swipe-away, low battery) resumed from the last Quit or not at all.
-  // Save here, where the process is still guaranteed time. Off the main thread: the save takes the
-  // CPU lock, and main must stay free to answer a core alert. The background task keeps the
-  // process alive until the file is committed; if it expires first, the write is cut short and the
-  // previous state file stays in place (states are written to a temporary file and renamed).
+  // "Resume Where I Left Off" snapshots GPU state (EFB/texture cache/bbox) via Metal inside
+  // State::SaveAsWithResult. Trigger it here in willResignActive while UIApplicationState is still
+  // .inactive (foreground) so Metal command buffers are permitted; the background task then keeps
+  // the process alive while CPU-only LZ4 compression and atomic temp-file rename finish if the app
+  // transitions to background.
   if (!Core::IsRunning(Core::System::GetInstance()))
     return;
+  if (s_resumeSavedSinceActive.load(std::memory_order_acquire))
+    return;
+  if (s_resumeSaveInFlight.exchange(true, std::memory_order_acq_rel))
+    return;
+  s_resumeSavedSinceActive.store(true, std::memory_order_release);
+
   __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
   void (^endTask)(void) = ^{
-    dispatch_async(dispatch_get_main_queue(), ^{
+    void (^finish)(void) = ^{
       if (task == UIBackgroundTaskInvalid)
         return;
       [application endBackgroundTask:task];
       task = UIBackgroundTaskInvalid;
-    });
+    };
+    // UIKit invokes expirationHandler on the main thread and requires endBackgroundTask: to be
+    // called synchronously before expirationHandler returns to avoid a watchdog kill.
+    if ([NSThread isMainThread])
+      finish();
+    else
+      dispatch_async(dispatch_get_main_queue(), finish);
   };
   task = [application beginBackgroundTaskWithName:@"Save resume state" expirationHandler:endTask];
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
     [TVEmulationBridge saveResumeStateKeepingGameRunning];
+    s_resumeSaveInFlight.store(false, std::memory_order_release);
     endTask();
   });
+}
+
+- (void)applicationDidEnterBackground:(UIApplication*)application {
+  (void)application;
+  // Kill-safe PGO flush point. A long-running emulator force-killed by iOS while backgrounded
+  // never runs willTerminate/atexit, so background is the reliable place to persist counters.
+  // No-op on a non-instrumented (shipping) core.
+  ICubePGOFlush();
 }
 
 - (void)applicationWillTerminate:(UIApplication*)application {

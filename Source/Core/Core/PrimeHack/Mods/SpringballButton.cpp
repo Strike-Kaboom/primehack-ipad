@@ -326,6 +326,9 @@ void SpringballButton::springball_code_gc(Game game, u32 start_point, u32 bomb_p
 
   if (game == Game::PRIME_1_GCN || game == Game::PRIME_1_GCN_R1 || game == Game::PRIME_1_GCN_R2) {
     const u32 hook_buffer = GuestAllocAligned(kSpringballHookBufferSizeMP1GC, 2);
+    if (hook_buffer == 0) {
+      return;
+    }
     add_asm_patch(fmt::format(fmt::runtime(spring_ball_template_mp1_gc),
       fmt::arg("hook_start_addr", start_point),
       fmt::arg("hook_buffer_addr", hook_buffer),
@@ -339,6 +342,9 @@ void SpringballButton::springball_code_gc(Game game, u32 start_point, u32 bomb_p
     ));
   } else if (game == Game::PRIME_2_GCN) {
     const u32 hook_buffer = GuestAllocAligned(kSpringballHookBufferSizeMP2GC, 2);
+    if (hook_buffer == 0) {
+      return;
+    }
     add_asm_patch(fmt::format(fmt::runtime(spring_ball_template_mp2_gc),
       fmt::arg("hook_start_addr", start_point),
       fmt::arg("hook_buffer_addr", hook_buffer),

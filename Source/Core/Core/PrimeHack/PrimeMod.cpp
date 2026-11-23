@@ -80,7 +80,9 @@ void PrimeMod::set_code_group_state(std::string_view group_name, ModState new_st
   std::get<1>(cg) = new_state;
   std::vector<CodeChange> const& from_vec = (new_state == ModState::ENABLED ? code_changes : original_instructions);
   for (auto const& code_idx : std::get<0>(cg)) {
-    current_active_changes[code_idx] = from_vec[code_idx];
+    if (code_idx < from_vec.size() && code_idx < current_active_changes.size()) {
+      current_active_changes[code_idx] = from_vec[code_idx];
+    }
   }
 }
 

@@ -184,6 +184,9 @@ public:
     }
 
     const u32 hook_buffer = GuestAllocAligned(kDoorOverrideHookBufferSizeMax, 2);
+    if (hook_buffer == 0) {
+      return false;
+    }
     switch (game) {
       case Game::PRIME_2_GCN:
         if (region == Region::NTSC_U) {

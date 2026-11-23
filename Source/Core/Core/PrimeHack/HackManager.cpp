@@ -475,18 +475,16 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
   update_mod_state_from_config();
 
   if (active_game != Game::INVALID_GAME && active_region != Region::INVALID_REGION) {
+    // Pass 1: initialize mods and immediately snapshot original instructions before run_mod()
+    // can toggle code groups (avoids 1-frame patch flash and double icache invalidation).
     foreach_mod([active_game, active_region](PrimeMod& mod) {
-      // Skip any "cheat" mods
       if (mod.is_cheat() && sHardcoreEnabled) {
         return;
       }
 
       if (!mod.is_initialized() && mod.init_mod(active_game, active_region)) {
         mod.mark_initialized();
-      }
-      if (mod.should_apply_changes()) {
         mod.update_original_instructions();
-        mod.apply_instruction_changes();
       }
     });
 
@@ -499,6 +497,7 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
     sLastGame = active_game;
     sLastRegion = active_region;
 
+    // Pass 2: run enabled mods so code-group states match live game state and config.
     foreach_mod([active_game, active_region](PrimeMod& mod) {
       if (mod.is_cheat() && sHardcoreEnabled) {
         return;
@@ -506,6 +505,18 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
 
       if (mod.mod_state() == ModState::ENABLED) {
         mod.run_mod(active_game, active_region);
+      }
+    });
+
+    // Pass 3: back up any dynamically added changes (e.g. ElfModLoader) and apply final patches.
+    foreach_mod([](PrimeMod& mod) {
+      if (mod.is_cheat() && sHardcoreEnabled) {
+        return;
+      }
+
+      if (mod.should_apply_changes()) {
+        mod.update_original_instructions();
+        mod.apply_instruction_changes();
       }
     });
   }

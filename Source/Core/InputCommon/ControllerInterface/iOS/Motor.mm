@@ -21,6 +21,28 @@
 
 namespace
 {
+dispatch_queue_t HapticsQueue()
+{
+  static dispatch_queue_t queue = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    dispatch_queue_attr_t attr =
+        dispatch_queue_attr_make_with_qos_class(DISPATCH_QUEUE_SERIAL, QOS_CLASS_USER_INITIATED, 0);
+    queue = dispatch_queue_create("org.dolphin-emu.ios.haptics", attr);
+  });
+  return queue;
+}
+
+#if !TARGET_OS_TV
+std::atomic<int> s_rumble_destination{1};
+
+void RefreshRumbleDestination()
+{
+  NSNumber* value = [[NSUserDefaults standardUserDefaults] objectForKey:@"rumble_destination"];
+  s_rumble_destination.store(value ? value.intValue : 1, std::memory_order_relaxed);
+}
+#endif
+
 /// User-selected rumble destination (NSUserDefaults "rumble_destination"):
 /// 0 = device haptics, 1 = controller rumble (default), 2 = both. tvOS has no
 /// device to hold, so it always uses controller rumble.
@@ -29,8 +51,18 @@ int RumbleDestination()
 #if TARGET_OS_TV
   return 1;
 #else
-  NSNumber* value = [[NSUserDefaults standardUserDefaults] objectForKey:@"rumble_destination"];
-  return value ? value.intValue : 1;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    RefreshRumbleDestination();
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSUserDefaultsDidChangeNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification*) {
+                  RefreshRumbleDestination();
+                }];
+  });
+  return s_rumble_destination.load(std::memory_order_relaxed);
 #endif
 }
 }  // namespace
@@ -173,30 +205,40 @@ struct Motor::State
 
   explicit State(CHHapticEngine* engine) : haptic_engine(engine) {}
 
-  bool StartEngineLocked();
+  // Must only be called on HapticsQueue(). Never holds `lock` across CoreHaptics calls.
+  bool StartEngineOnQueue();
+  void ApplyOnQueue();
 
-  void InvalidatePlayer()
+  void InvalidatePlayerOnQueue()
   {
     haptic_player = nil;
-    controller_on.reset();
+    applied_controller_on.reset();
   }
 
-  // PrimeHack for iPad: the CoreHaptics handlers only raise this flag, without the lock, because
-  // the engine calls made under the lock could wait on the queue that delivers them. SetState
-  // consumes it under the lock.
-  void ConsumeEngineLostLocked()
+  void ConsumeEngineLostOnQueue()
   {
-    if (engine_lost.exchange(false))
-      InvalidatePlayer();
+    if (engine_lost.exchange(false, std::memory_order_acq_rel))
+      InvalidatePlayerOnQueue();
   }
 
+  // Short-held mutex guarding only the CPU->HapticsQueue handoff fields below.
   std::mutex lock;
+  bool desired_controller_on = false;
+  bool desired_device_on = false;
+  bool update_scheduled = false;
+  bool destroyed = false;
+
+  // Lock-free flags: `engine_lost` is written by CoreHaptics callbacks; `needs_retry` is written
+  // by HapticsQueue() so SetState can re-trigger recovery after a cooldown expires.
   std::atomic<bool> engine_lost{false};
+  std::atomic<bool> needs_retry{false};
+
+  // Owned exclusively by HapticsQueue() (no mutex needed when accessed on that serial queue).
   CHHapticEngine* const haptic_engine;
   id<CHHapticAdvancedPatternPlayer> haptic_player = nil;
   bool recreate_player = false;
-  std::optional<bool> controller_on;
-  bool device_on = false;
+  std::optional<bool> applied_controller_on;
+  bool applied_device_on = false;
   Clock::time_point next_start_attempt = Clock::time_point::min();
 };
 
@@ -207,7 +249,7 @@ Motor::Motor(CHHapticEngine* engine, const std::string name)
   const std::weak_ptr<State> weak_state = m_state;
   engine.resetHandler = ^{
     if (const auto state = weak_state.lock())
-      state->engine_lost.store(true);
+      state->engine_lost.store(true, std::memory_order_release);
   };
 
   engine.stoppedHandler = ^(CHHapticEngineStoppedReason reason) {
@@ -215,53 +257,83 @@ Motor::Motor(CHHapticEngine* engine, const std::string name)
         reason != CHHapticEngineStoppedReasonApplicationSuspended &&
         reason != CHHapticEngineStoppedReasonSystemError)
     {
-      ERROR_LOG_FMT(CONTROLLERINTERFACE, "Motor received unexpected stopped reason: {}", (NSInteger)reason);
+      ERROR_LOG_FMT(CONTROLLERINTERFACE, "Motor received unexpected stopped reason: {}",
+                    (NSInteger)reason);
     }
     if (const auto state = weak_state.lock())
-      state->engine_lost.store(true);
+      state->engine_lost.store(true, std::memory_order_release);
   };
 
-  // PrimeHack for iPad: configure haptics-only playback before the first start.
+  // PrimeHack for iPad: configure haptics-only playback and start asynchronously on HapticsQueue
+  // so Bluetooth controller connect/reconnect never stalls the main or CPU thread.
   engine.playsHapticsOnly = YES;
-  std::lock_guard<std::mutex> guard(m_state->lock);
-  if (m_state->StartEngineLocked())
-  {
-    // PrimeHack for iPad: a successful initial start leaves the first recovery attempt available.
-    m_state->next_start_attempt = State::Clock::time_point::min();
-  }
+  dispatch_async(HapticsQueue(), ^{
+    @autoreleasepool
+    {
+      const auto state = weak_state.lock();
+      if (!state)
+        return;
+      {
+        std::lock_guard<std::mutex> guard(state->lock);
+        if (state->destroyed)
+          return;
+      }
+      if (state->StartEngineOnQueue())
+      {
+        // A successful initial start leaves the first recovery attempt immediately available.
+        state->next_start_attempt = State::Clock::time_point::min();
+      }
+    }
+  });
 }
 
 Motor::~Motor()
 {
-#if !TARGET_OS_TV
-  // PrimeHack for iPad: RemoveDevice destroys a disconnected controller without calling SetState(0),
-  // so stop on-device haptics if this motor left them running.
   {
     std::lock_guard<std::mutex> guard(m_state->lock);
-    if (m_state->device_on)
-    {
-      [[DOLDeviceHaptics shared] setState:false];
-      m_state->device_on = false;
-    }
+    m_state->destroyed = true;
   }
-#endif
-  // PrimeHack for iPad: an in-flight handler holds the state alive through its weak_ptr and only
-  // sets a flag, so teardown never waits on it.
+
+  // Stop further CoreHaptics callbacks immediately.
   CHHapticEngine* engine = m_state->haptic_engine;
   engine.resetHandler = ^{
   };
   engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {
   };
-  [engine stopWithCompletionHandler:nil];
+
+  // Serialize teardown on HapticsQueue so it runs strictly after any in-flight start/stop call,
+  // and turns off on-device haptics if this motor left them running.
+  std::shared_ptr<State> state = m_state;
+  dispatch_async(HapticsQueue(), ^{
+    @autoreleasepool
+    {
+#if !TARGET_OS_TV
+      if (state->applied_device_on)
+      {
+        [[DOLDeviceHaptics shared] setState:false];
+        state->applied_device_on = false;
+      }
+#endif
+      state->InvalidatePlayerOnQueue();
+      [state->haptic_engine stopWithCompletionHandler:nil];
+    }
+  });
 }
 
 bool Motor::StartEngine()
 {
-  std::lock_guard<std::mutex> guard(m_state->lock);
-  return m_state->StartEngineLocked();
+  const std::weak_ptr<State> weak_state = m_state;
+  dispatch_async(HapticsQueue(), ^{
+    @autoreleasepool
+    {
+      if (const auto state = weak_state.lock())
+        state->StartEngineOnQueue();
+    }
+  });
+  return true;
 }
 
-bool Motor::State::StartEngineLocked()
+bool Motor::State::StartEngineOnQueue()
 {
   if (haptic_player && !recreate_player)
     return true;
@@ -276,37 +348,41 @@ bool Motor::State::StartEngineLocked()
   if (![haptic_engine startAndReturnError:&error])
   {
     MOTOR_ERROR_LOG("Motor failed to start CHHapticEngine: {}", error);
-
     return false;
   }
-  
-  CHHapticEventParameter* intensity_param = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f];
+
+  CHHapticEventParameter* intensity_param =
+      [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity
+                                                    value:1.0f];
   // PrimeHack for iPad: low sharpness. The default (0.5) plays as a faint high buzz on the
   // DualSense's voice-coil actuators; a low value gives a deep rumble you can feel in the grips.
-  CHHapticEventParameter* sharpness_param = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness value:0.1f];
+  CHHapticEventParameter* sharpness_param =
+      [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticSharpness
+                                                    value:0.1f];
 
-  CHHapticEvent* event = [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
-                                                       parameters:@[intensity_param, sharpness_param]
-                                                     relativeTime:0.0f
-                                                         duration:1.0f];
+  CHHapticEvent* event =
+      [[CHHapticEvent alloc] initWithEventType:CHHapticEventTypeHapticContinuous
+                                    parameters:@[intensity_param, sharpness_param]
+                                  relativeTime:0.0f
+                                      duration:1.0f];
 
   error = nil;
-  CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event] parameters:@[] error:&error];
+  CHHapticPattern* pattern = [[CHHapticPattern alloc] initWithEvents:@[event]
+                                                          parameters:@[]
+                                                               error:&error];
 
   if (!pattern)
   {
     MOTOR_ERROR_LOG("Motor failed to create CHHapticPattern: {}", error);
-
     return false;
   }
-  
+
   id<CHHapticAdvancedPatternPlayer> player =
       [haptic_engine createAdvancedPlayerWithPattern:pattern error:&error];
 
   if (!player)
   {
     MOTOR_ERROR_LOG("Motor failed to create CHHapticAdvancedPatternPlayer: {}", error);
-
     return false;
   }
 
@@ -315,9 +391,105 @@ bool Motor::State::StartEngineLocked()
 
   haptic_player = player;
   recreate_player = false;
-  controller_on.reset();
+  applied_controller_on.reset();
 
   return true;
+}
+
+void Motor::State::ApplyOnQueue()
+{
+  for (int pass = 0; pass < 2; ++pass)
+  {
+    bool want_controller = false;
+    bool want_device = false;
+    {
+      std::lock_guard<std::mutex> guard(lock);
+      if (pass == 0)
+        update_scheduled = false;
+      if (destroyed)
+        return;
+      want_controller = desired_controller_on;
+      want_device = desired_device_on;
+    }
+
+#if !TARGET_OS_TV
+    // Route on-device Taptic Engine transitions off the CPU thread as well.
+    if (want_device != applied_device_on)
+    {
+      [[DOLDeviceHaptics shared] setState:want_device];
+      applied_device_on = want_device;
+    }
+#endif
+
+    ConsumeEngineLostOnQueue();
+
+    if (want_controller)
+    {
+      if (!StartEngineOnQueue())
+      {
+        needs_retry.store(true, std::memory_order_release);
+        return;
+      }
+      // If CoreHaptics signalled an interruption mid-start, discard the stale player and retry
+      // on the next rumble update rather than playing into a dead engine.
+      if (engine_lost.load(std::memory_order_acquire))
+      {
+        ConsumeEngineLostOnQueue();
+        needs_retry.store(true, std::memory_order_release);
+        return;
+      }
+    }
+    else
+    {
+      needs_retry.store(false, std::memory_order_release);
+    }
+
+    if (haptic_player && applied_controller_on != want_controller)
+    {
+      NSError* error = nil;
+      const bool result =
+          want_controller ? [haptic_player startAtTime:CHHapticTimeImmediate error:&error]
+                          : [haptic_player stopAtTime:CHHapticTimeImmediate error:&error];
+      if (result)
+      {
+        applied_controller_on = want_controller;
+        needs_retry.store(false, std::memory_order_release);
+      }
+      else
+      {
+        recreate_player = true;
+        if (want_controller)
+        {
+          applied_controller_on.reset();
+          needs_retry.store(true, std::memory_order_release);
+        }
+        else
+        {
+          applied_controller_on = false;
+          needs_retry.store(false, std::memory_order_release);
+        }
+        if ([error.domain isEqualToString:CoreHapticsErrorDomain] &&
+            error.code == CHHapticErrorCodeInvalidPatternPlayer)
+        {
+          InvalidatePlayerOnQueue();
+          if (!want_controller)
+            applied_controller_on = false;
+        }
+        MOTOR_ERROR_LOG("Motor failed to start/stop haptics: {}", error);
+      }
+    }
+
+    // Re-check whether desired state changed while CoreHaptics XPC was in flight (e.g. rumble
+    // already ended while the engine was restarting); if unchanged, we are done.
+    {
+      std::lock_guard<std::mutex> guard(lock);
+      if (destroyed ||
+          (desired_controller_on == want_controller && desired_device_on == want_device))
+      {
+        return;
+      }
+    }
+  }
 }
 
 std::string Motor::GetName() const
@@ -327,62 +499,49 @@ std::string Motor::GetName() const
 
 void Motor::SetState(ControlState state)
 {
-  std::lock_guard<std::mutex> guard(m_state->lock);
-  m_state->ConsumeEngineLostLocked();
-
   const bool on = state > 0;
   const int destination = RumbleDestination();
-
 #if !TARGET_OS_TV
-  // PrimeHack for iPad: route device transitions even while controller recovery is pending.
-  const bool device_on = (destination == 0 || destination == 2) && on;
-  if (device_on != m_state->device_on)
-  {
-    [[DOLDeviceHaptics shared] setState:device_on];
-    m_state->device_on = device_on;
-  }
+  const bool want_device = (destination == 0 || destination == 2) && on;
+#else
+  const bool want_device = false;
 #endif
+  // With destination switched to device-only, the controller still gets its stop if it was on.
+  const bool want_controller = on && destination != 0;
 
-  // PrimeHack for iPad: with the destination switched to the device only, the controller still gets
-  // its stop if it was rumbling when the destination changed.
-  const bool controller_on = on && destination != 0;
-  if (controller_on && !m_state->StartEngineLocked())
+  bool should_dispatch = false;
+  {
+    std::lock_guard<std::mutex> guard(m_state->lock);
+    if (m_state->destroyed)
+      return;
+
+    const bool unchanged =
+        (m_state->desired_controller_on == want_controller) &&
+        (m_state->desired_device_on == want_device) &&
+        !m_state->engine_lost.load(std::memory_order_relaxed) &&
+        !(want_controller && m_state->needs_retry.load(std::memory_order_relaxed));
+    if (unchanged)
+      return;
+
+    m_state->desired_controller_on = want_controller;
+    m_state->desired_device_on = want_device;
+    if (!m_state->update_scheduled)
+    {
+      m_state->update_scheduled = true;
+      should_dispatch = true;
+    }
+  }
+
+  if (!should_dispatch)
     return;
-  if (!m_state->haptic_player || m_state->controller_on == controller_on)
-    return;
 
-  bool result;
-  NSError* error = nil;
-  if (controller_on)
-  {
-    result = [m_state->haptic_player startAtTime:CHHapticTimeImmediate error:&error];
-  }
-  else
-  {
-    result = [m_state->haptic_player stopAtTime:CHHapticTimeImmediate error:&error];
-  }
-
-  if (result)
-  {
-    m_state->controller_on = controller_on;
-    return;
-  }
-
-  // PrimeHack for iPad: rebuild the player on the next rumble (at most once a second). A failed stop
-  // means the player or engine is gone, so it is silent; record that instead of retrying the stop
-  // every input update.
-  m_state->recreate_player = true;
-  if (controller_on)
-    m_state->controller_on.reset();
-  else
-    m_state->controller_on = false;
-  if ([error.domain isEqualToString:CoreHapticsErrorDomain] &&
-      error.code == CHHapticErrorCodeInvalidPatternPlayer)
-  {
-    m_state->InvalidatePlayer();
-    if (!controller_on)
-      m_state->controller_on = false;
-  }
-  MOTOR_ERROR_LOG("Motor failed to start/stop haptics: {}", error);
+  const std::weak_ptr<State> weak_state = m_state;
+  dispatch_async(HapticsQueue(), ^{
+    @autoreleasepool
+    {
+      if (const auto s = weak_state.lock())
+        s->ApplyOnQueue();
+    }
+  });
 }
 } // namespace ciface::iOS

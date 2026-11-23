@@ -9,7 +9,7 @@ namespace prime {
 class FriendVouchers : public PrimeMod {
 public:
   void run_mod(Game game, Region region) override {
-    if (game != Game::MENU) {
+    if (game != Game::MENU || extras_arr_addr == 0) {
       return;
     }
 
@@ -36,12 +36,13 @@ public:
   }
 
   void on_state_change(ModState) override {}
+  void on_reset() override { extras_arr_addr = 0; }
 
   bool is_cheat() const override { return true; }
   GEN_NAME(FriendVouchers)
 
 private:
-  u32 extras_arr_addr;
+  u32 extras_arr_addr = 0;
 };
 
 } // namespace prime

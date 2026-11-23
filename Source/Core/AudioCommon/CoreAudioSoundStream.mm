@@ -282,9 +282,21 @@ void CoreAudioSound::RegisterObservers()
                 if (!guard->alive)
                   return;
                 // RemoteIO follows the route by itself; only a change in how many channels the
-                // route can carry needs a new unit.
+                // route can carry needs a new unit. If the unit had failed to start earlier
+                // (e.g. inactive session during wake), recover on route change too.
                 if (self_ptr->SurroundIntended() != self_ptr->m_surround_intended.load())
+                {
                   self_ptr->RebuildLocked();
+                }
+                else if (self_ptr->m_should_run.load() && !self_ptr->m_unit_running.load())
+                {
+                  [session setActive:YES error:nil];
+                  if ((!self_ptr->m_unit && !self_ptr->OpenUnitLocked()) ||
+                      !self_ptr->StartUnitLocked())
+                  {
+                    self_ptr->RebuildLocked();
+                  }
+                }
               }];
 
   m_reset_token = [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification
@@ -339,11 +351,17 @@ bool CoreAudioSound::SetRunning(bool running)
   std::lock_guard lock(m_guard->mutex);
   if (running)
   {
+    // After a long background sleep iOS may have deactivated our AVAudioSession; reactivate it
+    // before starting RemoteIO and fall back to a full rebuild if AudioOutputUnitStart fails.
+    [[AVAudioSession sharedInstance] setActive:YES error:nil];
     // A rebuild that failed (session not yet active after a media-services reset) leaves no
     // unit; the next resume is the moment to try again.
     if (!m_unit && !OpenUnitLocked())
       return false;
-    return StartUnitLocked();
+    if (StartUnitLocked())
+      return true;
+    RebuildLocked();
+    return m_unit_running.load();
   }
   StopUnitLocked();
   return true;

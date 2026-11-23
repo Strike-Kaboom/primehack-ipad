@@ -57,7 +57,15 @@ void ViewModifier::adjust_viewmodel(float fov, u32 arm_address, u32 znear_addres
   }
 
   if (apply_znear) {
+    if (!znear_patched || saved_znear_addr != znear_address) {
+      saved_znear_addr = znear_address;
+      saved_znear_val = read32(znear_address);
+      znear_patched = true;
+    }
     write32(znear_value, znear_address);
+  } else if (znear_patched && saved_znear_addr == znear_address) {
+    write32(saved_znear_val, znear_address);
+    znear_patched = false;
   }
 
   writef32(left, arm_address);
@@ -71,6 +79,8 @@ float ViewModifier::get_fov() {
 }
 
 void ViewModifier::run_mod_mp1() {
+  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
+
   LOOKUP(static_fov_fp);
   LOOKUP(static_fov_tp);
   LOOKUP(gun_pos);
@@ -101,10 +111,11 @@ void ViewModifier::run_mod_mp1() {
   writef32(fov, static_fov_tp);
 
   adjust_viewmodel(fov, gun_pos, camera + 0x168, 0x3d200000);
-  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
 }
 
 void ViewModifier::run_mod_mp1_gc() {
+  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
+
   LOOKUP(fov_fp_offset);
   LOOKUP(fov_tp_offset);
   LOOKUP(gun_pos);
@@ -141,12 +152,12 @@ void ViewModifier::run_mod_mp1_gc() {
 
   adjust_viewmodel(fov, gun_pos, camera + 0x160 + version_offset,
     0x3d200000);
-
-  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
 }
 
 void ViewModifier::run_mod_mp2() {
   constexpr u32 kMenuWorldID = 0x69802220;
+  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
+
   LOOKUP(state_manager);
   LOOKUP(tweakgun);
 
@@ -156,7 +167,7 @@ void ViewModifier::run_mod_mp2() {
   }
 
   LOOKUP_DYN(world_id);
-  if (read32(world_id) == kMenuWorldID) {
+  if (world_id == 0 || read32(world_id) == kMenuWorldID) {
     set_code_group_state("disable_fov_updates", ModState::DISABLED);
     return;
   }
@@ -190,12 +201,12 @@ void ViewModifier::run_mod_mp2() {
       adjust_viewmodel(fov, tweakgun_obj + 0x4c, camera + 0x1c4, 0x3d200000);
     }
   }
-
-  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
 }
 
 void ViewModifier::run_mod_mp2_gc() {
   constexpr u32 kMenuWorldID = 0x69802220;
+  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
+
   LOOKUP(tweakgun_offset);
 
   LOOKUP_DYN(world);
@@ -208,7 +219,7 @@ void ViewModifier::run_mod_mp2_gc() {
   }
 
   LOOKUP_DYN(world_id);
-  if (read32(world_id) == kMenuWorldID) {
+  if (world_id == 0 || read32(world_id) == kMenuWorldID) {
     set_code_group_state("disable_fov_updates", ModState::DISABLED);
     return;
   }
@@ -242,8 +253,6 @@ void ViewModifier::run_mod_mp2_gc() {
       adjust_viewmodel(fov, tweakgun_obj + 0x50, camera + 0x1cc, 0x3d200000);
     }
   }
-
-  set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
 }
 
 void ViewModifier::on_camera_change(PowerPC::PowerPCState& ppc_state, PowerPC::MMU& mmu, u32) {
@@ -251,6 +260,9 @@ void ViewModifier::on_camera_change(PowerPC::PowerPCState& ppc_state, PowerPC::M
   mmu.Write<u32>(ppc_state.gpr[0], 0x14 + ppc_state.gpr[6]);
 
   ViewModifier* mod = GetMod<ViewModifier>();
+  if (!mod) {
+    return;
+  }
 
   Core::CPUThreadGuard guard(Core::System::GetInstance());
   mod->set_temporary_cpu_guard(&guard);
@@ -285,6 +297,8 @@ void ViewModifier::adjust_fov_mp3(float fov, u16 camera_id) {
 }
 
 void ViewModifier::run_mod_mp3() {
+  set_code_group_state("culling", (GetCulling() || get_fov() > 94.f) ? ModState::ENABLED : ModState::DISABLED);
+
   LOOKUP(tweakgun);
 
   LOOKUP_DYN(camera_manager);
@@ -321,8 +335,6 @@ void ViewModifier::run_mod_mp3() {
       adjust_viewmodel(fov, tweakgun_obj + 0xe0, perspective_info + 0x8c, 0x3dcccccd);
     }
   }
-
-  set_code_group_state("culling", (GetCulling() || get_fov() > 94.f) ? ModState::ENABLED : ModState::DISABLED);
 }
 
 bool ViewModifier::init_mod(Game game, Region region) {

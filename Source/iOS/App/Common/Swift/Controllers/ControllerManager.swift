@@ -307,11 +307,11 @@ final class ControllerManager: NSObject, ObservableObject {
           let pendingSystem: EmulatedSystem = pending.isWii ? .wii : .gamecube
           if connectedQualifier == pending.qualifier {
             self.assignmentService.assign(qualifier: pending.qualifier, toPlayer: pending.port, system: pendingSystem)
-          } else if Self.controllerOnly() || pending.port == 1 {
-            // A different/backup pad connected while Player 1 (or Controller Only) was disconnected:
-            // unpin the dead pad's slot and hand Player 1 to the newly connected controller so the
-            // player is never stranded on Player 2 after resuming.
-            self.unpin(pendingSystem, player: pending.port - 1)
+          } else if Self.controllerOnly() || pending.port == 0 {
+            // A different/backup pad connected while Player 1 (port 0, or Controller Only) was
+            // disconnected: unpin the dead pad's slot and hand Player 1 to the newly connected
+            // controller so the player is never stranded on Player 2 after resuming.
+            self.unpin(pendingSystem, player: pending.port)
             if !connectedQualifier.isEmpty {
               self.assignmentService.assign(qualifier: connectedQualifier, toPlayer: pending.port, system: pendingSystem)
             }

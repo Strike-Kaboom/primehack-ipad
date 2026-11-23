@@ -20,10 +20,18 @@ public:
   void run_mod(Game game, Region region) override;
   bool init_mod(Game game, Region region) override;
   void on_state_change(ModState) override {}
+  void on_reset() override {
+    znear_patched = false;
+    saved_znear_addr = 0;
+    saved_znear_val = 0;
+  }
   bool is_cheat() const override { return false; }
   GEN_NAME(ViewModifier)
 
 private:
+  bool znear_patched = false;
+  u32 saved_znear_addr = 0;
+  u32 saved_znear_val = 0;
   static float get_fov();
   void adjust_viewmodel(float fov, u32 arm_address, u32 znear_address, u32 znear_value);
   void adjust_fov_mp3(float fov, u16 camera_id);
