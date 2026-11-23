@@ -1371,6 +1371,34 @@ static bool HasCurrentRunLayer()
   del(Config::GFX_CACHE_HIRES_TEXTURES);
   del(Config::GFX_MODS_ENABLE);
 
+  // ---- PrimeHack ----
+  del(Config::PRIMEHACK_ENABLE);
+  del(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
+  del(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
+  del(Config::PRIMEHACK_IOS_INVERT_X);
+  del(Config::PRIMEHACK_IOS_INVERT_Y);
+  del(Config::LOCKCAMERA_IN_PUZZLES);
+  del(Config::FOV_ENABLE);
+  del(Config::FOV);
+  del(Config::GC_SHOW_CROSSHAIR);
+  del(Config::DISABLE_BLOOM);
+  del(Config::REDUCE_BLOOM);
+  del(Config::BLOOM_INTENSITY);
+  del(Config::AUTO_EFB);
+  del(Config::AUTO_FOG_TOGGLE_MP3);
+  del(Config::TOGGLE_ARM_REPOSITION);
+  del(Config::ENABLE_SECONDARY_GUNFX);
+  del(Config::TOGGLE_CULLING);
+  del(Config::PRIMEHACK_SKIPPABLE_CUTSCENES);
+  del(Config::PRIMEHACK_RESTORE_SCANDASH);
+  del(Config::PRIMEHACK_DISABLE_HUDMEMO);
+  del(Config::PRIMEHACK_UNLOCK_HYPERMODE);
+  del(Config::PRIMEHACK_FRIENDVOUCHERS);
+  del(Config::PRIMEHACK_SKIPMP2_PORTAL);
+  del(Config::PRIMEHACK_ANYBEAM_DOOR);
+  del(Config::PRIMEHACK_INVULNERABILITY);
+  del(Config::PRIMEHACK_NOCLIP);
+
   // Force performant values whose compiled default is CONSERVATIVE on iOS, so "reset to optimal"
   // actually lands on the fast configuration instead of the slow upstream default.
   //
@@ -1560,6 +1588,8 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
     @"ui_frame_cap",
     @"ui_gfx_backend",
     @"fast_forward_speed_percent",
+    @"primehack_controller_only",
+    @"primehack_adaptive_triggers",
   ];
   for (NSString* k in gameplayKeys) {
     [d removeObjectForKey:k];

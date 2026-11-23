@@ -1410,28 +1410,34 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
 - (void)setAdaptiveClockEnabled:(BOOL)on {
   NSUserDefaults* defaults = NSUserDefaults.standardUserDefaults;
   [defaults setBool:on forKey:@"adaptive_clock_enable"];
-  if (on) {
-    [self startAdaptiveClockIfEnabled];
-  } else {
-    if (_adaptiveClockTimer) {
-      dispatch_source_cancel(_adaptiveClockTimer);
-      _adaptiveClockTimer = nil;
-    }
-    // Adaptive clock no longer owns speed regulation: let VISkip honor the user's tri-state mode
-    // again (step #4).
-    PerformanceMetrics::SetAdaptiveClockActive(false);
-    // Clear the four CurrentRun keys the controller sets (CPU + VI clock + their enables). The
-    // controller writes only the CurrentRun layer (never Base/Dolphin.ini), so deleting these keys
-    // restores whatever the user set manually (Base) or the 1.0 default — no override left stuck.
-    Core::QueueHostJob([](Core::System&) {
-      if (Config::GetLayer(Config::LayerType::CurrentRun)) {
-        Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_OVERCLOCK);
-        Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_OVERCLOCK_ENABLE);
-        Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_VI_OVERCLOCK);
-        Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_VI_OVERCLOCK_ENABLE);
+  dispatch_block_t work = ^{
+    if (on) {
+      [self startAdaptiveClockIfEnabled];
+    } else {
+      if (_adaptiveClockTimer) {
+        dispatch_source_cancel(_adaptiveClockTimer);
+        _adaptiveClockTimer = nil;
       }
-    }, false);
-  }
+      // Adaptive clock no longer owns speed regulation: let VISkip honor the user's tri-state mode
+      // again (step #4).
+      PerformanceMetrics::SetAdaptiveClockActive(false);
+      // Clear the four CurrentRun keys the controller sets (CPU + VI clock + their enables). The
+      // controller writes only the CurrentRun layer (never Base/Dolphin.ini), so deleting these keys
+      // restores whatever the user set manually (Base) or the 1.0 default — no override left stuck.
+      Core::QueueHostJob([](Core::System&) {
+        if (Config::GetLayer(Config::LayerType::CurrentRun)) {
+          Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_OVERCLOCK);
+          Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_OVERCLOCK_ENABLE);
+          Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_VI_OVERCLOCK);
+          Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_VI_OVERCLOCK_ENABLE);
+        }
+      }, false);
+    }
+  };
+  if ([NSThread isMainThread])
+    work();
+  else
+    dispatch_async(dispatch_get_main_queue(), work);
 }
 
 // Build a chat-ready plaintext state block and place it on the general pasteboard. Sections:
@@ -1592,9 +1598,11 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
 - (void)startInputPump {
   if (_inputPumpTimer) return;
   _inputPumpTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_USER_INTERACTIVE, 0));
-  // Pump at ~120 Hz
+  // Pump at ~120 Hz while running (skip while paused to save CPU/battery on a flight).
   dispatch_source_set_timer(_inputPumpTimer, dispatch_time(DISPATCH_TIME_NOW, 0), NSEC_PER_MSEC * 8, NSEC_PER_MSEC * 1);
   dispatch_source_set_event_handler(_inputPumpTimer, ^{
+    if (Core::GetState(Core::System::GetInstance()) != Core::State::Running)
+      return;
     Core::QueueHostJob(^ (Core::System& s){
       g_controller_interface.SetCurrentInputChannel(ciface::InputChannel::Host);
       g_controller_interface.UpdateInput();
@@ -1710,14 +1718,19 @@ static void BindTouchscreen(InputConfig* config, int index, const ciface::Core::
   auto* controller = config->GetController(index);
   if (!controller)
     return;
-  const bool rebinding = !(controller->GetDefaultDevice() == dq_touch);
   std::string what = "mapping kept";
-  if (rebinding || !HasAnyBoundControl(controller))
   {
-    const std::string loaded = LoadTouchscreenProfile(controller, config);
-    what = loaded.empty() ? "defaults" : loaded;
+    // Hold the controller state lock across profile load + extension restore + default-device swap
+    // so the CPU thread never observes a torn device or temporarily detached Nunchuk mid-game.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    const bool rebinding = !(controller->GetDefaultDevice() == dq_touch);
+    if (rebinding || !HasAnyBoundControl(controller))
+    {
+      const std::string loaded = LoadTouchscreenProfile(controller, config);
+      what = loaded.empty() ? "defaults" : loaded;
+    }
+    controller->SetDefaultDevice(dq_touch);
   }
-  controller->SetDefaultDevice(dq_touch);
   controller->UpdateReferences(g_controller_interface);
   config->SaveConfig();
   // The LoadDefaults fallback and a user Touchscreen.ini without `IMUIR/Enabled` both leave the
@@ -2084,6 +2097,22 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
   if (supersededBoot)
     return;
 
+  __block UIView* sessionDisplayView = nil;
+  dispatch_sync(dispatch_get_main_queue(), ^{
+    sessionDisplayView = _mainDisplayView;
+  });
+
+  // If BootCore failed, Core stayed Uninitialized; do not post DidStart or spin up timers.
+  if (Core::GetState(Core::System::GetInstance()) == Core::State::Uninitialized) {
+    [DOLModdedBoot endBoot];
+    [[NSNotificationCenter defaultCenter] postNotificationName:DOLEmulationDidEndNotification object:self userInfo:nil];
+    dispatch_async(dispatch_get_main_queue(), ^{
+      if (_mainDisplayView == sessionDisplayView)
+        _mainDisplayView = nil;
+    });
+    return;
+  }
+
   // Wait for state changes instead of polling
   dispatch_semaphore_t stateSemaphore = dispatch_semaphore_create(0);
   // 2512: AddOnStateChangedCallback returns a Common::EventHook; dropping it unregisters.
@@ -2114,9 +2143,9 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
   // off-device without an explicit USB iproxy forward.
   dispatch_async(dispatch_get_main_queue(), ^{
     [[DebugServerManager sharedManager] start];
+    [self startAdaptiveClockIfEnabled];
   });
 
-  [self startAdaptiveClockIfEnabled];
   [self startInputPump];
 
   _ICubeDumpPerfSettings("START");
@@ -2129,23 +2158,22 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
 
   callbackHandle.reset();
 
+  [self stopInputPump];
   dispatch_sync(dispatch_get_main_queue(), ^{
     Core::DeclareAsHostThread();
+    // Tear down the adaptive clock timer + flag on main so it synchronizes with setAdaptiveClockEnabled:
+    // and host-job ticks, and release _mainDisplayView on main only if still owned by this session.
+    if (_adaptiveClockTimer) {
+      dispatch_source_cancel(_adaptiveClockTimer);
+      _adaptiveClockTimer = nil;
+    }
+    PerformanceMetrics::SetAdaptiveClockActive(false);
+    if (_mainDisplayView == sessionDisplayView)
+      _mainDisplayView = nil;
   });
 
-  [self stopInputPump];
-  // Tear down the adaptive clock timer + flag on game exit so it doesn't leak into the next launch
-  // (the timer's state guard would otherwise keep a stale source around, and the VISkip rule must
-  // not stay forced Off once emulation stops). Mirrors the OFF branch of setAdaptiveClockEnabled.
-  if (_adaptiveClockTimer) {
-    dispatch_source_cancel(_adaptiveClockTimer);
-    _adaptiveClockTimer = nil;
-  }
-  PerformanceMetrics::SetAdaptiveClockActive(false);
   [DOLModdedBoot endBoot];
   [[NSNotificationCenter defaultCenter] postNotificationName:DOLEmulationDidEndNotification object:self userInfo:nil];
-
-  _mainDisplayView = nil;
 }
 
 - (void)clearMetalLayer {

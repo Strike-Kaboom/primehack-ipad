@@ -42,23 +42,32 @@ enum KeepAwake {
   }
 
   private static let lock = NSLock()
-  private static var reasons: Set<Reason> = []
+  // Refcounted per reason so overlapping lifecycles (e.g. view recreation or nested callers)
+  // never prematurely re-enable auto-lock while a reason is still held.
+  private static var reasonCounts: [Reason: Int] = [:]
 
   /// Keep the device awake for `reason` until the matching `release`.
   static func acquire(_ reason: Reason) {
-    update { $0.insert(reason) }
+    update { $0[reason, default: 0] += 1 }
   }
 
   /// Drop `reason`; the device may sleep again once no reason remains.
   static func release(_ reason: Reason) {
-    update { $0.remove(reason) }
+    update { counts in
+      guard let current = counts[reason] else { return }
+      if current <= 1 {
+        counts.removeValue(forKey: reason)
+      } else {
+        counts[reason] = current - 1
+      }
+    }
   }
 
-  private static func update(_ body: (inout Set<Reason>) -> Void) {
+  private static func update(_ body: (inout [Reason: Int]) -> Void) {
     lock.lock()
-    body(&reasons)
-    let disabled = !reasons.isEmpty
-    let count = reasons.count
+    body(&reasonCounts)
+    let disabled = !reasonCounts.isEmpty
+    let count = reasonCounts.values.reduce(0, +)
     lock.unlock()
 
     if Thread.isMainThread {

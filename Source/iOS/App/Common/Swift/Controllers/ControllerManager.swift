@@ -303,17 +303,29 @@ final class ControllerManager: NSObject, ObservableObject {
           // have (the Touchscreen may hold it by now), so it is written here and
           // the reconcile below leaves it alone because the device is now bound.
           // The pad's mapping comes back with it (stashed when the slot changed hands).
-          if TVControllerMappingBridge.qualifiedName(for: c) as String == pending.qualifier {
-            self.assignmentService.assign(qualifier: pending.qualifier, toPlayer: pending.port, system: pending.isWii ? .wii : .gamecube)
+          let connectedQualifier = TVControllerMappingBridge.qualifiedName(for: c) as String
+          let pendingSystem: EmulatedSystem = pending.isWii ? .wii : .gamecube
+          if connectedQualifier == pending.qualifier {
+            self.assignmentService.assign(qualifier: pending.qualifier, toPlayer: pending.port, system: pendingSystem)
+          } else if Self.controllerOnly() || pending.port == 1 {
+            // A different/backup pad connected while Player 1 (or Controller Only) was disconnected:
+            // unpin the dead pad's slot and hand Player 1 to the newly connected controller so the
+            // player is never stranded on Player 2 after resuming.
+            self.unpin(pendingSystem, player: pending.port - 1)
+            if !connectedQualifier.isEmpty {
+              self.assignmentService.assign(qualifier: connectedQualifier, toPlayer: pending.port, system: pendingSystem)
+            }
           }
           self.disconnectPause = nil
           MainActor.assumeIsolated { PauseArbiter.shared.release(reason: PauseArbiter.Reason.disconnect) }
-          self.updateWiimoteEmulationForExternalControllers()
           self.controllerConnectedSubject.send(c)
+          if connectedQualifier != pending.qualifier {
+            self.takePlayer1FromTouchscreen(for: c)
+          }
           self.reconcile()
+          self.updateWiimoteEmulationForExternalControllers()
           return
         }
-        self.updateWiimoteEmulationForExternalControllers()
         // Battery toast if available
         if #available(iOS 14.0, tvOS 14.0, *), let battery = c.battery {
           let level = battery.batteryLevel
@@ -330,6 +342,7 @@ final class ControllerManager: NSObject, ObservableObject {
         self.controllerConnectedSubject.send(c)
         self.takePlayer1FromTouchscreen(for: c)
         self.reconcile()
+        self.updateWiimoteEmulationForExternalControllers()
       }
     }
     let onDisconnect = NotificationCenter.default.addObserver(forName: .GCControllerDidDisconnect, object: nil, queue: .main) { [weak self] note in
@@ -391,8 +404,12 @@ final class ControllerManager: NSObject, ObservableObject {
     let onEmulationStart = NotificationCenter.default.addObserver(forName: Notification.Name("DOLEmulationDidStartNotification"), object: nil, queue: .main) { [weak self] _ in
       guard let self = self else { return }
       self.refreshInputHandlers()
-      self.updateWiimoteEmulationForExternalControllers()
       self.reconcile()
+      self.updateWiimoteEmulationForExternalControllers()
+    }
+    let onEmulationEnd = NotificationCenter.default.addObserver(forName: Notification.Name("DOLEmulationDidEndNotification"), object: nil, queue: .main) { [weak self] _ in
+      guard let self = self else { return }
+      self.disconnectPause = nil
     }
     // Hardware Menu presses that arrive on the UIPress path (tvOS Siri Remote)
     // land here so they go through the same gated + coalesced sink as the
@@ -404,7 +421,7 @@ final class ControllerManager: NSObject, ObservableObject {
       forName: PauseGestureTracker.requestPauseMenuNotification, object: nil, queue: .main) { _ in
         MainActor.assumeIsolated { PauseGestureTracker.shared.requestPauseMenu(reason: "uipress-menu") }
       }
-    observers.append(contentsOf: [onConnect, onDisconnect, onEmulationStart, onPauseRequest])
+    observers.append(contentsOf: [onConnect, onDisconnect, onEmulationStart, onEmulationEnd, onPauseRequest])
 
     // Fast-forward toggled bridge -> publisher
     NotificationCenter.default.publisher(for: Notification.Name("DOLFastForwardToggled"))
@@ -780,17 +797,19 @@ final class ControllerManager: NSObject, ObservableObject {
       }
     }
 
-    // Touchpad controllers (DS4/DS5) additionally drive Wii IR from the pad.
+    // Touchpad controllers (DS4/DS5) additionally drive Wii IR from the pad when not in
+    // Controller Only mode. In Controller Only mode no Wii Remote is driven by the touchscreen, so
+    // skip populating wiimoteSlotByController to avoid unnecessary main-thread IMU traffic.
     var nextSlot = 2
     for c in GCController.controllers() {
       guard c.supportsTouchpad else { continue }
+      if controllerOnly { continue }
       let qualifier = TVControllerMappingBridge.qualifiedName(for: c) as String
       if let bound = slotForQualifier[qualifier] {
         // Already on a slot the engine assigned to this exact device; keep it.
         wiimoteSlotByController[ObjectIdentifier(c)] = bound
         continue
       }
-      if controllerOnly { continue }
       while nextSlot <= 4, reserved.contains(nextSlot) { nextSlot += 1 }
       guard nextSlot <= 4 else { break }
       wiimoteSlotByController[ObjectIdentifier(c)] = nextSlot

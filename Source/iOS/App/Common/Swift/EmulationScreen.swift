@@ -29,6 +29,7 @@ private struct EmulationSurfaceView: UIViewRepresentable {
 private final class EmuContainerViewController: UIViewController {
   private weak var emuVC: EmuEventVC?
   private var exitObserver: NSObjectProtocol?
+  private var keepAwakeAcquired = false
   var gamePath: String = ""
   #if os(tvOS)
   private var pauseShownObserver: NSObjectProtocol?
@@ -45,14 +46,17 @@ private final class EmuContainerViewController: UIViewController {
     // mid-game when playing on a controller (no touches), suspends the app, and tears down the
     // perf test-bench listener. Released in deinit (exit to library); refcounted so exiting a
     // game does not re-arm auto-lock while the debug server still needs the device awake.
-    KeepAwake.acquire(.emulation)
+    if !keepAwakeAcquired {
+      KeepAwake.acquire(.emulation)
+      keepAwakeAcquired = true
+    }
     super.viewDidAppear(animated)
-    // Tear down any previous child to ensure a fresh setup each time
+    // Dismissing a fullScreenCover (e.g. PauseMenuView) re-fires viewDidAppear; keep the existing
+    // EmuEventVC and Metal display container intact instead of tearing down and re-registering.
     if let existing = emuVC {
-      existing.willMove(toParent: nil)
-      existing.view.removeFromSuperview()
-      existing.removeFromParent()
-      emuVC = nil
+      _ = existing.becomeFirstResponder()
+      TVEmulationBridge.resizeSurfaceNow()
+      return
     }
     if let token = exitObserver {
       NotificationCenter.default.removeObserver(token)
@@ -108,7 +112,7 @@ private final class EmuContainerViewController: UIViewController {
     // broker attached right now (or already authorized earlier in this process).
     let txmNeedsBroker = manager.deviceHasTxm && manager.acquiredJit
       && !manager.txmAuthorized && !manager.debuggerAttached
-    if manager.jitSupported, !manager.acquiredJit || txmNeedsBroker, isJitCoreSelected, !skipPrompt {
+    if !TVEmulationBridge.isRunning(), manager.jitSupported, !manager.acquiredJit || txmNeedsBroker, isJitCoreSelected, !skipPrompt {
       let message = txmNeedsBroker
         ? "This device uses TXM, so JIT needs StikDebug attached when a game boots. You can continue with a slower, no-JIT mode."
         : "iCube may need a remote debugger to enable JIT. You can continue with a slower, no-JIT mode."
@@ -175,11 +179,17 @@ private final class EmuContainerViewController: UIViewController {
   }
 
   private func handleExit() {
-    NotificationCenter.default.post(name: Notification.Name("DOLEmulationDidEndNotification"), object: nil)
+    if TVEmulationBridge.isRunning() {
+      TVEmulationBridge.stop()
+    } else {
+      NotificationCenter.default.post(name: Notification.Name("DOLEmulationDidEndNotification"), object: nil)
+    }
   }
 
   deinit {
-    KeepAwake.release(.emulation)
+    if keepAwakeAcquired {
+      KeepAwake.release(.emulation)
+    }
     if let token = exitObserver {
       NotificationCenter.default.removeObserver(token)
     }
@@ -855,33 +865,31 @@ struct EmulationScreen: View {
     GeometryReader { proxy in
       let isPortrait = proxy.size.height > proxy.size.width
       let gameAR = stableAR ?? (proxy.size.width / max(proxy.size.height, 1))
-      if let skinFrame = skinGamePictureFrame(in: proxy, gameAR: gameAR) {
-        EmulationSurfaceController(gamePath: game.filePath)
-          .frame(width: skinFrame.width, height: skinFrame.height)
-          .position(x: skinFrame.midX, y: skinFrame.midY)
-      } else if isPortrait {
-        VStack(spacing: 0) {
+      let skinFrame = skinGamePictureFrame(in: proxy, gameAR: gameAR)
+      let surfaceFrame: CGRect = {
+        if let skinFrame {
+          return skinFrame
+        } else if isPortrait {
           let topInset = proxy.safeAreaInsets.top
-          if topInset > 0 {
-            Color.clear.frame(height: topInset)
-          }
-          let availableHeight = proxy.size.height - topInset
+          let availableHeight = max(0, proxy.size.height - topInset)
           let desiredHeight = min(availableHeight * 0.66, proxy.size.width / max(gameAR, 0.0001))
-          EmulationSurfaceController(gamePath: game.filePath)
-            .frame(width: proxy.size.width, height: desiredHeight)
-            .onTapGesture { toggleTopBar() }
-          Spacer()
+          return CGRect(x: 0, y: topInset, width: proxy.size.width, height: desiredHeight)
+        } else {
+          let targetHeight = min(proxy.size.height, proxy.size.width / max(gameAR, 0.0001))
+          let y = (proxy.size.height - targetHeight) * 0.5
+          return CGRect(x: 0, y: y, width: proxy.size.width, height: targetHeight)
         }
-      } else {
-        let targetHeight = min(proxy.size.height, proxy.size.width / max(gameAR, 0.0001))
-        VStack(spacing: 0) {
-          Spacer()
-          EmulationSurfaceController(gamePath: game.filePath)
-            .frame(width: proxy.size.width, height: targetHeight)
-            .onTapGesture { toggleTopBar() }
-          Spacer()
+      }()
+      // Keep one structurally stable EmulationSurfaceController across rotation and skin changes
+      // so rotating the iPad never destroys/recreates EmuContainerViewController or resets KeepAwake.
+      EmulationSurfaceController(gamePath: game.filePath)
+        .frame(width: surfaceFrame.width, height: surfaceFrame.height)
+        .position(x: surfaceFrame.midX, y: surfaceFrame.midY)
+        .onTapGesture {
+          if skinFrame == nil {
+            toggleTopBar()
+          }
         }
-      }
     }
     .onChange(of: UIDevice.current.orientation) {
       TVEmulationBridge.resizeSurfaceNow()

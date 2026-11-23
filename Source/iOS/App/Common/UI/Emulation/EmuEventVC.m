@@ -94,11 +94,15 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
   touchObserver.delaysTouchesEnded = NO;
   [self.view addGestureRecognizer:touchObserver];
   DOLDebugLog(@"[INPUT] EmuEventVC viewDidLoad (unconditional)");
-  // Long-press on tvOS Menu button to exit back to library
+#if TARGET_OS_TV
+  // Long-press on tvOS Menu button to exit back to library (tvOS only: on iPad holding Menu/+
+  // is used in-game, e.g. Hypermode in Metroid Prime 3, and exiting without stopping the core
+  // wedges subsequent boots).
   UILongPressGestureRecognizer* lp = [[UILongPressGestureRecognizer alloc] initWithTarget:self action:@selector(handleMenuLongPress:)];
   lp.minimumPressDuration = DOLMenuLongPressDuration;
   lp.allowedPressTypes = @[ @(UIPressTypeMenu) ];
   [self.view addGestureRecognizer:lp];
+#endif
 
 #if TARGET_OS_TV
   // Add a focusable trap view to capture and keep focus during emulation

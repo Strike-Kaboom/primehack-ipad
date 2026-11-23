@@ -19,6 +19,7 @@ struct PrimeHackSettingsState: Equatable {
   var gcCrosshair = false
   var disableBloom = false
   var reduceBloom = true
+  var bloomIntensity = 65.0
   var autoEFB = true
   var armReposition = true
   var secondaryGunFX = false
@@ -36,6 +37,7 @@ struct PrimeHackSettingsState: Equatable {
 
   static let sensitivityRange = 1.0 ... 100.0
   static let fovRange = 1.0 ... 170.0
+  static let bloomIntensityRange = 0.0 ... 100.0
 }
 
 /// One user edit. The view applies it to its snapshot AND to Config; the builder only emits it.
@@ -53,6 +55,7 @@ enum PrimeHackSettingsChange: Equatable {
   case gcCrosshair(Bool)
   case disableBloom(Bool)
   case reduceBloom(Bool)
+  case bloomIntensity(Double)
   case autoEFB(Bool)
   case armReposition(Bool)
   case secondaryGunFX(Bool)
@@ -75,6 +78,7 @@ enum PrimeHackSettingsModelBuilder {
                    apply: @escaping (PrimeHackSettingsChange) -> Void) -> MenuModel {
     let whole: (Double) -> String = { String(Int($0.rounded())) }
     let degrees: (Double) -> String = { "\(Int($0.rounded()))°" }
+    let percent: (Double) -> String = { "\(Int($0.rounded()))%" }
 
     let controls = MenuSection(id: "primehack-controls", header: L("Controls"),
                                footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam. L1 + D-Pad picks a visor: Up Combat, Left Scan, Down Thermal/Dark, Right X-Ray/Echo. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map."),
@@ -119,8 +123,12 @@ enum PrimeHackSettingsModelBuilder {
                          L("Draws a crosshair in Metroid Prime and Prime 2 on GameCube, which have none of their own."),
                          defaultValue: false, set: { apply(.gcCrosshair($0)) }),
       SettingsRow.toggle("primehack-reduce-bloom", L("Reduce Bloom"), s.reduceBloom,
-                         L("Tones down the glow in Metroid Prime 3."),
+                         L("Tones down the glow spread in Metroid Prime 3."),
                          defaultValue: true, set: { apply(.reduceBloom($0)) }),
+      SettingsRow.stepper("primehack-bloom-intensity", L("Bloom Intensity (Prime 3)"), s.bloomIntensity,
+                          range: PrimeHackSettingsState.bloomIntensityRange, step: 5, format: percent,
+                          L("Controls the strength of the bloom glow in Metroid Prime 3 (65% default, 100% original)."),
+                          defaultValue: 65, set: { apply(.bloomIntensity($0)) }),
       SettingsRow.toggle("primehack-disable-bloom", L("Disable Bloom"), s.disableBloom,
                          L("Removes the glow effect entirely in Trilogy's Prime 1 and Prime 2, which can also make them a little faster. No effect on the GameCube games or Prime 3."),
                          defaultValue: false, set: { apply(.disableBloom($0)) }),
@@ -312,6 +320,7 @@ struct PrimeHackSettingsView: View {
     s.gcCrosshair = PrimeHackBridge.showGameCubeCrosshair()
     s.disableBloom = PrimeHackBridge.disableBloom()
     s.reduceBloom = PrimeHackBridge.reduceBloom()
+    s.bloomIntensity = Double(PrimeHackBridge.bloomIntensity())
     s.autoEFB = PrimeHackBridge.autoEFB()
     s.armReposition = PrimeHackBridge.armReposition()
     s.secondaryGunFX = PrimeHackBridge.secondaryGunFX()
@@ -343,6 +352,7 @@ struct PrimeHackSettingsView: View {
     case .gcCrosshair(let v): state.gcCrosshair = v; PrimeHackBridge.setShowGameCubeCrosshair(v)
     case .disableBloom(let v): state.disableBloom = v; PrimeHackBridge.setDisableBloom(v)
     case .reduceBloom(let v): state.reduceBloom = v; PrimeHackBridge.setReduceBloom(v)
+    case .bloomIntensity(let v): state.bloomIntensity = v; PrimeHackBridge.setBloomIntensity(Int(v.rounded()))
     case .autoEFB(let v): state.autoEFB = v; PrimeHackBridge.setAutoEFB(v)
     case .armReposition(let v): state.armReposition = v; PrimeHackBridge.setArmReposition(v)
     case .secondaryGunFX(let v): state.secondaryGunFX = v; PrimeHackBridge.setSecondaryGunFX(v)

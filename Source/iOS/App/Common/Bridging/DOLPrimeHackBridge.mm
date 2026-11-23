@@ -12,13 +12,18 @@
 
 #define PH_BOOL(getter, setter, info)                                                              \
   +(BOOL)getter { return Config::Get(Config::info); }                                              \
-  +(void)setter:(BOOL)value { Config::SetBaseOrCurrent(Config::info, (bool)value); }
+  +(void)setter:(BOOL)value                                                                        \
+  {                                                                                                \
+    Config::SetBaseOrCurrent(Config::info, (bool)value);                                           \
+    Config::Save();                                                                                \
+  }
 
 #define PH_INT(getter, setter, info, lo, hi)                                                       \
   +(NSInteger)getter { return Config::Get(Config::info); }                                         \
   +(void)setter:(NSInteger)value                                                                    \
   {                                                                                                \
     Config::SetBaseOrCurrent(Config::info, std::clamp((int)value, lo, hi));                        \
+    Config::Save();                                                                                \
   }
 
 @implementation DOLPrimeHackBridge
@@ -51,6 +56,7 @@ PH_INT(fov, setFov, FOV, 1, 170)
 PH_BOOL(showGameCubeCrosshair, setShowGameCubeCrosshair, GC_SHOW_CROSSHAIR)
 PH_BOOL(disableBloom, setDisableBloom, DISABLE_BLOOM)
 PH_BOOL(reduceBloom, setReduceBloom, REDUCE_BLOOM)
+PH_INT(bloomIntensity, setBloomIntensity, BLOOM_INTENSITY, 0, 100)
 PH_BOOL(autoEFB, setAutoEFB, AUTO_EFB)
 PH_BOOL(armReposition, setArmReposition, TOGGLE_ARM_REPOSITION)
 PH_BOOL(secondaryGunFX, setSecondaryGunFX, ENABLE_SECONDARY_GUNFX)

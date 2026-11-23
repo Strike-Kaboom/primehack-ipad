@@ -39,6 +39,8 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (void)setDisableBloom:(BOOL)value;
 + (BOOL)reduceBloom;
 + (void)setReduceBloom:(BOOL)value;
++ (NSInteger)bloomIntensity;
++ (void)setBloomIntensity:(NSInteger)value;
 + (BOOL)autoEFB;
 + (void)setAutoEFB:(BOOL)value;
 + (BOOL)armReposition;
