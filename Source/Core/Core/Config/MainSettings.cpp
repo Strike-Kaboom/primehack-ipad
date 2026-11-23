@@ -1130,7 +1130,7 @@ const Info<bool> MAIN_CIR_MICRO_PAIRS{{System::Main, "Core", "CIRMicroPairs"}, t
 // gated for A/B, like MAIN_CIR_STORE_LOOP_FF and MAIN_CIR_GP_COPY_FUSION.
 // PrimeHack for iPad: share resolved targets across polymorphic return sites by default.
 const Info<bool> MAIN_CIR_DYN_TARGET_CACHE{{System::Main, "Core", "CIRDynTargetCache"}, true};
-const Info<bool> MAIN_CIR_GP_COPY_FUSION{{System::Main, "Core", "CIRGatherPipeCopyFusion"}, false};
+const Info<bool> MAIN_CIR_GP_COPY_FUSION{{System::Main, "Core", "CIRGatherPipeCopyFusion"}, true};
 // iCube WIN#1: PIC (position-independent-code) direct-pointer load/store on the CachedInterpreter.
 // Integer D-form/X-form load/stores resolve the host RAM pointer directly and do the access with the
 // correct endian swap, bypassing the per-access MMU/region lookup (~15% on memory-bound titles).
@@ -1213,7 +1213,7 @@ const Info<bool> MAIN_CIR_PROFILE{{System::Main, "Core", "CIRProfile"}, false};
 // NO instruction word is ever rewritten and the emitted stream is byte-identical to the flag-off baseline,
 // so this is opt-in A/B + profiler-measured before defaulting on. Flip the VALIDATE flag for a bit-exact
 // correctness session. XER (CA/OV) elimination is intentionally OUT of this first pass (CR0 is the win).
-const Info<bool> MAIN_CIR_DEAD_FLAG_ELIM{{System::Main, "Core", "CIRDeadFlagElim"}, false};
+const Info<bool> MAIN_CIR_DEAD_FLAG_ELIM{{System::Main, "Core", "CIRDeadFlagElim"}, true};
 // iCube: self-validation for CIRDeadFlagElim. EXACT analogue of the Micro-Op Fusion / Specialized-Ops
 // double-run validate harnesses. When ON, every dead-flag-eliminated op runs BOTH ways at execution time:
 // first the REFERENCE (original instruction, Rc set -> CR computed) on the live state, snapshotting the
@@ -1377,7 +1377,7 @@ const Info<bool> MAIN_CIR_PSQ_FASTPATH_VALIDATE{
 // loop. Bails (CTR untouched, real records run) when m_enable_dcache is ON (the ops do a real D-cache
 // flush then) or, for dcbi only, when msr.PR is set (privileged — the real op would fault). Targets the
 // hot Chibi-Robo dcbf/dcbi CTR loops (~2% of all cycles doing nothing but per-line ICache invalidation).
-const Info<bool> MAIN_CIR_CACHE_LOOP_FF{{System::Main, "Core", "CIRCacheLoopFF"}, false};
+const Info<bool> MAIN_CIR_CACHE_LOOP_FF{{System::Main, "Core", "CIRCacheLoopFF"}, true};
 // iCube: self-validation for CIRCacheLoopFF. EXACT analogue of the other CIR double-run validators, but
 // no memory snapshot is needed (ICache invalidation is idempotent — double-running the lines is safe):
 // snapshot (rB, CTR, Exceptions); run the REAL per-line loop (InvalidateICacheLine each EA + advance rB)
@@ -1396,7 +1396,7 @@ const Info<bool> MAIN_CIR_CACHE_LOOP_FF_VALIDATE{
 // real per-store records run), sets CTR=1 and rB += (count-1)*M, charges (count-1)*per_iter to
 // downcount, then lets the real records execute the final iteration — so MMIO/DSI/SMC for the tail
 // store go through the genuine faulting path and rB/CTR/npc/downcount end exactly as the unfused loop.
-const Info<bool> MAIN_CIR_STORE_LOOP_FF{{System::Main, "Core", "CIRStoreLoopFF"}, false};
+const Info<bool> MAIN_CIR_STORE_LOOP_FF{{System::Main, "Core", "CIRStoreLoopFF"}, true};
 // iCube: self-validation for CIRStoreLoopFF. EXACT analogue of the other CIR double-run validators, but
 // the two runs are SEQUENCED on a snapshot (memory can't be written twice): snapshot (rB, CTR, the
 // [base,total) bytes); run the REAL per-store loop (mmu.Write_U8 — the authoritative reference) and

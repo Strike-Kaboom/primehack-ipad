@@ -5,6 +5,7 @@
 
 #include <bit>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <cstring>
 #include <iterator>
@@ -327,13 +328,15 @@ inline void PsNeonCountResultBail(PsNeonOp op, float64x2_t vr)
     PsNeonCountBail(op, ClassifyResultLanes(vr));
 }
 
-// Load a PairedSingle's two f64 lanes (PS0 in lane 0, PS1 in lane 1) from their u64 bit-patterns.
+// Load a PairedSingle's two f64 lanes (PS0 in lane 0, PS1 in lane 1) in a single 128-bit load.
 inline float64x2_t LoadPS(const PowerPC::PairedSingle& p)
 {
-  uint64x2_t bits = vdupq_n_u64(0);
-  bits = vsetq_lane_u64(p.PS0AsU64(), bits, 0);
-  bits = vsetq_lane_u64(p.PS1AsU64(), bits, 1);
-  return vreinterpretq_f64_u64(bits);
+  static_assert(sizeof(PowerPC::PairedSingle) == 16 &&
+                offsetof(PowerPC::PairedSingle, ps0) == 0 &&
+                offsetof(PowerPC::PairedSingle, ps1) == 8);
+  u64 raw[2];
+  std::memcpy(raw, &p, sizeof(raw));
+  return vreinterpretq_f64_u64(vld1q_u64(raw));
 }
 
 // Broadcast a single PairedSingle lane (already a double) into both float64x2 lanes.
@@ -375,16 +378,14 @@ inline bool FmaSingle(PsNeonOp op, float64x2_t va, float64x2_t vc, float64x2_t v
   return true;
 }
 
-// Convert a result that passed BothResultsOk to the two single-precision floats the scalar
-// ForceSingle path would produce. For such a value (+/-0 or finite >= the smallest normal single)
-// ForceSingle reduces to static_cast<float> (round-to-nearest) under both NI modes, which is
-// exactly vcvt_f32_f64 under the default FPCR — so this matches scalar bit for bit. We keep both
-// lanes as floats so the stored FPR bits equal scalar's (double)(float)result.
-inline void StoreLanes(float64x2_t result, float* ps0, float* ps1)
+// Widen two already-rounded f32 lanes back to f64 (matching scalar (double)(float)result bit for
+// bit) and write both 64-bit FPR slots in a single 128-bit NEON store.
+inline void StorePSFromSingles(PowerPC::PairedSingle& dst, float32x2_t singles)
 {
-  const float32x2_t singles = vcvt_f32_f64(result);
-  *ps0 = vget_lane_f32(singles, 0);
-  *ps1 = vget_lane_f32(singles, 1);
+  const float64x2_t widened = vcvt_f64_f32(singles);
+  u64 raw[2];
+  vst1q_u64(raw, vreinterpretq_u64_f64(widened));
+  std::memcpy(&dst, raw, sizeof(raw));
 }
 }  // namespace
 #endif  // ARM64
@@ -560,7 +561,7 @@ void InterpreterFP::ps_sub(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& b = ppc_state.ps[inst.FB];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Sub)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Sub)) [[likely]]
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vb = LoadPS(b);
@@ -569,11 +570,12 @@ void InterpreterFP::ps_sub(PowerPC::PowerPCState& ppc_state, Inst inst)
       const float64x2_t vr = vsubq_f64(va, vb);
       if (BothResultsOk(vr))
       {
-        float ps0, ps1;
-        StoreLanes(vr, &ps0, &ps1);
+        const float32x2_t singles = vcvt_f32_f64(vr);
 
         if (PsNeonValidate()) [[unlikely]]
         {
+          const float ps0 = vget_lane_f32(singles, 0);
+          const float ps1 = vget_lane_f32(singles, 1);
           const float r0 =
               ForceSingle(ppc_state.fpscr, NI_sub(ppc_state, a.PS0AsDouble(), b.PS0AsDouble()).value);
           const float r1 =
@@ -584,9 +586,9 @@ void InterpreterFP::ps_sub(PowerPC::PowerPCState& ppc_state, Inst inst)
                      "ps_sub NEON diverged from scalar");
         }
 
-        ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+        StorePSFromSingles(ppc_state.ps[inst.FD], singles);
         if constexpr (fprf)
-          ppc_state.UpdateFPRFSingle(ps0);
+          ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Sub);
@@ -627,7 +629,7 @@ void InterpreterFP::ps_add(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& b = ppc_state.ps[inst.FB];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Add)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Add)) [[likely]]
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vb = LoadPS(b);
@@ -636,11 +638,12 @@ void InterpreterFP::ps_add(PowerPC::PowerPCState& ppc_state, Inst inst)
       const float64x2_t vr = vaddq_f64(va, vb);
       if (BothResultsOk(vr))
       {
-        float ps0, ps1;
-        StoreLanes(vr, &ps0, &ps1);
+        const float32x2_t singles = vcvt_f32_f64(vr);
 
         if (PsNeonValidate()) [[unlikely]]
         {
+          const float ps0 = vget_lane_f32(singles, 0);
+          const float ps1 = vget_lane_f32(singles, 1);
           const float r0 =
               ForceSingle(ppc_state.fpscr, NI_add(ppc_state, a.PS0AsDouble(), b.PS0AsDouble()).value);
           const float r1 =
@@ -651,9 +654,9 @@ void InterpreterFP::ps_add(PowerPC::PowerPCState& ppc_state, Inst inst)
                      "ps_add NEON diverged from scalar");
         }
 
-        ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+        StorePSFromSingles(ppc_state.ps[inst.FD], singles);
         if constexpr (fprf)
-          ppc_state.UpdateFPRFSingle(ps0);
+          ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Add);
@@ -694,7 +697,7 @@ void InterpreterFP::ps_mul(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Mul)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Mul)) [[likely]]
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vc = LoadPS(c);
@@ -704,11 +707,12 @@ void InterpreterFP::ps_mul(PowerPC::PowerPCState& ppc_state, Inst inst)
       const float64x2_t vr = vmulq_f64(va, vc25);
       if (BothResultsOk(vr))
       {
-        float ps0, ps1;
-        StoreLanes(vr, &ps0, &ps1);
+        const float32x2_t singles = vcvt_f32_f64(vr);
 
         if (PsNeonValidate()) [[unlikely]]
         {
+          const float ps0 = vget_lane_f32(singles, 0);
+          const float ps1 = vget_lane_f32(singles, 1);
           const double rc0 = Force25Bit(c.PS0AsDouble());
           const double rc1 = Force25Bit(c.PS1AsDouble());
           const float r0 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS0AsDouble(), rc0).value);
@@ -719,9 +723,9 @@ void InterpreterFP::ps_mul(PowerPC::PowerPCState& ppc_state, Inst inst)
                      "ps_mul NEON diverged from scalar");
         }
 
-        ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+        StorePSFromSingles(ppc_state.ps[inst.FD], singles);
         if constexpr (fprf)
-          ppc_state.UpdateFPRFSingle(ps0);
+          ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Mul);
@@ -764,16 +768,17 @@ void InterpreterFP::ps_msub(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Msub)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Msub)) [[likely]]
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Msub, LoadPS(a), LoadPS(c), LoadPS(b), true, &vr))
     {
-      float ps0, ps1;
-      StoreLanes(vr, &ps0, &ps1);
+      const float32x2_t singles = vcvt_f32_f64(vr);
 
       if (PsNeonValidate()) [[unlikely]]
       {
+        const float ps0 = vget_lane_f32(singles, 0);
+        const float ps1 = vget_lane_f32(singles, 1);
         const float r0 = ForceSingle(
             ppc_state.fpscr,
             NI_msub<true>(ppc_state, a.PS0AsDouble(), c.PS0AsDouble(), b.PS0AsDouble()).value);
@@ -786,9 +791,9 @@ void InterpreterFP::ps_msub(PowerPC::PowerPCState& ppc_state, Inst inst)
                    "ps_msub NEON diverged from scalar");
       }
 
-      ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+      StorePSFromSingles(ppc_state.ps[inst.FD], singles);
       if constexpr (fprf)
-        ppc_state.UpdateFPRFSingle(ps0);
+        ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -825,16 +830,17 @@ void InterpreterFP::ps_madd(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Madd)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Madd)) [[likely]]
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Madd, LoadPS(a), LoadPS(c), LoadPS(b), false, &vr))
     {
-      float ps0, ps1;
-      StoreLanes(vr, &ps0, &ps1);
+      const float32x2_t singles = vcvt_f32_f64(vr);
 
       if (PsNeonValidate()) [[unlikely]]
       {
+        const float ps0 = vget_lane_f32(singles, 0);
+        const float ps1 = vget_lane_f32(singles, 1);
         const float r0 = ForceSingle(
             ppc_state.fpscr,
             NI_madd<true>(ppc_state, a.PS0AsDouble(), c.PS0AsDouble(), b.PS0AsDouble()).value);
@@ -847,9 +853,9 @@ void InterpreterFP::ps_madd(PowerPC::PowerPCState& ppc_state, Inst inst)
                    "ps_madd NEON diverged from scalar");
       }
 
-      ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+      StorePSFromSingles(ppc_state.ps[inst.FD], singles);
       if constexpr (fprf)
-        ppc_state.UpdateFPRFSingle(ps0);
+        ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -885,20 +891,19 @@ void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Nmsub)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Nmsub)) [[likely]]
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Nmsub, LoadPS(a), LoadPS(c), LoadPS(b), true, &vr))
     {
       // Result is finite (never NaN), so the scalar `isnan(tmp) ? tmp : -tmp` is always the negate;
       // a +/-0 result negates to -/+0 on both paths.
-      float tmp0, tmp1;
-      StoreLanes(vr, &tmp0, &tmp1);
-      const float ps0 = -tmp0;
-      const float ps1 = -tmp1;
+      const float32x2_t singles = vneg_f32(vcvt_f32_f64(vr));
 
       if (PsNeonValidate()) [[unlikely]]
       {
+        const float ps0 = vget_lane_f32(singles, 0);
+        const float ps1 = vget_lane_f32(singles, 1);
         const float st0 = ForceSingle(
             ppc_state.fpscr,
             NI_msub<true>(ppc_state, a.PS0AsDouble(), c.PS0AsDouble(), b.PS0AsDouble()).value);
@@ -913,8 +918,8 @@ void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
                    "ps_nmsub NEON diverged from scalar");
       }
 
-      ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-      ppc_state.UpdateFPRFSingle(ps0);
+      StorePSFromSingles(ppc_state.ps[inst.FD], singles);
+      ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -947,20 +952,19 @@ void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Nmadd)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Nmadd)) [[likely]]
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Nmadd, LoadPS(a), LoadPS(c), LoadPS(b), false, &vr))
     {
       // Result is finite (never NaN), so the scalar `isnan(tmp) ? tmp : -tmp` is always the negate;
       // a +/-0 result negates to -/+0 on both paths.
-      float tmp0, tmp1;
-      StoreLanes(vr, &tmp0, &tmp1);
-      const float ps0 = -tmp0;
-      const float ps1 = -tmp1;
+      const float32x2_t singles = vneg_f32(vcvt_f32_f64(vr));
 
       if (PsNeonValidate()) [[unlikely]]
       {
+        const float ps0 = vget_lane_f32(singles, 0);
+        const float ps1 = vget_lane_f32(singles, 1);
         const float st0 = ForceSingle(
             ppc_state.fpscr,
             NI_madd<true>(ppc_state, a.PS0AsDouble(), c.PS0AsDouble(), b.PS0AsDouble()).value);
@@ -975,8 +979,8 @@ void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
                    "ps_nmadd NEON diverged from scalar");
       }
 
-      ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-      ppc_state.UpdateFPRFSingle(ps0);
+      StorePSFromSingles(ppc_state.ps[inst.FD], singles);
+      ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -1032,7 +1036,7 @@ void InterpreterFP::ps_muls0(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Muls0)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Muls0)) [[likely]]
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vc = Splat(c.PS0AsDouble());  // broadcast the PS0 multiplier into both lanes
@@ -1042,11 +1046,12 @@ void InterpreterFP::ps_muls0(PowerPC::PowerPCState& ppc_state, Inst inst)
       const float64x2_t vr = vmulq_f64(va, vc25);
       if (BothResultsOk(vr))
       {
-        float ps0, ps1;
-        StoreLanes(vr, &ps0, &ps1);
+        const float32x2_t singles = vcvt_f32_f64(vr);
 
         if (PsNeonValidate()) [[unlikely]]
         {
+          const float ps0 = vget_lane_f32(singles, 0);
+          const float ps1 = vget_lane_f32(singles, 1);
           const double rc0 = Force25Bit(c.PS0AsDouble());
           const float r0 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS0AsDouble(), rc0).value);
           const float r1 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS1AsDouble(), rc0).value);
@@ -1056,9 +1061,9 @@ void InterpreterFP::ps_muls0(PowerPC::PowerPCState& ppc_state, Inst inst)
                      "ps_muls0 NEON diverged from scalar");
         }
 
-        ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+        StorePSFromSingles(ppc_state.ps[inst.FD], singles);
         if constexpr (fprf)
-          ppc_state.UpdateFPRFSingle(ps0);
+          ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Muls0);
@@ -1098,7 +1103,7 @@ void InterpreterFP::ps_muls1(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Muls1)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Muls1)) [[likely]]
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vc = Splat(c.PS1AsDouble());  // broadcast the PS1 multiplier into both lanes
@@ -1108,11 +1113,12 @@ void InterpreterFP::ps_muls1(PowerPC::PowerPCState& ppc_state, Inst inst)
       const float64x2_t vr = vmulq_f64(va, vc25);
       if (BothResultsOk(vr))
       {
-        float ps0, ps1;
-        StoreLanes(vr, &ps0, &ps1);
+        const float32x2_t singles = vcvt_f32_f64(vr);
 
         if (PsNeonValidate()) [[unlikely]]
         {
+          const float ps0 = vget_lane_f32(singles, 0);
+          const float ps1 = vget_lane_f32(singles, 1);
           const double rc1 = Force25Bit(c.PS1AsDouble());
           const float r0 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS0AsDouble(), rc1).value);
           const float r1 = ForceSingle(ppc_state.fpscr, NI_mul(ppc_state, a.PS1AsDouble(), rc1).value);
@@ -1122,9 +1128,9 @@ void InterpreterFP::ps_muls1(PowerPC::PowerPCState& ppc_state, Inst inst)
                      "ps_muls1 NEON diverged from scalar");
         }
 
-        ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+        StorePSFromSingles(ppc_state.ps[inst.FD], singles);
         if constexpr (fprf)
-          ppc_state.UpdateFPRFSingle(ps0);
+          ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
         if (inst.Rc)
           ppc_state.UpdateCR1();
         PsNeonCountHit(PsNeonOp::Muls1);
@@ -1165,17 +1171,18 @@ void InterpreterFP::ps_madds0(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Madds0)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Madds0)) [[likely]]
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Madds0, LoadPS(a), Splat(c.PS0AsDouble()), LoadPS(b), false,
                   &vr))  // C broadcast from PS0
     {
-      float ps0, ps1;
-      StoreLanes(vr, &ps0, &ps1);
+      const float32x2_t singles = vcvt_f32_f64(vr);
 
       if (PsNeonValidate()) [[unlikely]]
       {
+        const float ps0 = vget_lane_f32(singles, 0);
+        const float ps1 = vget_lane_f32(singles, 1);
         const float r0 = ForceSingle(
             ppc_state.fpscr,
             NI_madd<true>(ppc_state, a.PS0AsDouble(), c.PS0AsDouble(), b.PS0AsDouble()).value);
@@ -1188,9 +1195,9 @@ void InterpreterFP::ps_madds0(PowerPC::PowerPCState& ppc_state, Inst inst)
                    "ps_madds0 NEON diverged from scalar");
       }
 
-      ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+      StorePSFromSingles(ppc_state.ps[inst.FD], singles);
       if constexpr (fprf)
-        ppc_state.UpdateFPRFSingle(ps0);
+        ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -1227,17 +1234,18 @@ void InterpreterFP::ps_madds1(PowerPC::PowerPCState& ppc_state, Inst inst)
   const auto& c = ppc_state.ps[inst.FC];
 
 #if defined(_M_ARM_64) || defined(__aarch64__)
-  if (PsNeonModeOk(ppc_state, PsNeonOp::Madds1)) [[unlikely]]
+  if (PsNeonModeOk(ppc_state, PsNeonOp::Madds1)) [[likely]]
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Madds1, LoadPS(a), Splat(c.PS1AsDouble()), LoadPS(b), false,
                   &vr))  // C broadcast from PS1
     {
-      float ps0, ps1;
-      StoreLanes(vr, &ps0, &ps1);
+      const float32x2_t singles = vcvt_f32_f64(vr);
 
       if (PsNeonValidate()) [[unlikely]]
       {
+        const float ps0 = vget_lane_f32(singles, 0);
+        const float ps1 = vget_lane_f32(singles, 1);
         const float r0 = ForceSingle(
             ppc_state.fpscr,
             NI_madd<true>(ppc_state, a.PS0AsDouble(), c.PS1AsDouble(), b.PS0AsDouble()).value);
@@ -1250,9 +1258,9 @@ void InterpreterFP::ps_madds1(PowerPC::PowerPCState& ppc_state, Inst inst)
                    "ps_madds1 NEON diverged from scalar");
       }
 
-      ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+      StorePSFromSingles(ppc_state.ps[inst.FD], singles);
       if constexpr (fprf)
-        ppc_state.UpdateFPRFSingle(ps0);
+        ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;

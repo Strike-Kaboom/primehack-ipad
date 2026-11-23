@@ -572,14 +572,30 @@ void FPPairCases(Corpus& corpus)
 {
   constexpr u32 mul = A(59, 25, 1, 1, 0, 2), add = X(59, 21, 1, 1, 2);
   constexpr u32 sub = X(59, 20, 1, 1, 2), madd = A(59, 29, 1, 1, 1, 2);
+  constexpr u32 msub = A(59, 28, 1, 1, 1, 2), nmsub = A(59, 30, 1, 1, 1, 2);
+  constexpr u32 nmadd = A(59, 31, 1, 1, 1, 2);
   constexpr u32 frsp = X(63, 12, 1, 0, 1), fmr = X(63, 72, 1, 0, 2);
   constexpr u32 lfs = D(48, 1, 5, 0), lfd = D(50, 1, 5, 0);
   constexpr u32 stfs = D(52, 1, 5, 0), stfd = D(54, 1, 5, 0);
-  constexpr u32 pairs[][2] = {{lfs, mul},   {lfs, add},   {lfs, sub},  {lfs, madd},  {lfd, frsp},
-                              {mul, stfs},  {add, stfs},  {sub, stfs}, {madd, stfs}, {fmr, stfd},
-                              {frsp, stfs}, {mul, add},   {mul, mul},  {lfs, lfs},   {stfs, stfs},
-                              {lfd, lfd},   {stfd, stfd}, {lfs, stfs}};
-  static_assert(std::size(pairs) == 18);
+  constexpr u32 ps_muls0 = A(4, 12, 1, 1, 0, 2), ps_muls1 = A(4, 13, 1, 1, 0, 2);
+  constexpr u32 ps_madds0 = A(4, 14, 1, 1, 1, 2), ps_madds1 = A(4, 15, 1, 1, 1, 2);
+  constexpr u32 ps_add = X(4, 21, 1, 1, 2), ps_mul = A(4, 25, 1, 1, 0, 2);
+  constexpr u32 ps_madd = A(4, 29, 1, 1, 1, 2), ps_merge00 = X(4, 528, 1, 1, 2);
+  constexpr u32 ps_sum0 = A(4, 10, 1, 1, 2, 3);
+  constexpr u32 pairs[][2] = {
+      {lfs, mul},          {lfs, add},          {lfs, sub},        {lfs, madd},
+      {lfs, msub},         {lfs, nmsub},        {lfs, nmadd},      {lfd, frsp},
+      {mul, stfs},         {add, stfs},         {sub, stfs},       {madd, stfs},
+      {msub, stfs},        {fmr, stfd},         {frsp, stfs},      {mul, add},
+      {mul, mul},          {mul, madd},         {madd, madd},      {madd, add},
+      {ps_muls0, ps_madds1}, {ps_muls0, ps_madds0}, {ps_muls1, ps_madds1},
+      {ps_madds0, ps_madds1}, {ps_madds1, ps_madds0}, {ps_madds0, ps_madds0},
+      {ps_mul, ps_madd},   {ps_madd, ps_madd},  {ps_mul, ps_add},  {ps_mul, ps_mul},
+      {ps_merge00, ps_muls0}, {ps_merge00, ps_mul}, {ps_add, ps_sum0}, {ps_madd, ps_sum0},
+      {lfs, lfs},          {stfs, stfs},        {lfd, lfd},        {stfd, stfd},
+      {lfs, stfs},
+  };
+  static_assert(std::size(pairs) == 39);
   for (const auto& [first, second] : pairs)
   {
     const bool mem1 = first >> 26 >= 48 && first >> 26 <= 55;
