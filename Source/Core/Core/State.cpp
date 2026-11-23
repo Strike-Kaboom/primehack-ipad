@@ -185,8 +185,8 @@ static void DoState(Core::System& system, PointerWrap& p)
   }
   else if (p.IsReadMode())
   {
-    // When overwriting RAM, best to have all mods be reset
-    prime::Shutdown();
+    // When overwriting RAM, best to have all mods be reset (keep boot-time PrimeHack run latch).
+    prime::Shutdown(/*reset_run_latch=*/false);
   }
   Common::ScopeGuard restore_primehack([stashed_primehack] {
     if (stashed_primehack)

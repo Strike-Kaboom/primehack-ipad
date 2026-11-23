@@ -201,6 +201,7 @@ public:
   std::tuple <double, double, bool, bool, bool, bool, bool> GetPrimeSettings();
 
   void Reset();
+  void SetRumble(bool on);
 
   void DoState(PointerWrap& p);
 
@@ -272,8 +273,6 @@ private:
   bool ProcessExtensionPortEvent();
   void SendDataReport(const DesiredWiimoteState& target_state);
   bool ProcessReadDataRequest();
-
-  void SetRumble(bool on);
 
   void SendAck(WiimoteCommon::OutputReportID rpt_id, WiimoteCommon::ErrorCode err);
 

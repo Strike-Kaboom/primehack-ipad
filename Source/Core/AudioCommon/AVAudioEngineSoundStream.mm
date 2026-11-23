@@ -519,13 +519,17 @@ void AVAudioEngineSound::registerObservers()
                 if (!guard->alive || !self_ptr->m_engine || note.object != self_ptr->m_engine)
                   return;
                 INFO_LOG_FMT(AUDIO, "AVAudioEngine: configuration change");
-                self_ptr->m_graph_generation.fetch_add(1, std::memory_order_release);
                 if (self_ptr->modeChangedLocked())
                 {
                   self_ptr->rebuildLocked();
                 }
                 else if (self_ptr->m_should_run.load() && !self_ptr->m_interrupted)
                 {
+                  // Stop players before bumping m_graph_generation so no queued AVAudioPCMBuffer
+                  // remains in use by the render thread when audioThreadMain resets pool_cursor.
+                  for (AVAudioPlayerNode* node in self_ptr->m_players)
+                    [node stop];
+                  self_ptr->m_graph_generation.fetch_add(1, std::memory_order_release);
                   if (!self_ptr->startEngineLocked())
                     self_ptr->rebuildLocked();
                 }
@@ -558,6 +562,8 @@ void AVAudioEngineSound::registerObservers()
                 }
                 else if (self_ptr->m_should_run.load())
                 {
+                  for (AVAudioPlayerNode* node in self_ptr->m_players)
+                    [node stop];
                   self_ptr->m_graph_generation.fetch_add(1, std::memory_order_release);
                   if (!self_ptr->startEngineLocked())
                     self_ptr->rebuildLocked();
@@ -573,6 +579,7 @@ void AVAudioEngineSound::registerObservers()
                                     if (!guard->alive)
                                       return;
                                     WARN_LOG_FMT(AUDIO, "AVAudioEngine: media services reset");
+                                    self_ptr->m_interrupted = false;
                                     [session setActive:YES error:nil];
                                     self_ptr->rebuildLocked();
                                   }];

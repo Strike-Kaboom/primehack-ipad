@@ -6,7 +6,9 @@ Dolphin. It is a personal, non-commercial project. It contains no game files, BI
 your own disc dumps.
 
 Credits: PrimeHack by shiiion (vyuuui), SirMangler and the PrimeHack contributors; iCube by Joe Mattiello and the
-Provenance team; DolphiniOS by OatmealDome; Dolphin by the Dolphin Emulator Project. Licensed GPLv2+, like Dolphin.
+Provenance team; DolphiniOS by OatmealDome; Dolphin by the Dolphin Emulator Project; built-in JIT helper uses
+StikJIT (MPL-2.0) and portions of Madeira (GPL-3.0-or-later). Combined app licensed GPL-3.0-or-later; see
+`Source/iOS/App/Common/Resources/Licenses/THIRD-PARTY-JIT.md`.
 
 # DolphiniOS
 

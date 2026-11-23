@@ -95,7 +95,7 @@ void EnforceIOSControllerLayout(Game game) {
     return;
   s_next_check = now + std::chrono::milliseconds(500);
 
-  if (!Config::Get(Config::PRIMEHACK_ENABLE) || game == Game::INVALID_GAME)
+  if (!IsPrimeHackEnabledForRun() || game == Game::INVALID_GAME)
     return;
 
   const bool is_gamecube = game >= Game::PRIME_1_GCN;
@@ -180,7 +180,7 @@ void EnableDefaultMods() {
   EnableMod<AutoConvertFriendVouchers>(false);
 
   // Enable no PrimeHack control mods
-  if (!Config::Get(Config::PRIMEHACK_ENABLE)) {
+  if (!IsPrimeHackEnabledForRun()) {
     return;
   }
 

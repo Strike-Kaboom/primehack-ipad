@@ -145,14 +145,16 @@ private final class HelperRequest {
   private let begunAt = Date()
   private var hasStarted = false
   private var requestUUID: NSUUID?
+  private var cancelled = false
   private var cancelledBeforeStart = false
   private var joinedStarts: [() -> Void] = []
   private var joinedCompletions: [(Result<BuiltInJitRequest.Response, Error>) -> Void] = []
 
-  var isOpenEnable: Bool { operation == BuiltInJitRequest.Operation.enable.rawValue && completion != nil }
+  var isOpenEnable: Bool { !cancelled && operation == BuiltInJitRequest.Operation.enable.rawValue && completion != nil }
   var age: TimeInterval { Date().timeIntervalSince(begunAt) }
 
   func cancel() {
+    cancelled = true
     if let uuid = requestUUID {
       shim.cancelExtensionRequest(withIdentifier: uuid)
     } else {

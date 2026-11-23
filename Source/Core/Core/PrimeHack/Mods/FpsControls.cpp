@@ -346,7 +346,8 @@ void FpsControls::run_mod_mp1(Region region) {
 
   LOOKUP_DYN(ball_state);
   LOOKUP_DYN(menu_state);
-  swap_alt_profiles(read32(ball_state), read32(menu_state), 0);
+  if (ball_state != 0 && menu_state != 0)
+    swap_alt_profiles(read32(ball_state), read32(menu_state), 0);
 
   LOOKUP_DYN(camera_state);
   if (read32(camera_state) != 0) {

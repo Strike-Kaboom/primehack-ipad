@@ -535,7 +535,15 @@ Region GetActiveRegion() {
   return sActiveRegion.load(std::memory_order_relaxed);
 }
 
-void Shutdown() {
+bool IsPrimeHackEnabledForRun() {
+#ifdef IPHONEOS
+  return sPrimeHackEnabledLatched ? sPrimeHackEnabledForRun : Config::Get(Config::PRIMEHACK_ENABLE);
+#else
+  return Config::Get(Config::PRIMEHACK_ENABLE);
+#endif
+}
+
+void Shutdown(bool reset_run_latch) {
   // HACK: Called from place that does not provide
   Core::CPUThreadGuard guard(Core::System::GetInstance());
   foreach_mod([&guard](PrimeMod& mod) {
@@ -549,8 +557,12 @@ void Shutdown() {
   sModuleList.clear();
   sChangesStashed = false;
 #ifdef IPHONEOS
-  sPrimeHackEnabledForRun = true;
-  sPrimeHackEnabledLatched = false;
+  if (reset_run_latch) {
+    sPrimeHackEnabledForRun = true;
+    sPrimeHackEnabledLatched = false;
+  }
+#else
+  (void)reset_run_latch;
 #endif
 
   sActiveGame.store(Game::INVALID_GAME, std::memory_order_relaxed);

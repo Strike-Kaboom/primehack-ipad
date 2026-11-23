@@ -63,7 +63,8 @@ constexpr u32 kPlayerStateInControl = 1;  // in a Prime game, player loaded, no 
 constexpr u32 kPlayerStateMorphBall = 2;
 u32 GetPublishedPlayerState();
 void PublishPlayerState(u32 state);
-void Shutdown();
+bool IsPrimeHackEnabledForRun();
+void Shutdown(bool reset_run_latch = true);
 
 using GameChangeCallback = std::function<void(Game, Region)>;
 void AddOnGameChangeCallback(GameChangeCallback cb);
