@@ -3,8 +3,14 @@
 
 #import "JitManager+TXM.h"
 
+#include <mutex>
+
 #import "Common/MemoryUtil.h"
 #import "JitManager+Debugger.h"
+
+namespace {
+std::mutex s_builtin_txm_mutex;
+}
 
 @implementation JitManager (TXM)
 
@@ -13,6 +19,7 @@
 }
 
 - (bool)performBuiltInTXMAuthorizationOnBackgroundQueue {
+  std::lock_guard<std::mutex> lock(s_builtin_txm_mutex);
   // PrimeHack for iPad: eager pre-authorise & detach for the built-in JIT helper.
   if (!self.deviceHasTxm) {
     if ([self checkIfDebuggerAttachedNow]) {

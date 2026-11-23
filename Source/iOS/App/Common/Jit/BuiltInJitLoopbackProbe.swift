@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Madeira Converter Exception: see LICENSE-EXCEPTION.md
+// Licence notices: see Source/iOS/App/Common/Resources/Licenses/THIRD-PARTY-JIT.md
 // Portions derived from Madeira (https://github.com/willfaust/Madeira).
 // Modified for PrimeHack for iPad, 2026-11-22.
 
@@ -21,7 +21,7 @@ import UIKit
 enum BuiltInJitLoopbackProbe {
   static let address = "10.7.0.1"
   static let port: UInt16 = 62078
-  static let localDevVPNEnableURL = URL(string: "localdevvpn://enable?scheme=dolphinios")!
+  static let localDevVPNEnableURL = URL(string: "localdevvpn://enable?scheme=primehack")!
 
   struct Result: Sendable {
     let reachable: Bool

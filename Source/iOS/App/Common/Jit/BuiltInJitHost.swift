@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Madeira Converter Exception: see LICENSE-EXCEPTION.md
+// Licence notices: see Source/iOS/App/Common/Resources/Licenses/THIRD-PARTY-JIT.md
 // Portions derived from Madeira (https://github.com/willfaust/Madeira).
 // Modified for PrimeHack for iPad, 2026-11-22.
 
@@ -16,6 +16,8 @@ import Foundation
 @objc private protocol NSExtensionShim {
   @objc(beginExtensionRequestWithInputItems:completion:)
   func beginExtensionRequest(withInputItems items: [Any], completion: @escaping (NSUUID?) -> Void)
+  @objc(cancelExtensionRequestWithIdentifier:)
+  func cancelExtensionRequest(withIdentifier identifier: NSUUID)
   @objc(pidForRequestIdentifier:)
   func pid(forRequestIdentifier identifier: NSUUID) -> Int32
   @objc(setRequestCompletionBlock:)
@@ -122,6 +124,12 @@ enum BuiltInJitHost {
     helper.begin(data: data, identifier: identifier, started: started)
   }
 
+  static func cancelRunningEnable() {
+    for helper in running where helper.isOpenEnable {
+      helper.cancel()
+    }
+  }
+
   fileprivate static func finished(_ helper: HelperRequest) {
     running.removeAll { $0 === helper }
   }
@@ -136,11 +144,21 @@ private final class HelperRequest {
   private var completion: ((Result<BuiltInJitRequest.Response, Error>) -> Void)?
   private let begunAt = Date()
   private var hasStarted = false
+  private var requestUUID: NSUUID?
+  private var cancelledBeforeStart = false
   private var joinedStarts: [() -> Void] = []
   private var joinedCompletions: [(Result<BuiltInJitRequest.Response, Error>) -> Void] = []
 
   var isOpenEnable: Bool { operation == BuiltInJitRequest.Operation.enable.rawValue && completion != nil }
   var age: TimeInterval { Date().timeIntervalSince(begunAt) }
+
+  func cancel() {
+    if let uuid = requestUUID {
+      shim.cancelExtensionRequest(withIdentifier: uuid)
+    } else {
+      cancelledBeforeStart = true
+    }
+  }
 
   func join(started: @escaping () -> Void, completion: @escaping (Result<BuiltInJitRequest.Response, Error>) -> Void) {
     joinedCompletions.append(completion)
@@ -188,6 +206,11 @@ private final class HelperRequest {
           }
           NSLog("[PrimeHackJIT] [jit-helper] %@: started %@ as pid %d",
                 self.operation, identifier, self.shim.pid(forRequestIdentifier: uuid))
+          self.requestUUID = uuid
+          if self.cancelledBeforeStart {
+            self.shim.cancelExtensionRequest(withIdentifier: uuid)
+            return
+          }
           self.hasStarted = true
           started()
           let joined = self.joinedStarts

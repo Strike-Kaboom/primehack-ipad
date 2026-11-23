@@ -32,8 +32,13 @@ final class URLRouterService: NSObject, UIApplicationDelegate {
     return true
   }
 
+  private static func isOwnScheme(_ url: URL) -> Bool {
+    guard let scheme = url.scheme?.lowercased() else { return false }
+    return scheme == "primehack" || scheme == "dolphinios"
+  }
+
   private func handlePlayLink(_ url: URL) -> Bool {
-    guard url.scheme?.lowercased() == "dolphinios", url.host?.lowercased() == "play" else { return false }
+    guard Self.isOwnScheme(url), url.host?.lowercased() == "play" else { return false }
     let items = URLComponents(url: url, resolvingAgainstBaseURL: false)?.queryItems ?? []
     guard let id = items.first(where: { $0.name.lowercased() == "id" })?.value, !id.isEmpty else { return false }
     Task { @MainActor in GameLaunchRequest.launch(gameID: id) }
@@ -45,7 +50,7 @@ final class URLRouterService: NSObject, UIApplicationDelegate {
   var beginPhoneControllerSession: @MainActor () -> Void = { PhoneControllerSession.begin() }
 
   private func handleControllerLink(_ url: URL) -> Bool {
-    guard url.scheme?.lowercased() == "dolphinios", url.host?.lowercased() == "dsu",
+    guard Self.isOwnScheme(url), url.host?.lowercased() == "dsu",
           url.path.lowercased() == "/controller" else { return false }
     let begin = beginPhoneControllerSession
     Task { @MainActor in begin() }
@@ -54,7 +59,7 @@ final class URLRouterService: NSObject, UIApplicationDelegate {
 #endif
 
   private func handleDSULink(_ url: URL) -> Bool {
-    if url.scheme?.lowercased() == "dolphinios" {
+    if Self.isOwnScheme(url) {
       // Path-based routing
       guard url.host?.lowercased() == "dsu" else { return false }
       let path = url.path.lowercased()

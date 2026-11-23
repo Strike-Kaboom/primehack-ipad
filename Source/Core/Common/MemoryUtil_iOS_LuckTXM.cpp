@@ -487,6 +487,7 @@ void AllocateExecutableMemoryRegion_LuckTXM()
   if (retval != KERN_SUCCESS)
   {
     PanicAlertFmt("AllocateExecutableMemoryRegion failed! vm_map returned {0:#x}", retval);
+    munmap(rx_ptr, size);
     return;
   }
 
@@ -495,6 +496,8 @@ void AllocateExecutableMemoryRegion_LuckTXM()
   if (mprotect(rw_ptr, size, PROT_READ | PROT_WRITE) != 0)
   {
     PanicAlertFmt("AllocateExecutableMemoryRegion failed! mprotect returned {}", LastStrerrorString());
+    munmap(rw_ptr, size);
+    munmap(rx_ptr, size);
     return;
   }
 
@@ -508,6 +511,8 @@ void AllocateExecutableMemoryRegion_LuckTXM()
   if (lwret == 0)
   {
     PanicAlertFmt("AllocateExecutableMemoryRegion failed!\nlwmem_assignmem failed");
+    munmap(rw_ptr, size);
+    munmap(rx_ptr, size);
     return;
   }
 

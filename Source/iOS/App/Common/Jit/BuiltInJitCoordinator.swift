@@ -336,11 +336,18 @@ final class BuiltInJitCoordinator: ObservableObject {
         if let earlyResult = session.result {
           switch earlyResult {
           case .success(let response):
+            manager.recheckIfJitIsAcquired()
+            if response.success && manager.acquiredJit {
+              attached = true
+              break
+            }
             applyEnableHelperFailure(response.message)
+            return
           case .failure(let error):
             applyEnableHelperFailure(error.localizedDescription)
+            return
           }
-          return
+          if attached { break }
         }
         manager.recheckIfJitIsAcquired()
         if manager.acquiredJit && manager.debuggerAttached {
@@ -351,6 +358,7 @@ final class BuiltInJitCoordinator: ObservableObject {
       }
 
       guard attached else {
+        BuiltInJitHost.cancelRunningEnable()
         statusMessage = nil
         errorMessage = L("Timed out waiting for the JIT helper to attach. Make sure LocalDevVPN is connected and try again.")
         offerOpenLocalDevVPN = true

@@ -138,12 +138,14 @@ enum SentryTelemetryService {
   /// Starts the SDK unless the user opted out of crash reports. Safe to call again: it does nothing
   /// while the SDK is running, and starts it again after `applyConsent(false)` closed it.
   static func configure() {
-    guard !isUnitTestHost(), TelemetryConsent.isEnabled(), !SentrySDK.isEnabled else { return }
+    // PrimeHack for iPad: never send fork crash telemetry to upstream Provenance/iCube's Sentry.
+    let sentryDSN = ""
+    guard !sentryDSN.isEmpty, !isUnitTestHost(), TelemetryConsent.isEnabled(), !SentrySDK.isEnabled else { return }
 
     let buildEnvironment = SentryBuildEnvironment.current
 
     SentrySDK.start { options in
-      options.dsn = "https://aa3e806dc811b751d7c2ce91290f1fd6@o199354.ingest.us.sentry.io/4511503509815296"
+      options.dsn = sentryDSN
       options.environment = buildEnvironment.rawValue
       options.enableWatchdogTerminationTracking = buildEnvironment.tracksWatchdogTerminations
       options.beforeBreadcrumb = { crumb in

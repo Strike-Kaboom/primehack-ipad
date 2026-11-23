@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Madeira Converter Exception: see LICENSE-EXCEPTION.md
+// Licence notices: see Source/iOS/App/Common/Resources/Licenses/THIRD-PARTY-JIT.md
 // Portions derived from Madeira (https://github.com/willfaust/Madeira).
 // Modified for PrimeHack for iPad, 2026-11-22.
 

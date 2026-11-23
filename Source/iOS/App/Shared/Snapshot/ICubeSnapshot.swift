@@ -6,8 +6,8 @@ import PVLibrarySnapshot
 enum ICubeSnapshot {
     static let configuration = LibrarySnapshotConfiguration(
         appGroupIdentifier: "group.com.strikekaboom.primehack",
-        launchURLScheme: "dolphinios",
-        telemetrySubsystem: "com.joemattiello.iCube"
+        launchURLScheme: "primehack",
+        telemetrySubsystem: "com.strikekaboom.primehack"
     )
     static let appGroup = LibrarySnapshotAppGroup(configuration: configuration)
 }

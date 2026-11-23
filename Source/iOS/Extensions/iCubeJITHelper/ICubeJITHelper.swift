@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Madeira Converter Exception: see LICENSE-EXCEPTION.md
+// Licence notices: see Source/iOS/App/Common/Resources/Licenses/THIRD-PARTY-JIT.md
 // Portions copyright 2026 alantangok: code taken from https://github.com/willfaust/Madeira (pull request #541)
-// under GPL-3.0-or-later and modified for BCD in November 2026. See THIRD-PARTY-NOTICES.md.
+// under GPL-3.0-or-later and modified for BCD in November 2026.
 // Modified for PrimeHack for iPad, 2026-11-22.
 
 // PrimeHack for iPad: built-in JIT helper extension (classic NSExtension, loaded dynamically
@@ -83,6 +83,12 @@ private enum ICubeJITWork {
 
     do {
       try manager.createDirectory(at: root, withIntermediateDirectories: true)
+      // Sweep any temporary pairing files left behind if a previous invocation was SIGKILLed.
+      if let leftover = try? manager.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) {
+        for url in leftover where url.lastPathComponent.hasPrefix("pairingFile-") && url.pathExtension == "plist" {
+          try? manager.removeItem(at: url)
+        }
+      }
       if request.operation == .resetDDI {
         try StikJIT.resetCachedDDI(at: paths)
         return .init(success: true,

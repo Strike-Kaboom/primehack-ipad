@@ -1,5 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
-// Madeira Converter Exception: see LICENSE-EXCEPTION.md
+// Licence notices: see Source/iOS/App/Common/Resources/Licenses/THIRD-PARTY-JIT.md
 // Portions derived from Madeira (https://github.com/willfaust/Madeira).
 // Modified for PrimeHack for iPad, 2026-11-22.
 
@@ -66,9 +66,17 @@ enum BuiltInJitPairingStore {
     #endif
   }
 
-  /// True when a validated pairing file is available (imports from `Documents/JIT/pairingFile.plist` first if present).
+  /// True when a validated pairing file is stored in the Keychain (no disk I/O on main thread).
   static var isImported: Bool {
-    (try? data()) != nil
+    var result: AnyObject?
+    let status = SecItemCopyMatching([
+      kSecClass as String: kSecClassGenericPassword,
+      kSecAttrService as String: service,
+      kSecAttrAccount as String: account,
+      kSecReturnData as String: false,
+      kSecMatchLimit as String: kSecMatchLimitOne,
+    ] as CFDictionary, &result)
+    return status == errSecSuccess
   }
 
   /// Returns the stored RPPairing plist bytes from the Keychain, first importing

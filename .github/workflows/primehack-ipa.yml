@@ -125,7 +125,9 @@ jobs:
       - name: Restore Dolphin core cache
         uses: actions/cache/restore@v4
         with:
-          path: build
+          path: |
+            build
+            build-iphoneos-Release
           key: dolphin-core-ios-${{ runner.os }}-${{ github.sha }}
           restore-keys: |
             dolphin-core-ios-${{ runner.os }}-
@@ -186,7 +188,9 @@ jobs:
         if: always() && steps.core.outcome == 'success' && inputs.pgo != 'generate'
         uses: actions/cache/save@v4
         with:
-          path: build
+          path: |
+            build
+            build-iphoneos-Release
           key: dolphin-core-ios-${{ runner.os }}-${{ github.sha }}
 
       - name: Install Tuist ${{ env.TUIST_VERSION }}
@@ -213,6 +217,20 @@ jobs:
             -scheme "iCube (NJB)" \
             -configuration "Release (Non-Jailbroken)" \
             $XCODE_ARGS 2>&1 | tee "$RUNNER_TEMP/xcodebuild.log"
+
+      - name: Check Game Mode and Info.plist keys
+        run: |
+          set -euo pipefail
+          plist="$GITHUB_WORKSPACE/archives/NonJailbroken.xcarchive/Products/Applications/iCube.app/Info.plist"
+          cat=$(/usr/libexec/PlistBuddy -c "Print :LSApplicationCategoryType" "$plist")
+          gm=$(/usr/libexec/PlistBuddy -c "Print :LSSupportsGameMode" "$plist")
+          gcgm=$(/usr/libexec/PlistBuddy -c "Print :GCSupportsGameMode" "$plist")
+          scheme=$(/usr/libexec/PlistBuddy -c "Print :CFBundleURLTypes:0:CFBundleURLSchemes:0" "$plist")
+          echo "LSApplicationCategoryType=$cat LSSupportsGameMode=$gm GCSupportsGameMode=$gcgm URLScheme=$scheme"
+          test "$cat" = "public.app-category.games"
+          test "$gm" = "true"
+          test "$gcgm" = "true"
+          test "$scheme" = "primehack"
 
       - name: Pack the .ipa
         run: |
