@@ -11,6 +11,12 @@ public:
   void run_mod(Game game, Region region) override;
   bool init_mod(Game game, Region region) override;
   void on_state_change(ModState) override {}
+  void on_reset() override {
+    frame_dx = 0.f;
+    frame_dy = 0.f;
+    x_rot = 0.f;
+    y_rot = 0.f;
+  }
   bool is_cheat() const override { return false; }
   GEN_NAME(MapController)
 
@@ -24,8 +30,8 @@ private:
   void init_mod_mp2_gc(Region region);
   void init_mod_mp2(Region region);
 
-  float frame_dx, frame_dy;
-  float x_rot, y_rot;
+  float frame_dx = 0.f, frame_dy = 0.f;
+  float x_rot = 0.f, y_rot = 0.f;
 };
 
 } // namespace prime

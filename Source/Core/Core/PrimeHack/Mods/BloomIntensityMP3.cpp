@@ -7,12 +7,14 @@ namespace prime {
 
 void BloomIntensityMP3::replace_start_bloom_func(u32 branch_pos, u32 bloom_func) {
   u32 lis, ori;
-  std::tie<u32, u32>(lis, ori) = prime::GetVariableManager()->make_lis_ori(16, "bloom_intensity");
+  // PrimeHack for iPad: use volatile scratch register r11 instead of callee-saved r16
+  // before bloom_func's stack prologue.
+  std::tie<u32, u32>(lis, ori) = prime::GetVariableManager()->make_lis_ori(11, "bloom_intensity");
   prime::GetVariableManager()->set_variable(*active_guard, "bloom_intensity", slider_val);
   add_code_change(bloom_func, 0x48000000 | ((branch_pos - bloom_func) & 0x3fffffc));
-  add_code_change(branch_pos, lis);                // lis r16, bloom_intensity
-  add_code_change(branch_pos + 0x04, ori);         // ori r16, r16, bloom_intensity
-  add_code_change(branch_pos + 0x08, 0xc0300000);  // lfs f1, 0(r16)
+  add_code_change(branch_pos, lis);                // lis r11, bloom_intensity
+  add_code_change(branch_pos + 0x04, ori);         // ori r11, r11, bloom_intensity
+  add_code_change(branch_pos + 0x08, 0xc02b0000);  // lfs f1, 0(r11)
   add_code_change(branch_pos + 0x0C, 0x9421fe00);  // stwu	sp, -0x0200 (sp)
   add_code_change(branch_pos + 0x10, 0x48000000 | ((bloom_func - branch_pos - 0xC) & 0x3fffffc));
 }

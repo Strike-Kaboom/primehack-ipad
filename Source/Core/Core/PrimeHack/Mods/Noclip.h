@@ -37,6 +37,7 @@ private:
   bool has_control_mp2();
   bool has_control_mp2_gc();
   bool has_control_mp3();
+  void capture_player_state(Game game, u32 player);
 
   u64 old_matexclude_list = 0;
   bool has_saved_matexclude = false;

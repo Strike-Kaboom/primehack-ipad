@@ -178,7 +178,8 @@ static void DoState(Core::System& system, PointerWrap& p)
     return;
   }
 
-  if (p.IsWriteMode())
+  const bool stashed_primehack = p.IsWriteMode();
+  if (stashed_primehack)
   {
     prime::StashMemoryChanges();
   }
@@ -187,6 +188,10 @@ static void DoState(Core::System& system, PointerWrap& p)
     // When overwriting RAM, best to have all mods be reset
     prime::Shutdown();
   }
+  Common::ScopeGuard restore_primehack([stashed_primehack] {
+    if (stashed_primehack)
+      prime::RestoreMemoryChanges();
+  });
 
   // Movie must be done before the video backend, because the window is redrawn in the video backend
   // state load, and the frame number must be up-to-date.
@@ -219,9 +224,9 @@ static void DoState(Core::System& system, PointerWrap& p)
 #ifdef USE_RETRO_ACHIEVEMENTS
   AchievementManager::GetInstance().DoState(p);
 #endif  // USE_RETRO_ACHIEVEMENTS
-  if (p.IsWriteMode())
+  if (stashed_primehack)
   {
-    prime::RestoreMemoryChanges();
+    restore_primehack.Exit();
   }
   else if (p.IsReadMode())
   {

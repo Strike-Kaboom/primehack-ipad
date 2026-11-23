@@ -48,6 +48,11 @@ void handle_cursor(Core::CPUThreadGuard const& guard, u32 x_address, u32 y_addre
 void handle_reticle(Core::CPUThreadGuard const& guard, u32 x_address, u32 y_address, Region region, float fov);
 
 bool mem_check(u32 address);
+// Accepts both MEM1 (GC/Wii) and MEM2 (Wii) virtual addresses.
+inline bool mem_check_any(u32 address) {
+  return (address >= 0x80000000 && address < 0x81800000) ||
+         (address >= 0x90000000 && address < 0x94000000);
+}
 
 void set_beam_owned(int index, bool owned);
 void set_visor_owned(int index, bool owned);
@@ -87,9 +92,16 @@ struct HostMem {
 
 template <typename Mem>
 std::string readin_str(Mem&& mem, u32 str_ptr) {
+  if (!mem_check_any(str_ptr)) {
+    return {};
+  }
   std::ostringstream key_readin;
-
-  for (char c = mem.template Read<u8>(str_ptr); c; c = mem.template Read<u8>(++str_ptr)) {
+  constexpr size_t kMaxLen = 4096;
+  for (size_t i = 0; i < kMaxLen && mem_check_any(str_ptr); ++i, ++str_ptr) {
+    const char c = static_cast<char>(mem.template Read<u8>(str_ptr));
+    if (c == '\0') {
+      break;
+    }
     key_readin << c;
   }
   return key_readin.str();

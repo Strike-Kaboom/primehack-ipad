@@ -1,5 +1,6 @@
 #include "HackConfig.h"
 
+#include <atomic>
 #include <string>
 #include <mutex>
 
@@ -17,6 +18,7 @@
 #include "Core/Host.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 #include "InputCommon/ControllerEmu/ControlGroup/PrimeHackAltProfile.h"
+#include "InputCommon/ControllerEmu/ControllerEmu.h"
 #include "InputCommon/InputConfig.h"
 
 #ifdef IPHONEOS
@@ -25,7 +27,6 @@
 #include "Core/HW/GCPadEmu.h"
 #include "Core/HW/WiimoteEmu/ExtensionPort.h"
 #include "InputCommon/ControllerEmu/ControlGroup/Attachments.h"
-#include "InputCommon/ControllerEmu/ControllerEmu.h"
 #endif
 
 constexpr const char* PROFILES_DIR = "Profiles/";
@@ -33,18 +34,20 @@ constexpr const char* PROFILES_DIR = "Profiles/";
 namespace prime {
 namespace {
 
-float sensitivity;
-float cursor_sensitivity;
+// PrimeHack for iPad: atomic so main-thread UpdateHackSettings() (from Wiimote::LoadConfig)
+// does not race with CPU-thread per-frame reads.
+std::atomic<float> sensitivity{15.f};
+std::atomic<float> cursor_sensitivity{15.f};
 
-bool inverted_x = false;
-bool inverted_y = false;
-bool scale_cursor_sens = false;
+std::atomic<bool> inverted_x{false};
+std::atomic<bool> inverted_y{false};
+std::atomic<bool> scale_cursor_sens{false};
 AddressDB addr_db;
 EmuVariableManager var_mgr;
 bool is_running = false;
-CameraLock lock_camera = CameraLock::Unlocked;
-bool reticle_lock = false;
-bool new_map_controls = false;
+std::atomic<CameraLock> lock_camera{CameraLock::Unlocked};
+std::atomic<bool> reticle_lock{false};
+std::atomic<bool> new_map_controls{false};
 
 std::string trilogy_motd = "Thanks for using PrimeHack!\nPlease see our wiki for help!";
 std::mutex motd_lock;
@@ -97,6 +100,8 @@ void EnforceIOSControllerLayout(Game game) {
 
   const bool is_gamecube = game >= Game::PRIME_1_GCN;
   InputConfig* config = is_gamecube ? Pad::GetConfig() : ::Wiimote::GetConfig();
+  if (config == nullptr)
+    return;
   bool reload = false;
   {
     // The host thread edits and saves mappings under this lock; reading them without it races.
@@ -347,16 +352,21 @@ std::tuple<float, float, float> GetArmXYZ() {
 
 
 std::pair<std::string, std::string> GetProfiles() {
-  auto* group = static_cast<ControllerEmu::PrimeHackAltProfile*>(
-    Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::AltProfileControls));
-
-  const std::string alt_profname = group->GetAltProfileName();
+  std::string alt_profname;
+  {
+    // PrimeHack for iPad: hold controller state lock while reading alt profile name on CPU thread.
+    const auto lock = ControllerEmu::EmulatedController::GetStateLock();
+    auto* group = static_cast<ControllerEmu::PrimeHackAltProfile*>(
+      Wiimote::GetWiimoteGroup(0, WiimoteEmu::WiimoteGroup::AltProfileControls));
+    if (group != nullptr)
+      alt_profname = group->GetAltProfileName();
+  }
   std::string alt_profile_path;
   std::string main_profile_path;
 
   if (!alt_profname.empty() && (alt_profname != std::string("Disabled"))) {
     alt_profile_path = File::GetUserPath(D_CONFIG_IDX) + PROFILES_DIR +
-                         Wiimote::GetConfig()->GetProfileKey() + "/" + group->GetAltProfileName() +
+                         Wiimote::GetConfig()->GetProfileKey() + "/" + alt_profname +
       ".ini";
   } else {
     alt_profile_path = "";

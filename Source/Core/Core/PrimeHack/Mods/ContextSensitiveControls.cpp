@@ -26,6 +26,14 @@ void ContextSensitiveControls::run_mod(Game game, Region region) {
   constexpr int kObjectListMaxSize = 2048;
   for (int i = 0; i < kObjectListMaxSize; i++) {
     u32 entity = read32(obj_list_iterator);
+    if (!mem_check(entity)) {
+      u16 next_id = read16(obj_list_iterator + 6);
+      if (next_id == 0xffff || next_id >= kObjectListMaxSize) {
+        break;
+      }
+      obj_list_iterator = ((object_list + 4) + next_id * 8);
+      continue;
+    }
     u32 entity_flags = read32(entity + 0x38);
 
     bool should_process = false;
@@ -36,6 +44,14 @@ void ContextSensitiveControls::run_mod(Game game, Region region) {
 
     if (should_process) {
       u32 vf_table = read32(entity);
+      if (!mem_check(vf_table)) {
+        u16 next_id = read16(obj_list_iterator + 6);
+        if (next_id == 0xffff || next_id >= kObjectListMaxSize) {
+          break;
+        }
+        obj_list_iterator = ((object_list + 4) + next_id * 8);
+        continue;
+      }
       u32 vft_func = read32(vf_table + 0xc);
       u32 puzzle_state = read32(entity + 0x14c);
 
@@ -83,7 +99,7 @@ void ContextSensitiveControls::run_mod(Game game, Region region) {
     }
 
     u16 next_id = read16(obj_list_iterator + 6);
-    if (next_id == 0xffff) {
+    if (next_id == 0xffff || next_id >= kObjectListMaxSize) {
       break;
     }
 

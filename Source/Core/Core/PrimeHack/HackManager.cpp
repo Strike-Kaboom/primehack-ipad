@@ -32,22 +32,36 @@ std::tuple<MOD_LIST(CSEP, X)> sModsTuple;
 #undef X
 
 // Active game tracking globals
-Game sActiveGame = Game::INVALID_GAME;
+// PrimeHack for iPad: atomic so main-thread UpdateHackSettings() does not race with the CPU thread.
+std::atomic<Game> sActiveGame{Game::INVALID_GAME};
 Game sLastGame = Game::INVALID_GAME;
-Region sActiveRegion = Region::INVALID_REGION;
+std::atomic<Region> sActiveRegion{Region::INVALID_REGION};
 Region sLastRegion = Region::INVALID_REGION;
 std::vector<GameChangeCallback> sGameChangeCbList;
 
 bool sHardcoreEnabled = false;
+#ifdef IPHONEOS
+// PrimeHack for iPad: latched on game start to match InputConfig::LoadConfig() and the Settings UI
+// ("Takes effect when a game starts"), so toggling PrimeHack Controls mid-game cannot desync the
+// mods from the active controller mapping.
+bool sPrimeHackEnabledForRun = true;
+bool sPrimeHackEnabledLatched = false;
+#endif
 // PrimeHack for iPad: see PublishPlayerState.
 std::atomic<u32> sPublishedPlayerState{0};
 bool sChangesStashed = false;
 
 // Dynalib tracking globals
-std::unordered_map<std::string, std::pair<u32, u32>> sModuleList;
+struct LoadedRsoModule {
+  u32 base = 0;
+  u32 old_epilogue = 0;
+  std::vector<CodeChange> original_code;
+  std::vector<CodeChange> patched_code;
+};
+std::unordered_map<std::string, LoadedRsoModule> sModuleList;
 std::vector<CodeChange> sDynalibOriginal;
 std::vector<CodeChange> sDynalibChanges;
-u32 sEpilogueHookStub;
+u32 sEpilogueHookStub = 0;
 constexpr u32 kModuleEpilogueOffset = 0x28;
 constexpr u32 kEpilogueStubSize = 0x18;
 constexpr std::string_view kEpilogueAsmStub = R"(
@@ -66,96 +80,105 @@ bctr
 
 // Updates the sActiveGame and sActiveRegion globals
 void update_active_game_region(const Core::CPUThreadGuard& cpu_guard) {
-  switch (PowerPC::MMU::HostRead_Instruction(cpu_guard, 0x8046d340)) {
-    case 0x38000018:
-      sActiveGame = Game::MENU;
-      sActiveRegion = Region::NTSC_U;
-      break;
-    case 0x7c0000d0:
-      sActiveGame = Game::MENU;
-      sActiveRegion = Region::PAL;
-      break;
-    case 0x4e800020:
-      sActiveGame = Game::PRIME_1;
-      sActiveRegion = Region::NTSC_U;
-      break;
-    case 0x7c962378:
-      sActiveGame = Game::PRIME_1;
-      sActiveRegion = Region::PAL;
-      break;
-    case 0x4bff64e1:
-      sActiveGame = Game::PRIME_2;
-      sActiveRegion = Region::NTSC_U;
-      break;
-    case 0x80830000:
-      sActiveGame = Game::PRIME_2;
-      sActiveRegion = Region::PAL;
-      break;
-    case 0x80010070:
-      if (PowerPC::MMU::HostRead<u32>(cpu_guard, 0x80576ae8) == 0x7d415378) {
-        sActiveGame = Game::PRIME_3;
-        sActiveRegion = Region::NTSC_U;
-      } else {
-        sActiveGame = Game::INVALID_GAME;
-        sActiveRegion = Region::INVALID_REGION;
-      }
-      break;
-    case 0x3a800000:
-      if (PowerPC::MMU::HostRead<u32>(cpu_guard, 0x805795a4) == 0x7d415378) {
-        sActiveGame = Game::PRIME_3;
-        sActiveRegion = Region::PAL;
-      } else {
-        sActiveGame = Game::INVALID_GAME;
-        sActiveRegion = Region::INVALID_REGION;
-      }
-      break;
-    default:
-      switch (PowerPC::MMU::HostRead<u32>(cpu_guard, 0x80000000)) {
-        case FOURCC('G', 'M', '8', 'E'):
-          sActiveRegion = Region::NTSC_U;
-          switch (PowerPC::MMU::HostRead<u8>(cpu_guard, 0x80000007)) {
-            case 0:
-              sActiveGame = Game::PRIME_1_GCN;
-              break;
-            case 1:
-              sActiveGame = Game::PRIME_1_GCN_R1;
-              break;
-            case 2:
-              sActiveGame = Game::PRIME_1_GCN_R2;
-              break;
-            default:
-              sActiveGame = Game::INVALID_GAME;
-              sActiveRegion = Region::INVALID_REGION;
-              break;
+  Game active_game = Game::INVALID_GAME;
+  Region active_region = Region::INVALID_REGION;
+
+  // PrimeHack for iPad: check the disc ID at 0x80000000 FIRST. Checking 0x8046d340 unconditionally
+  // matched common words like blr (0x4e800020) or MEM1 heap pointers (0x80830000) in non-Prime
+  // games and even live data in GameCube Prime 1/2, misidentifying them as Trilogy.
+  const u32 disc_id = PowerPC::MMU::HostRead<u32>(cpu_guard, 0x80000000);
+  switch (disc_id) {
+    case FOURCC('R', '3', 'M', 'E'):
+      switch (PowerPC::MMU::HostRead_Instruction(cpu_guard, 0x8046d340)) {
+        case 0x38000018:
+          active_game = Game::MENU;
+          active_region = Region::NTSC_U;
+          break;
+        case 0x4e800020:
+          active_game = Game::PRIME_1;
+          active_region = Region::NTSC_U;
+          break;
+        case 0x4bff64e1:
+          active_game = Game::PRIME_2;
+          active_region = Region::NTSC_U;
+          break;
+        case 0x80010070:
+          if (PowerPC::MMU::HostRead<u32>(cpu_guard, 0x80576ae8) == 0x7d415378) {
+            active_game = Game::PRIME_3;
+            active_region = Region::NTSC_U;
           }
           break;
-        case FOURCC('G', 'M', '8', 'P'):
-          sActiveGame = Game::PRIME_1_GCN;
-          sActiveRegion = Region::PAL;
-          break;
-        case FOURCC('G', '2', 'M', 'E'):
-          sActiveGame = Game::PRIME_2_GCN;
-          sActiveRegion = Region::NTSC_U;
-          break;
-        case FOURCC('G', '2', 'M', 'P'):
-          sActiveGame = Game::PRIME_2_GCN;
-          sActiveRegion = Region::PAL;
-          break;
-        case FOURCC('R', 'M', '3', 'E'):
-          sActiveGame = Game::PRIME_3_STANDALONE;
-          sActiveRegion = Region::NTSC_U;
-          break;
-        case FOURCC('R', 'M', '3', 'P'):
-          sActiveGame = Game::PRIME_3_STANDALONE;
-          sActiveRegion = Region::PAL;
-          break;
         default:
-          sActiveGame = Game::INVALID_GAME;
-          sActiveRegion = Region::INVALID_REGION;
           break;
       }
       break;
+    case FOURCC('R', '3', 'M', 'P'):
+      switch (PowerPC::MMU::HostRead_Instruction(cpu_guard, 0x8046d340)) {
+        case 0x7c0000d0:
+          active_game = Game::MENU;
+          active_region = Region::PAL;
+          break;
+        case 0x7c962378:
+          active_game = Game::PRIME_1;
+          active_region = Region::PAL;
+          break;
+        case 0x80830000:
+          active_game = Game::PRIME_2;
+          active_region = Region::PAL;
+          break;
+        case 0x3a800000:
+          if (PowerPC::MMU::HostRead<u32>(cpu_guard, 0x805795a4) == 0x7d415378) {
+            active_game = Game::PRIME_3;
+            active_region = Region::PAL;
+          }
+          break;
+        default:
+          break;
+      }
+      break;
+    case FOURCC('G', 'M', '8', 'E'):
+      active_region = Region::NTSC_U;
+      switch (PowerPC::MMU::HostRead<u8>(cpu_guard, 0x80000007)) {
+        case 0:
+          active_game = Game::PRIME_1_GCN;
+          break;
+        case 1:
+          active_game = Game::PRIME_1_GCN_R1;
+          break;
+        case 2:
+          active_game = Game::PRIME_1_GCN_R2;
+          break;
+        default:
+          active_region = Region::INVALID_REGION;
+          break;
+      }
+      break;
+    case FOURCC('G', 'M', '8', 'P'):
+      active_game = Game::PRIME_1_GCN;
+      active_region = Region::PAL;
+      break;
+    case FOURCC('G', '2', 'M', 'E'):
+      active_game = Game::PRIME_2_GCN;
+      active_region = Region::NTSC_U;
+      break;
+    case FOURCC('G', '2', 'M', 'P'):
+      active_game = Game::PRIME_2_GCN;
+      active_region = Region::PAL;
+      break;
+    case FOURCC('R', 'M', '3', 'E'):
+      active_game = Game::PRIME_3_STANDALONE;
+      active_region = Region::NTSC_U;
+      break;
+    case FOURCC('R', 'M', '3', 'P'):
+      active_game = Game::PRIME_3_STANDALONE;
+      active_region = Region::PAL;
+      break;
+    default:
+      break;
   }
+
+  sActiveGame.store(active_game, std::memory_order_relaxed);
+  sActiveRegion.store(active_region, std::memory_order_relaxed);
 }
 
 void update_hardcore_enabled() {
@@ -199,7 +222,12 @@ void update_mod_state_from_config() {
   }
 
   // Disallow any PrimeHack control mods
-  if (!Config::Get(Config::PRIMEHACK_ENABLE) || UsingRealWiimote()) {
+#ifdef IPHONEOS
+  const bool primehack_controls_enabled = sPrimeHackEnabledForRun;
+#else
+  const bool primehack_controls_enabled = Config::Get(Config::PRIMEHACK_ENABLE);
+#endif
+  if (!primehack_controls_enabled || UsingRealWiimote()) {
     DisableMod<FpsControls>();
     DisableMod<SpringballButton>();
     DisableMod<ContextSensitiveControls>();
@@ -227,14 +255,20 @@ void foreach_mod(Fn&& fn) {
 
 template <typename Mem>
 void add_rso(Mem&& mem, u32 module_base, u32 name_base) {
+  if (!mem_check_any(module_base) || !mem_check_any(name_base)) {
+    return;
+  }
   // Add a handler for the epilogue
   u32 old_epilogue_addr = mem.template Read<u32>(module_base + kModuleEpilogueOffset);
   mem.template Write<u32>(sEpilogueHookStub, module_base + kModuleEpilogueOffset);
 
   std::string module_name = std::filesystem::path(readin_str(mem, name_base)).filename().string();
-  sModuleList.emplace(module_name, std::make_pair(module_base, old_epilogue_addr));
+  LoadedRsoModule mod_entry;
+  mod_entry.base = module_base;
+  mod_entry.old_epilogue = old_epilogue_addr;
 
-  foreach_mod([&mem, module_base, &module_name](PrimeMod& mod) {
+  auto& ppc = Core::System::GetInstance().GetPowerPC();
+  foreach_mod([&mem, &ppc, module_base, &module_name, &mod_entry](PrimeMod& mod) {
     if (mod.mod_state() == ModState::DISABLED) {
       return;
     }
@@ -245,9 +279,17 @@ void add_rso(Mem&& mem, u32 module_base, u32 name_base) {
     }
 
     for (auto const& change : *changes) {
-      mem.template Write<u32>(change.var, change.address + module_base);
+      const u32 addr = change.address + module_base;
+      const u32 orig = mem.template Read<u32>(addr);
+      mod_entry.original_code.emplace_back(addr, orig);
+      mod_entry.patched_code.emplace_back(addr, change.var);
+      if (orig != change.var) {
+        mem.template Write<u32>(change.var, addr);
+        ppc.ScheduleInvalidateCacheThreadSafe(addr);
+      }
     }
   });
+  sModuleList.insert_or_assign(std::move(module_name), std::move(mod_entry));
 }
 
 void mp3_post_rso_link(PowerPC::PowerPCState& state, PowerPC::MMU& mmu, u32) {
@@ -260,8 +302,8 @@ void mp3_post_rso_link(PowerPC::PowerPCState& state, PowerPC::MMU& mmu, u32) {
 u32 remove_rso(PowerPC::MMU& mmu, u32 mod_base) {
   u32 epilogue = 0;
   std::erase_if(sModuleList, [&epilogue, mod_base](auto const& item) {
-    if (item.second.first == mod_base) {
-      epilogue = item.second.second;
+    if (item.second.base == mod_base) {
+      epilogue = item.second.old_epilogue;
       return true;
     }
     return false;
@@ -327,11 +369,17 @@ void init_dynalib(Core::CPUThreadGuard const& guard, Game game, Region region) {
 
   // This is exclusively to handle savestate loads more gracefully
   const u32 rso_list_base = GetAddressDB()->lookup_address(game, region, "rso_list_base");
+  if (!mem_check_any(rso_list_base)) {
+    return;
+  }
+  constexpr int kMaxRsoEntries = 256;
+  int visited = 0;
   for (u32 cur_entry = PowerPC::MMU::HostRead<u32>(guard, rso_list_base + 4);
-       cur_entry != 0 && cur_entry != rso_list_base;
-       cur_entry = PowerPC::MMU::HostRead<u32>(guard, cur_entry + 4)) {
+       visited < kMaxRsoEntries && cur_entry != 0 && cur_entry != rso_list_base &&
+       mem_check_any(cur_entry);
+       cur_entry = PowerPC::MMU::HostRead<u32>(guard, cur_entry + 4), ++visited) {
     const u32 rso_metadata = PowerPC::MMU::HostRead<u32>(guard, cur_entry + 0xc);
-    if (rso_metadata == 0) {
+    if (!mem_check_any(rso_metadata)) {
       continue;
     }
 
@@ -348,9 +396,11 @@ void init_dynalib(Core::CPUThreadGuard const& guard, Game game, Region region) {
 }
 
 void apply_cc_list(const Core::CPUThreadGuard& cpu_guard, std::vector<CodeChange> const& cc_list) {
+  auto& ppc = Core::System::GetInstance().GetPowerPC();
   for (CodeChange const& cc : cc_list) {
     if (PowerPC::MMU::HostRead<u32>(cpu_guard, cc.address) != cc.var) {
       PowerPC::MMU::HostWrite<u32>(cpu_guard, cc.var, cc.address);
+      ppc.ScheduleInvalidateCacheThreadSafe(cc.address);
     }
   }
 }
@@ -383,21 +433,27 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
   }
 
   update_active_game_region(cpu_guard);
+  const Game active_game = sActiveGame.load(std::memory_order_relaxed);
+  const Region active_region = sActiveRegion.load(std::memory_order_relaxed);
 
 #ifdef IPHONEOS
-  EnforceIOSControllerLayout(sActiveGame);
+  if (!sPrimeHackEnabledLatched && active_game != Game::INVALID_GAME) {
+    sPrimeHackEnabledForRun = Config::Get(Config::PRIMEHACK_ENABLE);
+    sPrimeHackEnabledLatched = true;
+  }
+  EnforceIOSControllerLayout(active_game);
 #endif
 
   // Before doing any mod-related code, set the cpu guard
   foreach_mod([&cpu_guard](PrimeMod& mod) { mod.set_temporary_cpu_guard(&cpu_guard); });
 
-  if (sActiveGame != sLastGame || sActiveRegion != sLastRegion) {
+  if (active_game != sLastGame || active_region != sLastRegion) {
     sPublishedPlayerState.store(0, std::memory_order_relaxed);
     UpdateHackSettings();
 #ifdef IPHONEOS
-    UpdateTrilogyGpuSync(sActiveGame);
+    UpdateTrilogyGpuSync(active_game);
 #endif
-    AllocSwitchGame(sActiveGame, sActiveRegion);
+    AllocSwitchGame(active_game, active_region);
     foreach_mod([](PrimeMod& mod) { mod.reset_mod(); });
     GetVariableManager()->reset_variables();
     sDynalibChanges.clear();
@@ -406,11 +462,11 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
     // cannot write stale MP3 epilogues into guest RAM, and record sLastGame/sLastRegion even
     // when transitioning to INVALID_GAME so the reset block does not re-run every frame.
     sModuleList.clear();
-    sLastGame = sActiveGame;
-    sLastRegion = sActiveRegion;
+    sLastGame = active_game;
+    sLastRegion = active_region;
 
     for (auto& cb : sGameChangeCbList) {
-      cb(sActiveGame, sActiveRegion);
+      cb(active_game, active_region);
     }
     // Cache hardcore state at each game change
     update_hardcore_enabled();
@@ -418,14 +474,14 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
 
   update_mod_state_from_config();
 
-  if (sActiveGame != Game::INVALID_GAME && sActiveRegion != Region::INVALID_REGION) {
-    foreach_mod([](PrimeMod& mod) {
+  if (active_game != Game::INVALID_GAME && active_region != Region::INVALID_REGION) {
+    foreach_mod([active_game, active_region](PrimeMod& mod) {
       // Skip any "cheat" mods
       if (mod.is_cheat() && sHardcoreEnabled) {
         return;
       }
 
-      if (!mod.is_initialized() && mod.init_mod(sActiveGame, sActiveRegion)) {
+      if (!mod.is_initialized() && mod.init_mod(active_game, active_region)) {
         mod.mark_initialized();
       }
       if (mod.should_apply_changes()) {
@@ -436,20 +492,20 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
 
     // Initialize the dynalib AFTER mods to capture their requested changes for savestates
     if (sDynalibChanges.empty()) {
-      init_dynalib(cpu_guard, sActiveGame, sActiveRegion);
+      init_dynalib(cpu_guard, active_game, active_region);
     }
     apply_cc_list(cpu_guard, sDynalibChanges);
 
-    sLastGame = sActiveGame;
-    sLastRegion = sActiveRegion;
+    sLastGame = active_game;
+    sLastRegion = active_region;
 
-    foreach_mod([](PrimeMod& mod) {
+    foreach_mod([active_game, active_region](PrimeMod& mod) {
       if (mod.is_cheat() && sHardcoreEnabled) {
         return;
       }
 
       if (mod.mod_state() == ModState::ENABLED) {
-        mod.run_mod(sActiveGame, sActiveRegion);
+        mod.run_mod(active_game, active_region);
       }
     });
   }
@@ -464,7 +520,7 @@ void RunActiveMods(const Core::CPUThreadGuard& cpu_guard) {
 }
 
 Game GetActiveGame() {
-  return sActiveGame;
+  return sActiveGame.load(std::memory_order_relaxed);
 }
 
 u32 GetPublishedPlayerState() {
@@ -476,7 +532,7 @@ void PublishPlayerState(u32 state) {
 }
 
 Region GetActiveRegion() {
-  return sActiveRegion;
+  return sActiveRegion.load(std::memory_order_relaxed);
 }
 
 void Shutdown() {
@@ -487,13 +543,21 @@ void Shutdown() {
     mod.reset_mod();
     mod.set_temporary_cpu_guard(nullptr);
   });
+  GetVariableManager()->reset_variables();
   sDynalibChanges.clear();
   sDynalibOriginal.clear();
   sModuleList.clear();
+  sChangesStashed = false;
+#ifdef IPHONEOS
+  sPrimeHackEnabledForRun = true;
+  sPrimeHackEnabledLatched = false;
+#endif
 
-  sActiveGame = sLastGame = Game::INVALID_GAME;
+  sActiveGame.store(Game::INVALID_GAME, std::memory_order_relaxed);
+  sLastGame = Game::INVALID_GAME;
   sPublishedPlayerState.store(0, std::memory_order_relaxed);
-  sActiveRegion = sLastRegion = Region::INVALID_REGION;
+  sActiveRegion.store(Region::INVALID_REGION, std::memory_order_relaxed);
+  sLastRegion = Region::INVALID_REGION;
   for (auto& cb : sGameChangeCbList) {
     cb(Game::INVALID_GAME, Region::INVALID_REGION);
   }
@@ -515,9 +579,12 @@ void StashMemoryChanges() {
     mod.set_temporary_cpu_guard(nullptr);
   });
   apply_cc_list(guard, sDynalibOriginal);
-  for (auto const& module : sModuleList) {
-    PowerPC::MMU::HostWrite<u32>(guard, module.second.second,
-                                 module.second.first + kModuleEpilogueOffset);
+  for (auto const& [name, module] : sModuleList) {
+    apply_cc_list(guard, module.original_code);
+    if (mem_check_any(module.base)) {
+      PowerPC::MMU::HostWrite<u32>(guard, module.old_epilogue,
+                                   module.base + kModuleEpilogueOffset);
+    }
   }
 }
 
@@ -533,9 +600,12 @@ void RestoreMemoryChanges() {
     mod.set_temporary_cpu_guard(nullptr);
   });
   apply_cc_list(guard, sDynalibChanges);
-  for (auto const& module : sModuleList) {
-    PowerPC::MMU::HostWrite<u32>(guard, sEpilogueHookStub,
-                                 module.second.first + kModuleEpilogueOffset);
+  for (auto const& [name, module] : sModuleList) {
+    apply_cc_list(guard, module.patched_code);
+    if (mem_check_any(module.base)) {
+      PowerPC::MMU::HostWrite<u32>(guard, sEpilogueHookStub,
+                                   module.base + kModuleEpilogueOffset);
+    }
   }
 }
 

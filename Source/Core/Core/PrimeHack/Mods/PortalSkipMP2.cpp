@@ -25,7 +25,7 @@ void PortalSkipMP2::run_mod(Game game, Region region) {
   LOOKUP_DYN(area_layers_vector);
 
   LOOKUP_DYN(object_list);
-  if (object_list == 0) {
+  if (world_id == 0 || area_id == 0 || area_layers_vector == 0 || object_list == 0) {
     return;
   }
 

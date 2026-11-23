@@ -127,6 +127,9 @@ void Noclip::run_mod_mp1(bool has_control) {
     had_control = has_control;
     return;
   }
+  if (!has_saved_matexclude) {
+    capture_player_state(Game::PRIME_1, player);
+  }
   if (has_control && !had_control) {
     enable_patches();
     had_control = has_control;
@@ -147,7 +150,11 @@ void Noclip::run_mod_mp1(bool has_control) {
     return;
   }
 
-  const u32 camera_tf_addr = read32(object_list + ((camera_id & 0x3ff) << 3) + 4) + 0x2c;
+  const u32 camera_address = read32(object_list + ((camera_id & 0x3ff) << 3) + 4);
+  if (!mem_check(camera_address)) {
+    return;
+  }
+  const u32 camera_tf_addr = camera_address + 0x2c;
   vec3 movement_vec = (get_movement_vec(camera_tf_addr) * 0.5f) + player_transform.loc();
 
   LOOKUP_DYN(move_state);
@@ -155,7 +162,8 @@ void Noclip::run_mod_mp1(bool has_control) {
   writef32(movement_vec.x, player + 0x2c + 0x0c);
   writef32(movement_vec.y, player + 0x2c + 0x1c);
   writef32(movement_vec.z, player + 0x2c + 0x2c);
-  write32(0, move_state);
+  if (move_state != 0)
+    write32(0, move_state);
 }
 
 void Noclip::run_mod_mp1_gc(bool has_control) {
@@ -171,6 +179,9 @@ void Noclip::run_mod_mp1_gc(bool has_control) {
     apply_instruction_changes();
     had_control = has_control;
     return;
+  }
+  if (!has_saved_matexclude) {
+    capture_player_state(GetActiveGame(), player);
   }
 
   if (has_control && !had_control) {
@@ -196,6 +207,9 @@ void Noclip::run_mod_mp1_gc(bool has_control) {
   u32 camera_offset = (camera_uid & 0x3ff) << 3;
   const u32 camera_address =
       read32(object_list + 4 + camera_offset);
+  if (!mem_check(camera_address)) {
+    return;
+  }
   vec3 movement_vec = (get_movement_vec(camera_address + 0x34) * 0.5f) + player_transform.loc();
 
   LOOKUP_DYN(move_state);
@@ -203,7 +217,8 @@ void Noclip::run_mod_mp1_gc(bool has_control) {
   writef32(movement_vec.x, player + xf_offset + 0x0c);
   writef32(movement_vec.y, player + xf_offset + 0x1c);
   writef32(movement_vec.z, player + xf_offset + 0x2c);
-  write32(0, move_state);
+  if (move_state != 0)
+    write32(0, move_state);
 }
 
 void Noclip::run_mod_mp2(bool has_control) {
@@ -218,6 +233,9 @@ void Noclip::run_mod_mp2(bool has_control) {
     apply_instruction_changes();
     had_control = has_control;
     return;
+  }
+  if (!has_saved_matexclude) {
+    capture_player_state(Game::PRIME_2, player);
   }
 
   if (has_control && !had_control) {
@@ -239,11 +257,15 @@ void Noclip::run_mod_mp2(bool has_control) {
     return;
   }
   u32 camera_address = read32(object_list + 4 + ((camera_uid & 0x3ff) << 3));
+  if (!mem_check(camera_address)) {
+    return;
+  }
 
   LOOKUP_DYN(move_state);
   player_vec = (get_movement_vec(camera_address + 0x20) * 0.5f) + player_vec;
   player_vec.write_to(*active_guard, player + 0x50);
-  write32(0, move_state);
+  if (move_state != 0)
+    write32(0, move_state);
 }
 
 void Noclip::run_mod_mp2_gc(bool has_control) {
@@ -263,6 +285,9 @@ void Noclip::run_mod_mp2_gc(bool has_control) {
     had_control = has_control;
     return;
   }
+  if (!has_saved_matexclude) {
+    capture_player_state(Game::PRIME_2_GCN, player);
+  }
   if (has_control && !had_control) {
     enable_patches();
     had_control = has_control;
@@ -282,11 +307,15 @@ void Noclip::run_mod_mp2_gc(bool has_control) {
     return;
   }
   u32 camera_address = read32(object_list + 4 + ((camera_uid & 0x3ff) << 3));
+  if (!mem_check(camera_address)) {
+    return;
+  }
 
   LOOKUP_DYN(move_state);
   player_vec = (get_movement_vec(camera_address + 0x24) * 0.5f) + player_vec;
   player_vec.write_to(*active_guard, player + 0x54);
-  write32(0, move_state);
+  if (move_state != 0)
+    write32(0, move_state);
 }
 
 void Noclip::run_mod_mp3(bool has_control) {
@@ -301,6 +330,9 @@ void Noclip::run_mod_mp3(bool has_control) {
     apply_instruction_changes();
     had_control = has_control;
     return;
+  }
+  if (!has_saved_matexclude) {
+    capture_player_state(GetActiveGame(), player);
   }
 
   if (has_control && !had_control) {
@@ -322,11 +354,15 @@ void Noclip::run_mod_mp3(bool has_control) {
     return;
   }
   const u32 camera_address = read32(object_list + 4 + ((camera_id & 0x7ff) << 3));
+  if (!mem_check(camera_address)) {
+    return;
+  }
 
   LOOKUP_DYN(move_state);
   player_vec = (get_movement_vec(camera_address + 0x3c) * 0.5f) + player_vec;
   player_vec.write_to(*active_guard, player + 0x6c);
-  write32(0, move_state);
+  if (move_state != 0)
+    write32(0, move_state);
 }
 
 bool Noclip::init_mod(Game game, Region region) {
@@ -562,6 +598,46 @@ void Noclip::noclip_code_mp3(u32 cplayer_address, u32 start_point, u32 return_lo
   add_code_change(return_location - 4, 0x48000000 | (start_delta & 0x3fffffc));
 }
 
+void Noclip::capture_player_state(Game game, u32 player) {
+  switch (game) {
+    case Game::PRIME_1:
+      player_transform.read_from(*active_guard, player + 0x2c);
+      old_matexclude_list = read64(player + 0x70);
+      write64(0xffffffffffffffff, player + 0x70);
+      has_saved_matexclude = true;
+      break;
+    case Game::PRIME_1_GCN:
+    case Game::PRIME_1_GCN_R1:
+    case Game::PRIME_1_GCN_R2:
+      player_transform.read_from(*active_guard, player + 0x34);
+      old_matexclude_list = read64(player + 0x78);
+      write64(0xffffffffffffffff, player + 0x78);
+      has_saved_matexclude = true;
+      break;
+    case Game::PRIME_2:
+      player_vec.read_from(*active_guard, player + 0x50);
+      old_matexclude_list = read64(player + 0x70);
+      write64(0xffffffffffffffff, player + 0x70);
+      has_saved_matexclude = true;
+      break;
+    case Game::PRIME_2_GCN:
+      player_vec.read_from(*active_guard, player + 0x54);
+      old_matexclude_list = read64(player + 0x74);
+      write64(0xffffffffffffffff, player + 0x74);
+      has_saved_matexclude = true;
+      break;
+    case Game::PRIME_3:
+    case Game::PRIME_3_STANDALONE:
+      player_vec.read_from(*active_guard, player + 0x6c);
+      old_matexclude_list = read64(player + 0x88);
+      write64(0xffffffffffffffff, player + 0x88);
+      has_saved_matexclude = true;
+      break;
+    default:
+      break;
+  }
+}
+
 void Noclip::on_state_change(ModState old_state) {
   LOOKUP_DYN(player);
   if (player == 0) {
@@ -569,48 +645,7 @@ void Noclip::on_state_change(ModState old_state) {
   }
 
   if (mod_state() == ModState::ENABLED && old_state != ModState::ENABLED) {
-    switch (GetActiveGame()) {
-      case Game::PRIME_1:
-        player_transform.read_from(*active_guard, player + 0x2c);
-        old_matexclude_list = read64(player + 0x70);
-        write64(0xffffffffffffffff, player + 0x70);
-        has_saved_matexclude = true;
-        break;
-      case Game::PRIME_1_GCN:
-      case Game::PRIME_1_GCN_R1:
-      case Game::PRIME_1_GCN_R2:
-        player_transform.read_from(*active_guard, player + 0x34);
-        old_matexclude_list = read64(player + 0x78);
-        write64(0xffffffffffffffff, player + 0x78);
-        has_saved_matexclude = true;
-        break;
-      case Game::PRIME_2:
-        player_vec.read_from(*active_guard, player + 0x50);
-        old_matexclude_list = read64(player + 0x70);
-        write64(0xffffffffffffffff, player + 0x70);
-        has_saved_matexclude = true;
-        break;
-      case Game::PRIME_2_GCN:
-        player_vec.read_from(*active_guard, player + 0x54);
-        old_matexclude_list = read64(player + 0x74);
-        write64(0xffffffffffffffff, player + 0x74);
-        has_saved_matexclude = true;
-        break;
-      case Game::PRIME_3:
-        player_vec.read_from(*active_guard, player + 0x6c);
-        old_matexclude_list = read64(player + 0x88);
-        write64(0xffffffffffffffff, player + 0x88);
-        has_saved_matexclude = true;
-        break;
-      case Game::PRIME_3_STANDALONE:
-        player_vec.read_from(*active_guard, player + 0x6c);
-        old_matexclude_list = read64(player + 0x88);
-        write64(0xffffffffffffffff, player + 0x88);
-        has_saved_matexclude = true;
-        break;
-      default:
-        break;
-    }
+    capture_player_state(GetActiveGame(), player);
   } else if (mod_state() == ModState::DISABLED && old_state == ModState::ENABLED) {
     // PrimeHack for iPad: only restore old_matexclude_list if it was captured for this player.
     if (!has_saved_matexclude) {

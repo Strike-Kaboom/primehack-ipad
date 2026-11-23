@@ -273,14 +273,20 @@ SectionID ElfReader::GetSectionByName(const char* name, int firstSection) const
 std::unordered_map<std::string_view, u8 const*> ElfReader::StaticSymMap() const
 {
   std::unordered_map<std::string_view, u8 const*> sym_map;
+  if (!m_is_valid || !header || !sections)
+    return sym_map;
 
   SectionID sec = GetSectionByName(".symtab");
   if (sec != -1)
   {
-    int strings_idx = sections[sec].sh_link;
+    const u32 strings_idx = sections[sec].sh_link;
+    if (strings_idx >= header->e_shnum)
+      return sym_map;
     const char* strings_base = (const char*)GetSectionDataPtr(strings_idx);
-
     Elf32_Sym* symtab = (Elf32_Sym*)(GetSectionDataPtr(sec));
+    if (!strings_base || !symtab)
+      return sym_map;
+    const u32 strings_size = sections[strings_idx].sh_size;
     int nsyms = sections[sec].sh_size / sizeof(Elf32_Sym);
     for (int sym = 0; sym < nsyms; sym++)
     {
@@ -290,9 +296,18 @@ std::unordered_map<std::string_view, u8 const*> ElfReader::StaticSymMap() const
         continue;
       }
 
-      const int sec_index = Common::swap16(symtab[sym].st_shndx);
+      const u16 sec_index = Common::swap16(symtab[sym].st_shndx);
+      if (sec_index == 0 || sec_index >= header->e_shnum)
+      {
+        continue;
+      }
+      const u32 name_off = Common::swap32(symtab[sym].st_name);
+      if (name_off >= strings_size)
+      {
+        continue;
+      }
       const u32 value = Common::swap32(symtab[sym].st_value);
-      const char* name = strings_base + Common::swap32(symtab[sym].st_name);
+      const char* name = strings_base + name_off;
       if (sections[sec_index].sh_type == SHT_NOBITS)
       {
         // Signifies NOBITS
@@ -300,10 +315,11 @@ std::unordered_map<std::string_view, u8 const*> ElfReader::StaticSymMap() const
       }
       else
       {
+        const u8* sec_data = GetSectionDataPtr(sec_index);
         const u32 rva = value - sections[sec_index].sh_addr;
-        if (rva < sections[sec_index].sh_size)
+        if (sec_data && value >= sections[sec_index].sh_addr && rva < sections[sec_index].sh_size)
         {
-          sym_map[std::string_view(name)] = GetSectionDataPtr(sec_index) + rva;
+          sym_map[std::string_view(name)] = sec_data + rva;
         }
       }
     }

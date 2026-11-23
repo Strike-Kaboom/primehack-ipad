@@ -14,8 +14,16 @@ namespace prime {
 namespace {
 
 u32 bsearch_strg_table(PowerPC::MMU& mmu, std::string const& key, u32 strg_header) {
-  u32 bsearch_left = mmu.Read<u32>(strg_header + 0x14);
-  int dist = mmu.Read<u32>(strg_header + 0x8);
+  if (!mem_check_any(strg_header)) {
+    return 0;
+  }
+  const u32 table_base = mmu.Read<u32>(strg_header + 0x14);
+  const u32 orig_count = mmu.Read<u32>(strg_header + 0x8);
+  if (!mem_check_any(table_base) || orig_count == 0 || orig_count > 0x100000) {
+    return 0;
+  }
+  u32 bsearch_left = table_base;
+  int dist = static_cast<int>(orig_count);
   while (dist > 0) {
     int midpoint_offset = (dist * 4) & ~0x7;
     int half_dist = dist >> 1;
@@ -26,6 +34,9 @@ u32 bsearch_strg_table(PowerPC::MMU& mmu, std::string const& key, u32 strg_heade
     } else {
       dist = half_dist;
     }
+  }
+  if (bsearch_left >= table_base + orig_count * 8) {
+    return 0;
   }
   return bsearch_left;
 }
@@ -44,11 +55,16 @@ void STRGPatch::patch_strg_entry_vmc_common(PowerPC::PowerPCState& ppc_state, Po
   auto replacement = replace_tbl.find(key);
   if (replacement != replace_tbl.end()) {
     u32 bsearch_result = bsearch_strg_table(mmu, key, strg_header);
+    if (bsearch_result == 0) {
+      return;
+    }
     std::string found_key = readin_str(mmu, mmu.Read<u32>(bsearch_result));
     if (found_key == key) {
       u32 strg_val_index = mmu.Read<u32>(bsearch_result + 4);
       u32 strg_val_table = mmu.Read<u32>(strg_header + 0x1c);
-      mmu.Write<u32>(replacement->second.first + guest_table_addr, strg_val_table + 4 * strg_val_index);
+      if (mem_check_any(strg_val_table)) {
+        mmu.Write<u32>(replacement->second.first + guest_table_addr, strg_val_table + 4 * strg_val_index);
+      }
     }
   }
 }

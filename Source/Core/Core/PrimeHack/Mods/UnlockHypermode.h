@@ -16,6 +16,9 @@ public:
     }
 
     u32 base = read32(Core::System::GetInstance().GetPPCState().gpr[13] - r13_offset);
+    if (!mem_check(base)) {
+      return;
+    }
     write8(1, base + 0x68);
     write8(1, base + 0xa0);
     write8(1, base + 0xd8);

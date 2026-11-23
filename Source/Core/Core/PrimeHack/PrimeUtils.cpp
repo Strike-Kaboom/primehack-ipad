@@ -35,9 +35,15 @@ void set_visor_owned(int index, bool owned) {
 }
 
 void reset_beam_visor_state() {
-  // PrimeHack for iPad: clear slot indices across game switches so scroll starts from slot 0.
+  // PrimeHack for iPad: clear per-game state across game switches and shutdown.
   current_beam = 0;
   current_visor = 0;
+  beam_owned.fill(false);
+  visor_owned.fill(false);
+  cursor_x = 0.f;
+  cursor_y = 0.f;
+  was_in_alternate = false;
+  swapped_to_alternate = false;
 }
 
 void set_cursor_pos(float x, float y) {
@@ -218,14 +224,23 @@ static AspectMode get_aspect_mode() {
 static void handle_wiimote_IR(Core::CPUThreadGuard const& guard, u32 x_address,
                               u32 y_address, Region region, float half_width,
                               float half_height, AspectMode mode, float aspect_step) {
+  if (!g_presenter) {
+    return;
+  }
   constexpr float kInternalWidth = 640.f;
   const float cur_width = g_presenter->GetBackbufferWidth();
   const float cur_height = g_presenter->GetBackbufferHeight();
+  if (cur_width <= 0.f || cur_height <= 0.f) {
+    return;
+  }
   float unstretched_w = kMetroidAr > (cur_width / cur_height) ? cur_width : cur_height * kMetroidAr;
   if (region == Region::PAL) {
     unstretched_w *= kPalStretchMultiplier;
   } else {
     unstretched_w *= kNtscStretchMultiplier;
+  }
+  if (unstretched_w <= 0.f) {
+    return;
   }
 
   // Special casing for widescreen hack + stretch to fit
@@ -252,6 +267,11 @@ static void handle_wiimote_IR(Core::CPUThreadGuard const& guard, u32 x_address,
     cursor_sensitivity_conv *= (kInternalWidth / unstretched_w);
   }
 
+  if (!std::isfinite(cursor_x))
+    cursor_x = 0.f;
+  if (!std::isfinite(cursor_y))
+    cursor_y = 0.f;
+
   cursor_x += static_cast<float>(dx) * cursor_sensitivity_conv;
   cursor_y += static_cast<float>(dy) * cursor_sensitivity_conv * aspect_step;
 
@@ -263,10 +283,16 @@ static void handle_wiimote_IR(Core::CPUThreadGuard const& guard, u32 x_address,
 }
 
 void handle_cursor(Core::CPUThreadGuard const& guard, u32 x_address, u32 y_address, Region region) {
+  if (!g_presenter) {
+    return;
+  }
   const AspectMode aspect_mode = get_aspect_mode();
   if (aspect_mode == AspectMode::Stretch) {
     const float cur_width = g_presenter->GetBackbufferWidth();
     const float cur_height = g_presenter->GetBackbufferHeight();
+    if (cur_width <= 0.f || cur_height <= 0.f) {
+      return;
+    }
     const float render_aspect = cur_width / cur_height;
     handle_wiimote_IR(guard, x_address, y_address, region,
                       (region == Region::PAL ? kPalHalfHRange : kNtscHalfHRange),

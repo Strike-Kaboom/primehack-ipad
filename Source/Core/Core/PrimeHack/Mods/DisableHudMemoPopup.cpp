@@ -55,6 +55,11 @@ void restart_streamed_audio_mp3(PowerPC::PowerPCState& ppc_state, PowerPC::MMU&,
 
 } // namespace
 
+void DisableHudMemoPopup::on_reset() {
+  restart_audio_timer = 0.f;
+  restart_audio_signal = false;
+}
+
 void DisableHudMemoPopup::run_mod(Game game, Region region) {
   if (game != Game::PRIME_3 && game != Game::PRIME_3_STANDALONE) {
     return;

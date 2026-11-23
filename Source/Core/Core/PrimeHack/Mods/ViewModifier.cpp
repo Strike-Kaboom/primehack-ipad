@@ -176,11 +176,20 @@ void ViewModifier::run_mod_mp2() {
     return;
   }
   const u32 camera = read32(object_list + ((camera_id & 0x3ff) << 3) + 4);
+  if (!mem_check(camera)) {
+    return;
+  }
 
   const float fov = std::min(get_fov(), 170.f);
   writef32(fov, camera + 0x1e8);
 
-  adjust_viewmodel(fov, read32(read32(tweakgun)) + 0x4c, camera + 0x1c4, 0x3d200000);
+  const u32 tweakgun_ptr = read32(tweakgun);
+  if (mem_check(tweakgun_ptr)) {
+    const u32 tweakgun_obj = read32(tweakgun_ptr);
+    if (mem_check(tweakgun_obj)) {
+      adjust_viewmodel(fov, tweakgun_obj + 0x4c, camera + 0x1c4, 0x3d200000);
+    }
+  }
 
   set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
 }
@@ -221,9 +230,18 @@ void ViewModifier::run_mod_mp2_gc() {
   }
 
   const u32 camera = read32(object_list + ((camera_id & 0x3ff) << 3) + 4);
+  if (!mem_check(camera)) {
+    return;
+  }
   const float fov = std::min(get_fov(), 170.f);
   writef32(fov, camera + 0x1f0);
-  adjust_viewmodel(fov, read32(read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweakgun_offset)) + 0x50, camera + 0x1cc, 0x3d200000);
+  const u32 tweakgun_ptr = read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweakgun_offset);
+  if (mem_check(tweakgun_ptr)) {
+    const u32 tweakgun_obj = read32(tweakgun_ptr);
+    if (mem_check(tweakgun_obj)) {
+      adjust_viewmodel(fov, tweakgun_obj + 0x50, camera + 0x1cc, 0x3d200000);
+    }
+  }
 
   set_code_group_state("culling", (GetCulling() || get_fov() > 101.f) ? ModState::ENABLED : ModState::DISABLED);
 }
@@ -259,6 +277,9 @@ void ViewModifier::adjust_fov_mp3(float fov, u16 camera_id) {
   }
 
   const u32 camera_params = read32(camera_addr  + 0x178);
+  if (!mem_check(camera_params)) {
+    return;
+  }
   writef32(fov, camera_params + 0x1c);
   writef32(fov, camera_params + 0x18);
 }
@@ -293,7 +314,13 @@ void ViewModifier::run_mod_mp3() {
     return;
   }
   const float fov = std::min(get_fov(), 170.f);
-  adjust_viewmodel(fov, read32(read32(tweakgun)) + 0xe0, perspective_info + 0x8c, 0x3dcccccd);
+  const u32 tweakgun_ptr = read32(tweakgun);
+  if (mem_check(tweakgun_ptr)) {
+    const u32 tweakgun_obj = read32(tweakgun_ptr);
+    if (mem_check(tweakgun_obj)) {
+      adjust_viewmodel(fov, tweakgun_obj + 0xe0, perspective_info + 0x8c, 0x3dcccccd);
+    }
+  }
 
   set_code_group_state("culling", (GetCulling() || get_fov() > 94.f) ? ModState::ENABLED : ModState::DISABLED);
 }

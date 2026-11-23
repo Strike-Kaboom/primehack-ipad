@@ -46,6 +46,9 @@ bool FpsControls::in_ridley_fight(Region active_region) {
   constexpr u32 kRidleyFightArea = 0x16;
   LOOKUP_DYN(world_id);
   LOOKUP_DYN(area_id);
+  if (world_id == 0 || area_id == 0) {
+    return false;
+  }
   if (read64(world_id) != kNorionWorldId) {
     return false;
   }
@@ -199,6 +202,9 @@ void FpsControls::handle_beam_visor_switch(std::array<int, 4> const &beams,
   // Global array of all powerups (measured in "ammunition"
   // even for things like visors/beams)
   LOOKUP_DYN(powerups_array);
+  if (powerups_array == 0) {
+    return;
+  }
   LOOKUP(powerups_size);
   LOOKUP(powerups_offset);
 
@@ -226,6 +232,9 @@ void FpsControls::handle_beam_visor_switch(std::array<int, 4> const &beams,
   }
 
   LOOKUP_DYN(active_visor);
+  if (active_visor == 0) {
+    return;
+  }
   int visor_id, visor_off;
   std::tie(visor_id, visor_off) = get_visor_switch(visors, read32(active_visor) == 0);
 
@@ -239,10 +248,12 @@ void FpsControls::handle_beam_visor_switch(std::array<int, 4> const &beams,
         auto active_game = GetActiveGame();
         if (active_game == Game::PRIME_1 || active_game == Game::PRIME_2) {
           LOOKUP_DYN(gun_holster_state);
-          LOOKUP(holster_timer_offset);
+          if (gun_holster_state != 0) {
+            LOOKUP(holster_timer_offset);
 
-          write32(3, gun_holster_state);
-          writef32(0.2f, gun_holster_state + holster_timer_offset); // Holster timer
+            write32(3, gun_holster_state);
+            writef32(0.2f, gun_holster_state + holster_timer_offset); // Holster timer
+          }
         }
       }
     }
@@ -305,15 +316,16 @@ void FpsControls::run_mod_mp1(Region region) {
     if (beamvisor_menu_enabled) {
       LOOKUP_DYN(beamvisor_menu_mode);
       // if the menu id is not null
-      if (read32(beamvisor_menu_mode) != 0xffffffff) {
+      if (beamvisor_menu_mode != 0 && read32(beamvisor_menu_mode) != 0xffffffff) {
         if (menu_open == false) {
           set_code_group_state("beam_change", ModState::DISABLED);
         }
 
-        handle_reticle(*active_guard, cursor + 0x9c, cursor + 0x15c, region, GetFov(Game::PRIME_1));
+        if (cursor != 0)
+          handle_reticle(*active_guard, cursor + 0x9c, cursor + 0x15c, region, GetFov(Game::PRIME_1));
         menu_open = true;
       }
-    } else if (HandleReticleLockOn()) {  // If we handle menus, this doesn't need to be ran
+    } else if (HandleReticleLockOn() && cursor != 0) {  // If we handle menus, this doesn't need to be ran
       handle_reticle(*active_guard, cursor + 0x9c, cursor + 0x15c, region, GetFov(Game::PRIME_1));
     }
 
@@ -327,8 +339,10 @@ void FpsControls::run_mod_mp1(Region region) {
 
   set_code_group_state("disable_gun_move", ModState::ENABLED);
   set_cursor_pos(0, 0);
-  write32(0, cursor + 0x9c);
-  write32(0, cursor + 0x15c);
+  if (cursor != 0) {
+    write32(0, cursor + 0x9c);
+    write32(0, cursor + 0x15c);
+  }
 
   LOOKUP_DYN(ball_state);
   LOOKUP_DYN(menu_state);
@@ -443,15 +457,16 @@ void FpsControls::run_mod_mp2(Region region) {
       LOOKUP_DYN(beamvisor_menu_mode);
 
       // if the menu id is not null
-      if (read32(beamvisor_menu_mode) != 0xffffffff) {
+      if (beamvisor_menu_mode != 0 && read32(beamvisor_menu_mode) != 0xffffffff) {
         if (menu_open == false) {
           set_code_group_state("beam_change", ModState::DISABLED);
         }
 
-        handle_reticle(*active_guard, cursor + 0x9c, cursor + 0x15c, region, GetFov(Game::PRIME_2));
+        if (cursor != 0)
+          handle_reticle(*active_guard, cursor + 0x9c, cursor + 0x15c, region, GetFov(Game::PRIME_2));
         menu_open = true;
       }
-    } else if (HandleReticleLockOn()) {
+    } else if (HandleReticleLockOn() && cursor != 0) {
       handle_reticle(*active_guard, cursor + 0x9c, cursor + 0x15c, region, GetFov(Game::PRIME_2));
     }
     return;
@@ -464,13 +479,16 @@ void FpsControls::run_mod_mp2(Region region) {
 
   set_code_group_state("disable_gun_move", ModState::ENABLED);
   set_cursor_pos(0, 0);
-  write32(0, cursor + 0x9c);
-  write32(0, cursor + 0x15c);
+  if (cursor != 0) {
+    write32(0, cursor + 0x9c);
+    write32(0, cursor + 0x15c);
+  }
 
   LOOKUP_DYN(ball_state);
   LOOKUP_DYN(menu_state);
   LOOKUP_DYN(screw_state);
-  swap_alt_profiles(read32(ball_state), read32(menu_state), read32(screw_state));
+  if (ball_state != 0 && menu_state != 0 && screw_state != 0)
+    swap_alt_profiles(read32(ball_state), read32(menu_state), read32(screw_state));
 
   LOOKUP_DYN(camera_state);
   if (read32(camera_state) != 0) {
@@ -487,11 +505,13 @@ void FpsControls::run_mod_mp2(Region region) {
   cplayer_xf.write_to(*active_guard, player + xf_offset);
 
   LOOKUP(tweak_player_offset);
-  const u32 tweak_player_address =
-    read32(read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweak_player_offset));
-  if (mem_check(tweak_player_address)) {
-    // This one's stored as degrees instead of radians
-    writef32(87.0896f, tweak_player_address + 0x180);
+  const u32 tweak_player_ptr = read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweak_player_offset);
+  if (mem_check(tweak_player_ptr)) {
+    const u32 tweak_player_address = read32(tweak_player_ptr);
+    if (mem_check(tweak_player_address)) {
+      // This one's stored as degrees instead of radians
+      writef32(87.0896f, tweak_player_address + 0x180);
+    }
   }
 }
 
@@ -514,9 +534,12 @@ void FpsControls::run_mod_mp2_gc(Region region) {
   const u32 crosshair_color_rgba = show_crosshair ? GetGCCrosshairColor() : 0x4b7ea331;
   set_code_group_state("show_crosshair", show_crosshair ? ModState::ENABLED : ModState::DISABLED);
   LOOKUP(tweakgui_offset);
-  u32 crosshair_color_addr = read32(read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweakgui_offset)) + 0x268;
-  if (show_crosshair) {
-    write32(crosshair_color_rgba, crosshair_color_addr);
+  const u32 tweakgui_ptr = read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweakgui_offset);
+  if (show_crosshair && mem_check(tweakgui_ptr)) {
+    const u32 tweakgui_addr = read32(tweakgui_ptr);
+    if (mem_check(tweakgui_addr)) {
+      write32(crosshair_color_rgba, tweakgui_addr + 0x268);
+    }
   }
 
   LOOKUP(xf_offset);
@@ -548,12 +571,15 @@ void FpsControls::run_mod_mp2_gc(Region region) {
   cplayer_xf.write_to(*active_guard, player + xf_offset);
 
   LOOKUP(tweak_player_offset);
-  const u32 tweak_player_address = read32(read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweak_player_offset));
-  if (mem_check(tweak_player_address)) {
-    // Freelook rotation speed tweak
-    writef32(1000.f, tweak_player_address + 0x188);
-    // Freelook pitch half-angle range tweak
-    writef32(87.0896f, tweak_player_address + 0x184);
+  const u32 tweak_player_ptr = read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweak_player_offset);
+  if (mem_check(tweak_player_ptr)) {
+    const u32 tweak_player_address = read32(tweak_player_ptr);
+    if (mem_check(tweak_player_address)) {
+      // Freelook rotation speed tweak
+      writef32(1000.f, tweak_player_address + 0x188);
+      // Freelook pitch half-angle range tweak
+      writef32(87.0896f, tweak_player_address + 0x184);
+    }
   }
 }
 
@@ -645,6 +671,9 @@ void FpsControls::run_mod_mp3(Game active_game, Region active_region) {
 
   LOOKUP_DYN(cursor);
   const auto mp3_handle_cursor = [this, cursor, active_region] (bool locked, bool for_reticle) {
+    if (cursor == 0) {
+      return;
+    }
     if (locked) {
       set_code_group_state("disable_gun_move", ModState::ENABLED);
       write32(0, cursor + 0x9c);
@@ -663,7 +692,8 @@ void FpsControls::run_mod_mp3(Game active_game, Region active_region) {
   LOOKUP_DYN(menu_state);
   LOOKUP_DYN(screw_state);
 
-  swap_alt_profiles(read32(ball_state), read32(menu_state), read32(screw_state));
+  if (ball_state != 0 && menu_state != 0 && screw_state != 0)
+    swap_alt_profiles(read32(ball_state), read32(menu_state), read32(screw_state));
 
   // Handles menu screen cursor
   LOOKUP(cursor_dlg_enabled);
@@ -1049,9 +1079,6 @@ void FpsControls::init_mod_mp1(Region region) {
     add_code_change(0x80075f8c, 0x60000000, "visor_menu");
 
     add_beam_change_code_mp1(0x8018e7dc);
-
-    // Steps over bounds checking on the reticle
-    add_code_change(0x80015164, 0x4800010c);
   }
   has_beams = true;
 }
