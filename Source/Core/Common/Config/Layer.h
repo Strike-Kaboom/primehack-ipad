@@ -5,10 +5,12 @@
 
 #include <map>
 #include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <type_traits>
 
+#include "Common/CommonTypes.h"
 #include "Common/Config/ConfigInfo.h"
 #include "Common/Config/Enums.h"
 #include "Common/StringUtil.h"
@@ -116,10 +118,15 @@ public:
   template <typename T>
   std::optional<T> Get(const Location& location) const
   {
-    const auto iter = m_map.find(location);
-    if (iter == m_map.end() || !iter->second.has_value())
-      return std::nullopt;
-    return detail::TryParse<T>(*iter->second);
+    std::string raw_value;
+    {
+      std::lock_guard lock(m_mutex);
+      const auto iter = m_map.find(location);
+      if (iter == m_map.end() || !iter->second.has_value())
+        return std::nullopt;
+      raw_value = *iter->second;
+    }
+    return detail::TryParse<T>(raw_value);
   }
 
   template <typename T>
@@ -144,15 +151,22 @@ public:
 
   bool Set(const Location& location, std::string new_value)
   {
+    std::lock_guard lock(m_mutex);
     const auto iter = m_map.find(location);
     if (iter != m_map.end() && iter->second == new_value)
       return false;
+    ++m_write_gen;
     m_is_dirty = true;
     m_map.insert_or_assign(location, std::move(new_value));
     return true;
   }
 
-  void MarkAsDirty() { m_is_dirty = true; }
+  void MarkAsDirty()
+  {
+    std::lock_guard lock(m_mutex);
+    ++m_write_gen;
+    m_is_dirty = true;
+  }
 
   Section GetSection(System system, const std::string& section);
   ConstSection GetSection(System system, const std::string& section) const;
@@ -162,10 +176,13 @@ public:
   void Save();
 
   LayerType GetLayer() const;
-  const LayerMap& GetLayerMap() const;
+  LayerMap GetLayerMap() const;
 
 protected:
+  mutable std::mutex m_mutex;
   bool m_is_dirty = false;
+  u64 m_write_gen = 0;
+  u64 m_saved_gen = 0;
   LayerMap m_map;
   const LayerType m_layer;
   std::unique_ptr<ConfigLayerLoader> m_loader;
