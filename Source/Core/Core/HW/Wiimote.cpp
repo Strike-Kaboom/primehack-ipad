@@ -3,6 +3,7 @@
 
 #include "Core/HW/Wiimote.h"
 
+#include <algorithm>
 #include <optional>
 
 #include "Common/ChunkFile.h"
@@ -229,6 +230,16 @@ void Resume()
 void Pause()
 {
   WiimoteReal::Pause();
+  ResetRumble();
+}
+
+void ResetRumble()
+{
+  if (s_config.ControllersNeedToBeCreated())
+    return;
+  const int count = std::min(static_cast<int>(MAX_WIIMOTES), s_config.GetControllerCount());
+  for (int i = WIIMOTE_CHAN_0; i < count; ++i)
+    static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(i))->SetRumble(false);
 }
 
 void ChangeUIPrimeHack(int number, bool useMetroidUI)

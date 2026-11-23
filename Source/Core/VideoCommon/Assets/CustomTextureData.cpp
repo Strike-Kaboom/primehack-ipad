@@ -333,28 +333,31 @@ static bool ParseDDSHeader(File::IOFile& file, DDSLoadInfo* info)
 
     // Currently, we only handle compressed textures here, and leave the rest to the SOIL loader.
     // In the future, this could be extended, but these isn't much benefit in doing so currently.
-    if (header.ddspf.dwFourCC == MAKEFOURCC('D', 'X', 'T', '1') || dxt10_format == 71)
+    if (header.ddspf.dwFourCC == MAKEFOURCC('D', 'X', 'T', '1') || dxt10_format == 71 ||
+        dxt10_format == 72)
     {
       info->format = AbstractTextureFormat::DXT1;
       info->block_size = 4;
       info->bytes_per_block = 8;
       needs_s3tc = true;
     }
-    else if (header.ddspf.dwFourCC == MAKEFOURCC('D', 'X', 'T', '3') || dxt10_format == 74)
+    else if (header.ddspf.dwFourCC == MAKEFOURCC('D', 'X', 'T', '3') || dxt10_format == 74 ||
+             dxt10_format == 75)
     {
       info->format = AbstractTextureFormat::DXT3;
       info->block_size = 4;
       info->bytes_per_block = 16;
       needs_s3tc = true;
     }
-    else if (header.ddspf.dwFourCC == MAKEFOURCC('D', 'X', 'T', '5') || dxt10_format == 77)
+    else if (header.ddspf.dwFourCC == MAKEFOURCC('D', 'X', 'T', '5') || dxt10_format == 77 ||
+             dxt10_format == 78)
     {
       info->format = AbstractTextureFormat::DXT5;
       info->block_size = 4;
       info->bytes_per_block = 16;
       needs_s3tc = true;
     }
-    else if (dxt10_format == 98)
+    else if (dxt10_format == 98 || dxt10_format == 99)
     {
       info->format = AbstractTextureFormat::BPTC;
       info->block_size = 4;

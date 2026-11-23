@@ -84,6 +84,7 @@ void LoadConfig();
 void GenerateDynamicInputTextures();
 void Resume();
 void Pause();
+void ResetRumble();
 
 void DoState(PointerWrap& p);
 InputConfig* GetConfig();

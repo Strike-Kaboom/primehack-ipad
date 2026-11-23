@@ -49,6 +49,9 @@ int RumbleDestination()
   id<CHHapticAdvancedPatternPlayer> _player;
   bool _started;
   bool _on;
+  // CoreHaptics callbacks run on an internal queue; set an atomic flag there instead of mutating
+  // ARC ivars or taking @synchronized(self) (which can deadlock against startAndReturnError:).
+  std::atomic<bool> _engineLost;
 }
 
 + (instancetype)shared
@@ -65,35 +68,39 @@ int RumbleDestination()
 {
   if ((self = [super init]))
   {
-    [self prepare];
+    _engineLost.store(false, std::memory_order_relaxed);
+    [self prepareLocked];
   }
   return self;
 }
 
-- (void)prepare
+- (void)prepareLocked
 {
   if (!CHHapticEngine.capabilitiesForHardware.supportsHaptics)
     return;
+
+  _started = false;
+  _on = false;
+  _player = nil;
+  _engine = nil;
 
   NSError* error = nil;
   _engine = [[CHHapticEngine alloc] initAndReturnError:&error];
   if (!_engine)
     return;
 
+  _engine.playsHapticsOnly = YES;
+
   __weak DOLDeviceHaptics* weak_self = self;
   _engine.resetHandler = ^{
     DOLDeviceHaptics* strong_self = weak_self;
     if (strong_self)
-    {
-      strong_self->_started = false;
-      strong_self->_player = nil;
-      [strong_self prepare];
-    }
+      strong_self->_engineLost.store(true, std::memory_order_release);
   };
   _engine.stoppedHandler = ^(CHHapticEngineStoppedReason) {
     DOLDeviceHaptics* strong_self = weak_self;
     if (strong_self)
-      strong_self->_started = false;
+      strong_self->_engineLost.store(true, std::memory_order_release);
   };
 
   CHHapticEventParameter* intensity = [[CHHapticEventParameter alloc] initWithParameterID:CHHapticEventParameterIDHapticIntensity value:1.0f];
@@ -114,10 +121,32 @@ int RumbleDestination()
 {
   @synchronized(self)
   {
-    if (!_player || on == _on)
-      return;
+    if (_engineLost.exchange(false, std::memory_order_acq_rel))
+    {
+      _started = false;
+      _on = false;
+      _player = nil;
+      if (on)
+        [self prepareLocked];
+    }
 
-    _on = on;
+    if (!on)
+    {
+      if (!_on || !_player || !_started)
+      {
+        _on = false;
+        return;
+      }
+      NSError* error = nil;
+      [_player stopAtTime:CHHapticTimeImmediate error:&error];
+      _on = false;
+      return;
+    }
+
+    if (!_player)
+      [self prepareLocked];
+    if (!_player || _on)
+      return;
 
     NSError* error = nil;
     if (!_started)
@@ -127,10 +156,10 @@ int RumbleDestination()
       _started = true;
     }
 
-    if (on)
-      [_player startAtTime:CHHapticTimeImmediate error:&error];
+    if ([_player startAtTime:CHHapticTimeImmediate error:&error])
+      _on = true;
     else
-      [_player stopAtTime:CHHapticTimeImmediate error:&error];
+      _started = false;
   }
 }
 @end

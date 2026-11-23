@@ -267,10 +267,12 @@ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const Wind
 static void ResetRumble()
 {
   GCAdapter::ResetRumble();
-  if (!Pad::IsInitialized())
-    return;
-  for (int i = 0; i < 4; ++i)
-    Pad::ResetRumble(i);
+  if (Pad::IsInitialized())
+  {
+    for (int i = 0; i < 4; ++i)
+      Pad::ResetRumble(i);
+  }
+  Wiimote::ResetRumble();
 }
 
 // Called from GUI thread

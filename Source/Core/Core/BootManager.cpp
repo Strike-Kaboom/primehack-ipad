@@ -247,6 +247,9 @@ void RestoreConfig()
   Config::RemoveLayer(Config::LayerType::LocalGame);
   SConfig::GetInstance().ResetRunningGameMetadata();
 
+  // Stop any looping emulated rumble (especially Wii Remote haptics on iOS) when a game ends.
+  Wiimote::ResetRumble();
+
   // A game INI's [Controls] profile (e.g. the PrimeHack layout) replaces a controller's mapping for
   // that game only. Now that no game is running, load each controller's own mapping again, so the
   // per-game layout does not stay active in the menus or the next game. Mappings the user loaded

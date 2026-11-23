@@ -186,6 +186,14 @@ bool InputConfig::LoadConfig()
   }
   else
   {
+    // PrimeHack for iPad: on a fresh install with no GCPadNew.ini/WiimoteNew.ini yet, any slot
+    // that had a game profile (e.g. PrimeHack Controller) was skipped because no MFi controller was
+    // bound yet; record that so EnforceIOSControllerLayout reloads once a controller connects.
+    for (size_t i = 0; i < m_controllers.size() && i < MAX_BBMOTES; ++i)
+    {
+      if (useProfile[i] && !m_user_override[i])
+        profile_skipped[i] = true;
+    }
     m_game_profile_active = std::move(profile_active);
     m_game_profile_skipped = std::move(profile_skipped);
     m_own_sections = std::move(own_sections);

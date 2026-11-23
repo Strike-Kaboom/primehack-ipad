@@ -3,6 +3,10 @@
 
 #include "VideoCommon/Assets/CustomAssetCache.h"
 
+#ifdef IPHONEOS
+#include <os/proc.h>
+#endif
+
 #include "Common/Logging/Log.h"
 #include "Common/MemoryUtil.h"
 
@@ -21,6 +25,13 @@ void CustomAssetCache::Initialize()
   const size_t keep_unused_mem = std::max(sys_mem / 2, std::min(sys_mem, must_keep_unused));
 
   m_max_ram_available = sys_mem - keep_unused_mem;
+#ifdef IPHONEOS
+  // PrimeHack for iPad: stay well below the per-app Jetsam limit so large HD texture packs
+  // evict cleanly instead of getting the app killed mid-game.
+  const size_t proc_avail = os_proc_available_memory();
+  if (proc_avail > 0)
+    m_max_ram_available = std::min(m_max_ram_available, proc_avail / 2);
+#endif
 
   if (m_max_ram_available == 0)
     ERROR_LOG_FMT(VIDEO, "Not enough system memory for custom resources.");
