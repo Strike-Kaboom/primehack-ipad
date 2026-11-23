@@ -140,12 +140,13 @@ AVAudioEngineSound::Mode AVAudioEngineSound::chooseMode() const
   return Mode::Stereo;
 }
 
-bool AVAudioEngineSound::buildGraphLocked()
+bool AVAudioEngineSound::buildGraphLocked(bool start_now)
 {
   teardownGraphLocked();
 
   // AVAudioEngine is pickier than RemoteIO about an active session. The app owns the category
   // (playback, or play-and-record while a microphone is open); only activation is asserted here.
+  if (start_now)
   {
     NSError* err = nil;
     if (![[AVAudioSession sharedInstance] setActive:YES error:&err] && err)
@@ -176,7 +177,10 @@ bool AVAudioEngineSound::buildGraphLocked()
   m_chain_format = mode == Mode::Discrete51 ?
                        FiveOneFormat(sample_rate) :
                        [[AVAudioFormat alloc] initStandardFormatWithSampleRate:sample_rate channels:2];
-  [m_engine connect:m_engine.mainMixerNode to:m_engine.outputNode format:m_chain_format];
+  // PrimeHack for iPad: pass nil for Stereo/Spatial output so mainMixerNode adapts to hardware
+  // sample-rate changes when AirPods or Bluetooth devices connect/disconnect mid-game.
+  AVAudioFormat* output_format = (mode == Mode::Discrete51) ? m_chain_format : nil;
+  [m_engine connect:m_engine.mainMixerNode to:m_engine.outputNode format:output_format];
 
   const int player_count = mode == Mode::Spatial ? kSurroundChannels : 1;
   switch (mode)
@@ -284,9 +288,9 @@ bool AVAudioEngineSound::buildGraphLocked()
   INFO_LOG_FMT(AUDIO, "AVAudioEngine: {} graph, {} output channels, {} effects, route {}",
                ModeName(mode), m_output_channels, m_fx_units.size(), route.description);
 
-  if (!startEngineLocked())
-    return false;
   s_active = this;
+  if (start_now && !startEngineLocked())
+    return false;
   return true;
 }
 
@@ -330,6 +334,7 @@ bool AVAudioEngineSound::startEngineLocked()
 
 void AVAudioEngineSound::teardownGraphLocked()
 {
+  m_graph_generation.fetch_add(1, std::memory_order_release);
   @autoreleasepool
   {
     stopHeadTrackingLocked();
@@ -356,7 +361,8 @@ void AVAudioEngineSound::rebuildLocked()
   // with the units the teardown discards.
   if (!m_fx_units.empty())
     saveEffectChainLocked();
-  if (!buildGraphLocked())
+  const bool start_now = m_should_run.load() && !m_interrupted;
+  if (!buildGraphLocked(start_now))
     ERROR_LOG_FMT(AUDIO, "AVAudioEngine: rebuild failed; output is silent until the next change");
 }
 
@@ -373,8 +379,18 @@ void AVAudioEngineSound::reconnectGraphLocked()
   {
     // environment -> limiter -> fx chain -> main mixer
     [m_engine disconnectNodeOutput:m_spatial_limiter];
-    [m_engine connect:head to:m_spatial_limiter format:m_chain_format];
-    head = m_spatial_limiter;
+    @try
+    {
+      [m_engine connect:head to:m_spatial_limiter format:m_chain_format];
+      head = m_spatial_limiter;
+    }
+    @catch (NSException* e)
+    {
+      WARN_LOG_FMT(AUDIO, "AVAudioEngine: spatial limiter connect failed ({}); bypassing",
+                   e.reason.UTF8String ?: "");
+      [m_engine detachNode:m_spatial_limiter];
+      m_spatial_limiter = nil;
+    }
   }
   for (AVAudioUnit* unit : m_fx_units)
     [m_engine disconnectNodeOutput:unit];
@@ -399,7 +415,15 @@ void AVAudioEngineSound::reconnectGraphLocked()
     tail = unit;
     ++i;
   }
-  [m_engine connect:tail to:m_engine.mainMixerNode format:m_chain_format];
+  @try
+  {
+    [m_engine connect:tail to:m_engine.mainMixerNode format:m_chain_format];
+  }
+  @catch (NSException* e)
+  {
+    ERROR_LOG_FMT(AUDIO, "AVAudioEngine: main mixer connect failed ({})",
+                  e.reason.UTF8String ?: "");
+  }
 }
 
 // MARK: - Head tracking
@@ -438,8 +462,10 @@ void AVAudioEngineSound::applyHeadTrackingLocked()
                                   return;
                                 CMAttitude* a = dm.attitude;
                                 constexpr double kDeg = 180.0 / M_PI;
+                                // CMAttitude.yaw is positive counter-clockwise; AVAudio3DAngularOrientation.yaw
+                                // is positive clockwise.
                                 self_ptr->m_environment.listenerAngularOrientation =
-                                    (AVAudio3DAngularOrientation){(float)(a.yaw * kDeg),
+                                    (AVAudio3DAngularOrientation){-(float)(a.yaw * kDeg),
                                                                   (float)(a.pitch * kDeg),
                                                                   (float)(a.roll * kDeg)};
                               }];
@@ -469,20 +495,21 @@ void AVAudioEngineSound::registerObservers()
   AVAudioEngineSound* self_ptr = this;
 
   // Route changes: the engine reconfigures itself for the new hardware, but the *graph* only
-  // follows when the mode changes (headphones in: stereo -> spatial).
+  // follows when the mode changes (headphones in: stereo -> spatial) or if a prior build failed.
   m_route_token = [center addObserverForName:AVAudioSessionRouteChangeNotification
                                       object:session
                                        queue:[NSOperationQueue mainQueue]
                                   usingBlock:^(NSNotification* note) {
                                     (void)note;
                                     std::lock_guard lock(guard->mutex);
-                                    if (!guard->alive || !self_ptr->m_engine)
+                                    if (!guard->alive)
                                       return;
-                                    if (self_ptr->modeChangedLocked())
+                                    if (!self_ptr->m_engine || self_ptr->modeChangedLocked())
                                       self_ptr->rebuildLocked();
                                   }];
 
-  // The engine stopped itself because the output format changed; start it again in place.
+  // The engine stopped itself because the output format changed; start it again in place, falling
+  // back to a full rebuild if restarting in place fails (e.g. AirPods disconnect/reconnect).
   m_config_change_token = [center
       addObserverForName:AVAudioEngineConfigurationChangeNotification
                   object:nil
@@ -492,10 +519,16 @@ void AVAudioEngineSound::registerObservers()
                 if (!guard->alive || !self_ptr->m_engine || note.object != self_ptr->m_engine)
                   return;
                 INFO_LOG_FMT(AUDIO, "AVAudioEngine: configuration change");
+                self_ptr->m_graph_generation.fetch_add(1, std::memory_order_release);
                 if (self_ptr->modeChangedLocked())
+                {
                   self_ptr->rebuildLocked();
-                else if (self_ptr->m_should_run.load())
-                  self_ptr->startEngineLocked();
+                }
+                else if (self_ptr->m_should_run.load() && !self_ptr->m_interrupted)
+                {
+                  if (!self_ptr->startEngineLocked())
+                    self_ptr->rebuildLocked();
+                }
               }];
 
   m_interrupt_token = [center
@@ -506,18 +539,29 @@ void AVAudioEngineSound::registerObservers()
                 const auto type = (AVAudioSessionInterruptionType)
                     [note.userInfo[AVAudioSessionInterruptionTypeKey] unsignedIntegerValue];
                 std::lock_guard lock(guard->mutex);
-                if (!guard->alive || !self_ptr->m_engine)
+                if (!guard->alive)
                   return;
                 if (type == AVAudioSessionInterruptionTypeBegan)
                 {
                   INFO_LOG_FMT(AUDIO, "AVAudioEngine: interruption began");
-                  [self_ptr->m_engine pause];
+                  self_ptr->m_interrupted = true;
+                  if (self_ptr->m_engine)
+                    [self_ptr->m_engine pause];
                   return;
                 }
                 INFO_LOG_FMT(AUDIO, "AVAudioEngine: interruption ended");
+                self_ptr->m_interrupted = false;
                 [session setActive:YES error:nil];
-                if (self_ptr->m_should_run.load())
-                  self_ptr->startEngineLocked();
+                if (!self_ptr->m_engine || self_ptr->modeChangedLocked())
+                {
+                  self_ptr->rebuildLocked();
+                }
+                else if (self_ptr->m_should_run.load())
+                {
+                  self_ptr->m_graph_generation.fetch_add(1, std::memory_order_release);
+                  if (!self_ptr->startEngineLocked())
+                    self_ptr->rebuildLocked();
+                }
               }];
 
   m_reset_token = [center addObserverForName:AVAudioSessionMediaServicesWereResetNotification
@@ -574,7 +618,7 @@ bool AVAudioEngineSound::Init()
     bool ok;
     {
       std::lock_guard lock(m_guard->mutex);
-      ok = buildGraphLocked();
+      ok = buildGraphLocked(/*start_now=*/true);
     }
     if (!ok)
       return false;
@@ -592,10 +636,18 @@ bool AVAudioEngineSound::SetRunning(bool running)
   {
     {
       std::lock_guard lock(m_guard->mutex);
-      if (m_engine)
-        startEngineLocked();
-      else
-        rebuildLocked();
+      if (!m_interrupted)
+      {
+        if (m_engine)
+        {
+          if (!startEngineLocked())
+            rebuildLocked();
+        }
+        else
+        {
+          rebuildLocked();
+        }
+      }
     }
     startFeeder();
   }
@@ -651,12 +703,21 @@ void AVAudioEngineSound::audioThreadMain()
     std::atomic<int> groups_in_flight{0};
   };
   auto drain = std::make_shared<DrainState>();
+  uint64_t drain_gen = m_graph_generation.load(std::memory_order_acquire);
   int pool_cursor = 0;
 
   auto fill_and_schedule = [&]() {
     std::lock_guard lock(m_guard->mutex);
     if (!m_engine || !m_engine.running || m_players.count == 0)
       return false;
+
+    const uint64_t live_gen = m_graph_generation.load(std::memory_order_acquire);
+    if (live_gen != drain_gen)
+    {
+      drain = std::make_shared<DrainState>();
+      drain_gen = live_gen;
+      pool_cursor = 0;
+    }
 
     const Mode mode = m_mode.load();
     const u32 chunk = kChunkFrames;
@@ -687,9 +748,10 @@ void AVAudioEngineSound::audioThreadMain()
     pool_cursor = (pool_cursor + 1) % kPoolSize;
     drain->groups_in_flight.fetch_add(1);
     const NSUInteger player_count = m_players.count;
+    // Fill all channel buffers first so all 6 spatial players are scheduled back-to-back without
+    // deinterleaving delay between channels.
     for (NSUInteger p = 0; p < player_count; ++p)
     {
-      AVAudioPlayerNode* node = m_players[p];
       AVAudioPCMBuffer* buf = m_buffer_pools[p][slot];
       buf.frameLength = chunk;
       float* const* dst = buf.floatChannelData;
@@ -709,6 +771,11 @@ void AVAudioEngineSound::audioThreadMain()
             dst[c][f] = src[f * channels];
         }
       }
+    }
+    for (NSUInteger p = 0; p < player_count; ++p)
+    {
+      AVAudioPlayerNode* node = m_players[p];
+      AVAudioPCMBuffer* buf = m_buffer_pools[p][slot];
       void (^completion)(void) = nil;
       if (p == 0)
       {
@@ -728,11 +795,19 @@ void AVAudioEngineSound::audioThreadMain()
 
   while (m_feeder_running.load())
   {
+    const uint64_t live_gen = m_graph_generation.load(std::memory_order_acquire);
+    if (live_gen != drain_gen)
+    {
+      drain = std::make_shared<DrainState>();
+      drain_gen = live_gen;
+      pool_cursor = 0;
+    }
     if (drain->groups_in_flight.load() >= kTargetGroups)
     {
       std::unique_lock l(drain->mutex);
       drain->cv.wait_for(l, std::chrono::milliseconds(50), [&] {
-        return drain->groups_in_flight.load() < kTargetGroups || !m_feeder_running.load();
+        return drain->groups_in_flight.load() < kTargetGroups || !m_feeder_running.load() ||
+               m_graph_generation.load(std::memory_order_acquire) != drain_gen;
       });
       continue;
     }
@@ -904,6 +979,8 @@ bool AVAudioEngineSound::addEffectWithIdentifier(const char* identifier)
     [m_engine attachNode:unit];
     m_fx_units.push_back(unit);
     reconnectGraphLocked();
+    if (m_should_run.load() && !m_interrupted && !m_engine.running)
+      startEngineLocked();
     INFO_LOG_FMT(AUDIO, "AVAudioEngine: added effect {}", unit.name.UTF8String ?: "(unnamed)");
   }
   saveEffectChain();
@@ -921,6 +998,8 @@ void AVAudioEngineSound::removeEffectAt(size_t index)
     [m_engine detachNode:unit];
     m_fx_units.erase(m_fx_units.begin() + index);
     reconnectGraphLocked();
+    if (m_should_run.load() && !m_interrupted && !m_engine.running)
+      startEngineLocked();
   }
   saveEffectChain();
 }
@@ -935,6 +1014,8 @@ void AVAudioEngineSound::moveEffect(size_t from, size_t to)
     m_fx_units.erase(m_fx_units.begin() + from);
     m_fx_units.insert(m_fx_units.begin() + to, unit);
     reconnectGraphLocked();
+    if (m_should_run.load() && !m_interrupted && !m_engine.running)
+      startEngineLocked();
   }
   saveEffectChain();
 }

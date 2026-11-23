@@ -98,19 +98,22 @@ static const double kPreferredSampleRate = 48000.0;
 
 - (void)setSessionCategory {
   [self registerMicrophoneHookOnce];
+  [self observeRouteChangesOnce];
+  // Capture _microphoneActive on main before dispatching to sessionQueue to avoid a data race.
+  const BOOL micActive = _microphoneActive;
   // Every caller is on the main thread (launch, the mute-switch setting, and the core's microphone
   // hook, which IOSAudioSession already posts to main asynchronously), and none waits on the result.
   dispatch_async([AudioSessionManager sessionQueue], ^{
-    [self applySessionCategory];
+    [self applySessionCategoryWithMicActive:micActive];
   });
 }
 
-- (void)applySessionCategory {
+- (void)applySessionCategoryWithMicActive:(BOOL)micActive {
   AVAudioSession* session = [AVAudioSession sharedInstance];
   NSError* error = nil;
 
 #if !TARGET_OS_TV
-  if (_microphoneActive)
+  if (micActive)
   {
     // Recording: Bluetooth stays on A2DP for output (built-in microphone for input) rather than
     // dropping to the low-quality HFP profile, and the speaker stays the default output. tvOS has
@@ -154,9 +157,8 @@ static const double kPreferredSampleRate = 48000.0;
     NSLog(@"[Audio] setActive failed: %@", activateError);
   }
   NSLog(@"[Audio] session category=%@ mode=%@ options=0x%lx mic=%d route=%@", session.category,
-        session.mode, (unsigned long)session.categoryOptions, (int)_microphoneActive,
+        session.mode, (unsigned long)session.categoryOptions, (int)micActive,
         [AudioSessionManager describeRoute:session.currentRoute]);
-  [self observeRouteChangesOnce];
 }
 
 @end

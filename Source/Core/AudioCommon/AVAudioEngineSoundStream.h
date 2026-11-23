@@ -6,6 +6,7 @@
 #ifdef IPHONEOS
 
 #include <atomic>
+#include <cstdint>
 #include <memory>
 #include <mutex>
 #include <string>
@@ -89,7 +90,7 @@ private:
   void stopFeeder();
 
   Mode chooseMode() const;
-  bool buildGraphLocked();
+  bool buildGraphLocked(bool start_now);
   void teardownGraphLocked();
   bool startEngineLocked();
   void rebuildLocked();
@@ -134,6 +135,11 @@ private:
 
   std::atomic<bool> m_feeder_running{false};
   std::atomic<bool> m_should_run{false};
+  // Guarded by m_guard->mutex. True between AVAudioSessionInterruptionTypeBegan and Ended.
+  bool m_interrupted = false;
+  // Bumped whenever players are torn down or reset by a configuration change so audioThreadMain
+  // discards stale in-flight completion counters instead of deadlocking at kTargetGroups.
+  std::atomic<uint64_t> m_graph_generation{0};
   std::thread m_audio_thread;
 
   int m_volume_percent = 100;
