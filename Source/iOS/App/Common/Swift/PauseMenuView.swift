@@ -82,11 +82,16 @@ internal struct PauseMenuView: View {
   /// and on tvOS while the Siri Remote's motion is Wii Remote 1's pointer (`RemotePointerBinding`).
   @MainActor private static var showsRecenterPointer: Bool {
     guard TVEmulationBridge.isRunning(), TVEmulationBridge.isCurrentSystemWii() else { return false }
+    if PrimeHackBridge.enabledForCurrentRun() && ControllerManager.controllerOnly() { return false }
     #if os(iOS)
     return true
     #else
     return RemotePointerBinding.shared.isActive
     #endif
+  }
+
+  private static func isPrimeGameID(_ id: String) -> Bool {
+    ["GM8E", "GM8P", "G2ME", "G2MP", "R3ME", "R3MP", "RM3E", "RM3P"].contains { id.hasPrefix($0) }
   }
 
   @State private var showFilmstripSheet: Bool = false
@@ -114,6 +119,8 @@ internal struct PauseMenuView: View {
   /// The cover-column chip: the engine actually running.
   @State private var engineShortName: String = ""
   @State private var jitAcquired: Bool = false
+  @State private var canUndoLoadState: Bool = false
+  @State private var controllerBattery: ControllerBatterySnapshot? = nil
   /// The CPU Engine tile's value: the engine the next launch uses (`CpuEngine` raw value).
   @State private var nextEngine: Int = CpuEngine.cachedInterpreter.rawValue
   /// iOS, a Wii title: what the on-screen controls are, and what they can be. The Controllers tile
@@ -176,6 +183,8 @@ internal struct PauseMenuView: View {
       wiiSpeakerVolume = DOLConfigBridge.sysconfSpeakerVolume()
     }
     refreshEngineState()
+    canUndoLoadState = TVEmulationBridge.canUndoLoadState()
+    controllerBattery = ControllerBatterySnapshot.readPlayer1()
   }
 
   /// A Wii title is running (the Audio pane adds the Wii's own sound rows).
@@ -640,7 +649,8 @@ internal struct PauseMenuView: View {
                 // On an iPad the hero sits level with the centred cells.
                 if !compactHeight { Spacer(minLength: 0) }
                 PauseHeroView(game: game, layout: compactHeight ? .textOnly : .column(artWidth: Touch.heroArtWidth),
-                              engineChip: engineChipText, jitAcquired: jitAcquired)
+                              engineChip: engineChipText, jitAcquired: jitAcquired,
+                              controllerBattery: controllerBattery)
                 Spacer(minLength: 0)
               }
               .frame(width: hero.columnWidth, alignment: .leading)
@@ -649,7 +659,8 @@ internal struct PauseMenuView: View {
           } else {
             VStack(alignment: .leading, spacing: ICubeDesign.Spacing.s.rawValue) {
               HStack(alignment: .top, spacing: ICubeDesign.Spacing.s.rawValue) {
-                PauseHeroView(game: game, layout: .banner, engineChip: engineChipText, jitAcquired: jitAcquired)
+                PauseHeroView(game: game, layout: .banner, engineChip: engineChipText, jitAcquired: jitAcquired,
+                              controllerBattery: controllerBattery)
                 Spacer(minLength: 0)
                 headerButtons(closeFirst: false)
               }
@@ -767,7 +778,8 @@ internal struct PauseMenuView: View {
   /// tvOS hero (iFly layout, iCube tokens): cover, PAUSED in accent, the game title in the display face, its ID.
   private var coverColumn: some View {
     PauseHeroView(game: game, layout: .column(artWidth: ICubeDesign.TVPause.heroArtWidth),
-                  engineChip: engineChipText, jitAcquired: jitAcquired)
+                  engineChip: engineChipText, jitAcquired: jitAcquired,
+                  controllerBattery: controllerBattery)
   }
 
   private var isTV: Bool { platform == .tvos }
@@ -937,12 +949,21 @@ internal struct PauseMenuView: View {
       engineShortName: engineShortName,
       jitAcquired: jitAcquired,
       nextEngine: nextEngine, quickSaveMode: quickSaveMode, isModded: ModdedBoot.isCurrentBootModded,
-      onScreenController: onScreenController, onScreenControllerOptions: onScreenControllerOptions)
+      onScreenController: onScreenController, onScreenControllerOptions: onScreenControllerOptions,
+      canUndoLoadState: canUndoLoadState,
+      isPrimeGame: Self.isPrimeGameID(game.gameID))
     let quick = quickSaveActions
     let actions = PauseMenuActions(
       resume: { PauseArbiter.shared.userResume(); onClose() },
       quickSave: quick.save,
       quickLoad: quick.load,
+      undoLoad: {
+        TVEmulationBridge.undoLoadState()
+        canUndoLoadState = TVEmulationBridge.canUndoLoadState()
+        EmulationToast.post(L("Restored state before load"))
+        PauseArbiter.shared.userResume()
+        onClose()
+      },
       screenshot: {
         switch QuickScreenshot.saveFromPausePreview() {
         case .saved: EmulationToast.post(L("Screenshot saved to ScreenShots"))
@@ -986,7 +1007,11 @@ internal struct PauseMenuView: View {
         PauseArbiter.shared.userResume()
         onClose()
       },
-      openDiscPicker: { pane = .discs })
+      openDiscPicker: { pane = .discs },
+      openPrimeHack: {
+        settingsLink = SettingsDeepLink(leafID: "primehack", rowID: nil)
+        showSettings = true
+      })
     var model = PauseMenuModelBuilder.make(state: state, bindings: pauseMenuBindings, actions: actions)
     if performanceControls.state.scalingOverride != .none {
       for section in model.sections.indices {
@@ -1124,6 +1149,8 @@ struct PauseMenuState {
   /// as on tvOS and in a GameCube title). The Controllers tile's badge and long-press list.
   var onScreenController = OnScreenController.auto
   var onScreenControllerOptions: [OnScreenController] = []
+  var canUndoLoadState: Bool = false
+  var isPrimeGame: Bool = false
 }
 
 /// Live bindings for the in-place tiles. Writing one applies immediately; the host rebuilds the model.
@@ -1151,6 +1178,7 @@ struct PauseMenuActions {
   var resume: () -> Void
   var quickSave: () -> Void
   var quickLoad: () -> Void
+  var undoLoad: () -> Void = {}
   var screenshot: () -> Void
   var openSaveStates: () -> Void
   var openCheats: () -> Void
@@ -1167,6 +1195,7 @@ struct PauseMenuActions {
   var requestExit: () -> Void
   var recenterPointer: () -> Void
   var openDiscPicker: () -> Void = {}
+  var openPrimeHack: () -> Void = {}
 }
 
 /// Unified menu UX spec §5: Quick / Game / System. Shared by iOS and tvOS.
@@ -1312,7 +1341,7 @@ enum PauseMenuModelBuilder {
     let slotBadge = String(format: L("Slot %d"), state.quickSlot)
     let slotPicker: MenuLongPress? = classic ? .options(title: L("Quick Slot"), options: slotOptions, selection: bindings.quickSlot) : nil
 
-    let quick = MenuSection(id: "quick", header: L("Quick"), items: [
+    var quickItems: [MenuItem] = [
       MenuItem(id: "resume", title: L("Resume"), icon: "play.fill", tint: .blue, role: .action(actions.resume),
                description: L("Return to the game.")),
       MenuItem(id: "quick-save", title: L("Quick Save"), icon: "square.and.arrow.down", tint: .green, role: .action(actions.quickSave),
@@ -1321,6 +1350,14 @@ enum PauseMenuModelBuilder {
       MenuItem(id: "quick-load", title: L("Quick Load"), icon: "square.and.arrow.up", tint: .green, role: .action(actions.quickLoad),
                badge: classic ? slotBadge : L("Latest manual"),
                description: classic ? L("Load the quick slot. Long-press to choose the slot.") : L("Load the latest manual state, or automatic resume when no manual state exists."), longPress: slotPicker),
+    ]
+    if state.canUndoLoadState {
+      quickItems.append(
+        MenuItem(id: "undo-load", title: L("Undo Load"), icon: "arrow.uturn.backward", tint: .yellow, role: .action(actions.undoLoad),
+                 description: L("Restore the game state from right before the last load."))
+      )
+    }
+    quickItems.append(contentsOf: [
       MenuItem(id: "save-states", title: L("Save States"), icon: "square.stack.3d.up", tint: .purple, role: .action(actions.openSaveStates),
                description: L("Save, load and browse save states.")),
       MenuItem(id: "fast-forward", title: L("Fast Forward"), icon: "forward.fill", tint: .cyan,
@@ -1333,8 +1370,16 @@ enum PauseMenuModelBuilder {
                role: .toggle(bindings.recording), badge: bindings.recording.wrappedValue ? L("REC") : nil,
                description: L("Record the screen to a video in Recordings.")),
     ])
+    let quick = MenuSection(id: "quick", header: L("Quick"), items: quickItems)
 
-    var game: [MenuItem] = [
+    var game: [MenuItem] = []
+    if state.isPrimeGame {
+      game.append(
+        MenuItem(id: "primehack", title: L("PrimeHack"), icon: "scope", tint: .cyan, role: .action(actions.openPrimeHack),
+                 description: L("Aim sensitivity, deadzone, DualSense triggers, lightbar, FOV and Metroid Prime extras."))
+      )
+    }
+    game.append(contentsOf: [
       MenuItem(id: "change-disc", title: L("Change Disc"), icon: "opticaldisc", role: .action(actions.openDiscPicker),
                description: L("Insert another local disc without restarting the game.")),
       MenuItem(id: "perf-hud", title: L("Performance"), icon: "speedometer", tint: .cyan, role: .action(actions.openPerfOverlay),
@@ -1360,7 +1405,7 @@ enum PauseMenuModelBuilder {
       controllersItem(state: state, bindings: bindings, actions: actions),
       MenuItem(id: "continuity", title: L("Continue Elsewhere"), icon: "arrow.triangle.branch", tint: .teal, role: .action(actions.openContinuity),
                description: L("Hand this game to a nearby device.")),
-    ]
+    ])
     if state.metalFXSupported, let upscaling = game.firstIndex(where: { $0.id == "upscaling" }) {
       game.insert(
         MenuItem(id: "metalfx", title: L("MetalFX"), icon: "sparkles", tint: .indigo, role: .toggle(bindings.metalFX),

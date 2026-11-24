@@ -1,7 +1,45 @@
 // Copyright 2026 DolphiniOS Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+import GameController
 import SwiftUI
+
+/// Snapshot of Player 1's wireless controller battery (e.g. DualSense), shown in the Pause Menu
+/// hero and monitored for low-battery toasts during gameplay.
+struct ControllerBatterySnapshot: Equatable {
+  let percent: Int
+  let isCharging: Bool
+
+  var symbolName: String {
+    if isCharging { return "battery.100.bolt" }
+    switch percent {
+    case 88...: return "battery.100"
+    case 63...: return "battery.75"
+    case 38...: return "battery.50"
+    case 13...: return "battery.25"
+    default: return "battery.0"
+    }
+  }
+
+  var tintColor: Color {
+    if isCharging { return .green }
+    if percent <= 10 { return .red }
+    if percent <= 20 { return .orange }
+    return ICubeDesign.color(.textPrimary)
+  }
+
+  @MainActor static func readPlayer1() -> ControllerBatterySnapshot? {
+    let controllers = GCController.controllers()
+    let preferred = controllers.first(where: { ControllerManager.shared.isPlayer1OfRunningSystem($0) })
+      ?? controllers.first(where: { $0.battery != nil })
+    guard let battery = preferred?.battery,
+          battery.batteryState != .unknown,
+          battery.batteryLevel >= 0 else { return nil }
+    let pct = Int((min(max(battery.batteryLevel, 0), 1) * 100).rounded())
+    let charging = (battery.batteryState == .charging || battery.batteryState == .full)
+    return ControllerBatterySnapshot(percent: pct, isCharging: charging)
+  }
+}
 
 /// The pause screen's game hero (iFly layout, iCube tokens): the cover, "PAUSED" in the platform accent, the title in
 /// the display face, the game ID and the running engine. tvOS and the iPad use the tall column beside the tiles; an
@@ -21,6 +59,7 @@ struct PauseHeroView: View {
   /// "JIT ON" while the JIT is acquired, otherwise the engine that is running (INT, CIR, CIR-IR).
   let engineChip: String
   let jitAcquired: Bool
+  var controllerBattery: ControllerBatterySnapshot? = nil
   @Environment(\.icubePlatformAccent) private var platformAccent
 
   private typealias Metrics = ICubeDesign.PauseHero
@@ -68,6 +107,17 @@ struct PauseHeroView: View {
           .padding(.horizontal, ICubeDesign.Spacing.xs.rawValue)
           .padding(.vertical, ICubeDesign.Spacing.xxs.rawValue)
           .background(Capsule().fill(jitAcquired ? ICubeDesign.color(.selectedFill) : ICubeDesign.color(.rowSurface)))
+        if let battery = controllerBattery {
+          HStack(spacing: 3) {
+            Image(systemName: battery.symbolName)
+            Text("\(battery.percent)%")
+          }
+          .icubeText(.tag)
+          .foregroundStyle(battery.tintColor)
+          .padding(.horizontal, ICubeDesign.Spacing.xs.rawValue)
+          .padding(.vertical, ICubeDesign.Spacing.xxs.rawValue)
+          .background(Capsule().fill(ICubeDesign.color(.rowSurface)))
+        }
       }
     }
   }

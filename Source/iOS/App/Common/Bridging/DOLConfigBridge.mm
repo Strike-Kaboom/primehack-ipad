@@ -1390,8 +1390,11 @@ static bool HasCurrentRunLayer()
   del(Config::PRIMEHACK_ENABLE);
   del(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
   del(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
+  del(Config::PRIMEHACK_IOS_STICK_DEADZONE);
+  del(Config::PRIMEHACK_IOS_AIM_CURVE);
   del(Config::PRIMEHACK_IOS_INVERT_X);
   del(Config::PRIMEHACK_IOS_INVERT_Y);
+  del(Config::PRIMEHACK_IOS_LOCKON_FREE_AIM);
   del(Config::LOCKCAMERA_IN_PUZZLES);
   del(Config::FOV_ENABLE);
   del(Config::FOV);
@@ -1403,6 +1406,10 @@ static bool HasCurrentRunLayer()
   del(Config::AUTO_EFB);
   del(Config::AUTO_FOG_TOGGLE_MP3);
   del(Config::TOGGLE_ARM_REPOSITION);
+  del(Config::ARMPOSITION_MODE);
+  del(Config::ARMPOSITION_LEFTRIGHT);
+  del(Config::ARMPOSITION_FORWARDBACK);
+  del(Config::ARMPOSITION_UPDOWN);
   del(Config::ENABLE_SECONDARY_GUNFX);
   del(Config::TOGGLE_CULLING);
   del(Config::PRIMEHACK_SKIPPABLE_CUTSCENES);
@@ -1606,7 +1613,10 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
     @"fast_forward_speed_percent",
     @"primehack_controller_only",
     @"primehack_adaptive_triggers",
+    @"primehack_adaptive_trigger_strength",
     @"primehack_dualsense_lightbar",
+    @"primehack_lightbar_brightness",
+    @"primehack_rumble_strength",
   ];
   for (NSString* k in gameplayKeys) {
     [d removeObjectForKey:k];

@@ -50,11 +50,33 @@
   return (prime::GetPublishedPlayerState() & prime::kPlayerStateScanVisor) != 0;
 }
 
++ (BOOL)hasChargeBeam
+{
+  return (prime::GetPublishedPlayerState() & prime::kPlayerStateHasChargeBeam) != 0;
+}
+
++ (BOOL)inHypermode
+{
+  return (prime::GetPublishedPlayerState() & prime::kPlayerStateHypermode) != 0;
+}
+
++ (BOOL)isLowHealth
+{
+  return (prime::GetPublishedPlayerState() & prime::kPlayerStateLowHealth) != 0;
+}
+
 + (NSInteger)activeVisorKind
 {
   const u32 state = prime::GetPublishedPlayerState();
   return static_cast<NSInteger>((state & prime::kPlayerStateVisorMask) >>
                                 prime::kPlayerStateVisorShift);
+}
+
++ (NSInteger)activeBeamKind
+{
+  const u32 state = prime::GetPublishedPlayerState();
+  return static_cast<NSInteger>((state & prime::kPlayerStateBeamMask) >>
+                                prime::kPlayerStateBeamShift);
 }
 
 // Controls
@@ -63,8 +85,11 @@ PH_INT(stickHorizontalSensitivity, setStickHorizontalSensitivity,
        PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY, 1, 100)
 PH_INT(stickVerticalSensitivity, setStickVerticalSensitivity,
        PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY, 1, 100)
+PH_INT(stickDeadzone, setStickDeadzone, PRIMEHACK_IOS_STICK_DEADZONE, 0, 30)
+PH_INT(aimCurve, setAimCurve, PRIMEHACK_IOS_AIM_CURVE, 0, 2)
 PH_BOOL(invertX, setInvertX, PRIMEHACK_IOS_INVERT_X)
 PH_BOOL(invertY, setInvertY, PRIMEHACK_IOS_INVERT_Y)
+PH_BOOL(lockOnFreeAim, setLockOnFreeAim, PRIMEHACK_IOS_LOCKON_FREE_AIM)
 PH_BOOL(lockCameraInMotionPuzzles, setLockCameraInMotionPuzzles, LOCKCAMERA_IN_PUZZLES)
 
 // Visuals
@@ -86,6 +111,10 @@ PH_BOOL(reduceBloom, setReduceBloom, REDUCE_BLOOM)
 PH_INT(bloomIntensity, setBloomIntensity, BLOOM_INTENSITY, 0, 100)
 PH_BOOL(autoEFB, setAutoEFB, AUTO_EFB)
 PH_BOOL(armReposition, setArmReposition, TOGGLE_ARM_REPOSITION)
+PH_INT(armPositionMode, setArmPositionMode, ARMPOSITION_MODE, 0, 1)
+PH_INT(armPositionLeftRight, setArmPositionLeftRight, ARMPOSITION_LEFTRIGHT, -50, 50)
+PH_INT(armPositionForwardBack, setArmPositionForwardBack, ARMPOSITION_FORWARDBACK, -50, 50)
+PH_INT(armPositionUpDown, setArmPositionUpDown, ARMPOSITION_UPDOWN, -50, 50)
 PH_BOOL(secondaryGunFX, setSecondaryGunFX, ENABLE_SECONDARY_GUNFX)
 PH_BOOL(toggleCulling, setToggleCulling, TOGGLE_CULLING)
 

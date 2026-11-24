@@ -8,11 +8,17 @@ struct PrimeHackSettingsState: Equatable {
   var enabled = true
   var controllerOnly = true
   var adaptiveTriggers = true
+  var triggerStrength = 1
   var dualSenseLightbar = true
+  var lightbarBrightness = 1
+  var rumbleStrength = 100.0
   var horizontalSensitivity = 45.0
   var verticalSensitivity = 35.0
+  var stickDeadzone = 10.0
+  var aimCurve = 0
   var invertX = false
   var invertY = false
+  var lockOnFreeAim = false
   var lockCameraInPuzzles = true
 
   var fovEnabled = false
@@ -24,6 +30,10 @@ struct PrimeHackSettingsState: Equatable {
   var bloomIntensity = 65.0
   var autoEFB = true
   var armReposition = true
+  var armPositionMode = 0
+  var armPositionLeftRight = 25.0
+  var armPositionForwardBack = -35.0
+  var armPositionUpDown = -30.0
   var secondaryGunFX = false
   var toggleCulling = false
 
@@ -38,9 +48,31 @@ struct PrimeHackSettingsState: Equatable {
   var noclip = false
 
   static let sensitivityRange = 1.0 ... 100.0
+  static let deadzoneRange = 0.0 ... 30.0
+  static let rumbleStrengthRange = 25.0 ... 100.0
+  static let armOffsetRange = -50.0 ... 50.0
   static let fovRange = 1.0 ... 170.0
   static let bloomIntensityRange = 0.0 ... 100.0
   static let defaultGCCrosshairColor = 0x4b7ea331
+  static let triggerStrengthOptions: [(String, Int)] = [
+    (L("Light"), 0),
+    (L("Medium"), 1),
+    (L("Strong"), 2),
+  ]
+  static let lightbarBrightnessOptions: [(String, Int)] = [
+    (L("Subtle"), 0),
+    (L("Medium"), 1),
+    (L("Bright"), 2),
+  ]
+  static let aimCurveOptions: [(String, Int)] = [
+    (L("Linear"), 0),
+    (L("Smooth"), 1),
+    (L("Precision"), 2),
+  ]
+  static let armPositionModeOptions: [(String, Int)] = [
+    (L("Auto"), 0),
+    (L("Manual"), 1),
+  ]
   static let gcCrosshairColorOptions: [(String, Int)] = [
     (L("Default (Blue)"), 0x4b7ea331),
     (L("Cyan"), 0x38d9ffc8),
@@ -56,11 +88,17 @@ enum PrimeHackSettingsChange: Equatable {
   case enabled(Bool)
   case controllerOnly(Bool)
   case adaptiveTriggers(Bool)
+  case triggerStrength(Int)
   case dualSenseLightbar(Bool)
+  case lightbarBrightness(Int)
+  case rumbleStrength(Double)
   case horizontalSensitivity(Double)
   case verticalSensitivity(Double)
+  case stickDeadzone(Double)
+  case aimCurve(Int)
   case invertX(Bool)
   case invertY(Bool)
+  case lockOnFreeAim(Bool)
   case lockCameraInPuzzles(Bool)
   case fovEnabled(Bool)
   case fov(Double)
@@ -71,6 +109,10 @@ enum PrimeHackSettingsChange: Equatable {
   case bloomIntensity(Double)
   case autoEFB(Bool)
   case armReposition(Bool)
+  case armPositionMode(Int)
+  case armPositionLeftRight(Double)
+  case armPositionForwardBack(Double)
+  case armPositionUpDown(Double)
   case secondaryGunFX(Bool)
   case toggleCulling(Bool)
   case skippableCutscenes(Bool)
@@ -94,7 +136,7 @@ enum PrimeHackSettingsModelBuilder {
     let percent: (Double) -> String = { "\(Int($0.rounded()))%" }
 
     let controls = MenuSection(id: "primehack-controls", header: L("Controls"),
-                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam. L1 + D-Pad picks a visor: Up Combat, Left Scan, Down Thermal/Dark, Right X-Ray/Echo. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map. Hold L1 + R3 in Trilogy to centre camera pitch."),
+                               footer: L("Applies to Metroid Prime, Prime 2 and Trilogy when a game controller is on player 1. Left stick moves, right stick looks. D-Pad picks a beam. L1 + D-Pad picks a visor: Up Combat, Left Scan, Down Thermal/Dark, Right X-Ray/Echo. R2 fires, Cross jumps, Square morphs, Triangle fires a missile, L2 locks on, R1 opens the map. Press R3 in GameCube (or L1 + R3 in Trilogy) to centre camera pitch."),
                                items: [
       SettingsRow.toggle("primehack-enabled", L("PrimeHack Controls"), s.enabled,
                          L("FPS-style camera control and quick beam and visor selection in the Metroid Prime games. Takes effect when a game starts."),
@@ -103,11 +145,29 @@ enum PrimeHackSettingsModelBuilder {
                          L("Your game controller is always Player 1, in every game, and the on-screen controls are never used. Takes effect when a game starts or a controller connects."),
                          defaultValue: true, set: { apply(.controllerOnly($0)) }),
       SettingsRow.toggle("primehack-adaptive-triggers", L("Adaptive Triggers (DualSense)"), s.adaptiveTriggers,
-                         L("R2 clicks like a trigger when you fire and hums as a charge builds; L2 pushes back lightly for lock-on. Only in the Metroid Prime games, never in menus."),
+                         L("R2 clicks like a trigger tuned to your active beam and hums as a charge builds; L2 pushes back lightly for lock-on. Only in the Metroid Prime games, never in menus."),
                          defaultValue: true, set: { apply(.adaptiveTriggers($0)) }),
+      SettingsRow.picker("primehack-trigger-strength", L("Trigger Strength"),
+                         PrimeHackSettingsState.triggerStrengthOptions, s.triggerStrength,
+                         L("How firm the DualSense adaptive trigger resistance and charge vibration feel."),
+                         enabled: s.adaptiveTriggers,
+                         defaultValue: 1,
+                         disabledReason: L("Enable Adaptive Triggers (DualSense) first."),
+                         set: { apply(.triggerStrength($0)) }),
       SettingsRow.toggle("primehack-dualsense-lightbar", L("DualSense Lightbar"), s.dualSenseLightbar,
-                         L("Softly tints the DualSense lightbar for Morph Ball and (in Trilogy / Prime 3) your active visor, and restores it in menus or when paused."),
+                         L("Softly tints the DualSense lightbar for your active beam, visor, Morph Ball, Hypermode, and low energy, and restores it in menus or when paused."),
                          defaultValue: true, set: { apply(.dualSenseLightbar($0)) }),
+      SettingsRow.picker("primehack-lightbar-brightness", L("Lightbar Brightness"),
+                         PrimeHackSettingsState.lightbarBrightnessOptions, s.lightbarBrightness,
+                         L("Overall brightness of the DualSense lightbar during gameplay. Subtle and Medium are tuned for dark cabins."),
+                         enabled: s.dualSenseLightbar,
+                         defaultValue: 1,
+                         disabledReason: L("Enable DualSense Lightbar first."),
+                         set: { apply(.lightbarBrightness($0)) }),
+      SettingsRow.stepper("primehack-rumble-strength", L("Rumble Strength"), s.rumbleStrength,
+                          range: PrimeHackSettingsState.rumbleStrengthRange, step: 5, format: percent,
+                          L("Scales DualSense and device vibration intensity live without reconnecting the controller."),
+                          defaultValue: 100, set: { apply(.rumbleStrength($0)) }),
       SettingsRow.stepper("primehack-h-sens", L("Look Sensitivity (Horizontal)"), s.horizontalSensitivity,
                           range: PrimeHackSettingsState.sensitivityRange, step: 1, format: whole,
                           L("How fast the right stick turns the camera left and right."),
@@ -116,18 +176,29 @@ enum PrimeHackSettingsModelBuilder {
                           range: PrimeHackSettingsState.sensitivityRange, step: 1, format: whole,
                           L("How fast the right stick tilts the camera up and down."),
                           enabled: s.enabled, defaultValue: 35, set: { apply(.verticalSensitivity($0)) }),
+      SettingsRow.stepper("primehack-deadzone", L("Right Stick Deadzone"), s.stickDeadzone,
+                          range: PrimeHackSettingsState.deadzoneRange, step: 2, format: percent,
+                          L("Ignores small stick deflections around centre to eliminate DualSense stick drift."),
+                          enabled: s.enabled, defaultValue: 10, set: { apply(.stickDeadzone($0)) }),
+      SettingsRow.picker("primehack-aim-curve", L("Aim Response Curve"),
+                         PrimeHackSettingsState.aimCurveOptions, s.aimCurve,
+                         L("Linear turns evenly with stick tilt; Smooth and Precision soften small tilts for finer aiming while keeping full turn speed at the edge."),
+                         enabled: s.enabled, defaultValue: 0, set: { apply(.aimCurve($0)) }),
       SettingsRow.toggle("primehack-invert-x", L("Invert Horizontal Look"), s.invertX,
                          L("Pushing the right stick right turns the camera left."),
                          enabled: s.enabled, defaultValue: false, set: { apply(.invertX($0)) }),
       SettingsRow.toggle("primehack-invert-y", L("Invert Vertical Look"), s.invertY,
                          L("Pushing the right stick up looks down, like a flight stick."),
                          enabled: s.enabled, defaultValue: false, set: { apply(.invertY($0)) }),
+      SettingsRow.toggle("primehack-lockon-free-aim", L("Free Aim While Locked-On (Trilogy)"), s.lockOnFreeAim,
+                         L("Lets you steer the aiming reticle while holding L2 lock-on in Metroid Prime Trilogy."),
+                         enabled: s.enabled, defaultValue: false, set: { apply(.lockOnFreeAim($0)) }),
       SettingsRow.toggle("primehack-lock-puzzles", L("Lock Camera in Motion Puzzles"), s.lockCameraInPuzzles,
                          L("Holds the camera still while you work a Trilogy motion puzzle, such as turning a lock."),
                          enabled: s.enabled, defaultValue: true, set: { apply(.lockCameraInPuzzles($0)) }),
     ])
 
-    let visuals = MenuSection(id: "primehack-visuals", header: L("Visuals"), items: [
+    var visualItems: [MenuItem] = [
       SettingsRow.toggle("primehack-fov-enabled", L("Custom Field of View"), s.fovEnabled,
                          L("Replaces the game's field of view with the value below."),
                          defaultValue: false, set: { apply(.fovEnabled($0)) }),
@@ -161,6 +232,31 @@ enum PrimeHackSettingsModelBuilder {
       SettingsRow.toggle("primehack-arm", L("Reposition Arm Cannon"), s.armReposition,
                          L("Moves the arm cannon so it suits a wider field of view."),
                          defaultValue: true, set: { apply(.armReposition($0)) }),
+      SettingsRow.picker("primehack-arm-mode", L("Arm Cannon Position"),
+                         PrimeHackSettingsState.armPositionModeOptions, s.armPositionMode,
+                         L("Auto scales the arm cannon with Field of View; Manual lets you dial in exact X/Y/Z offsets."),
+                         enabled: s.armReposition,
+                         defaultValue: 0,
+                         disabledReason: L("Enable Reposition Arm Cannon first."),
+                         set: { apply(.armPositionMode($0)) }),
+    ]
+    if s.armReposition && s.armPositionMode == 1 {
+      visualItems.append(contentsOf: [
+        SettingsRow.stepper("primehack-arm-x", L("Arm Left / Right"), s.armPositionLeftRight,
+                            range: PrimeHackSettingsState.armOffsetRange, step: 5, format: whole,
+                            L("Horizontal arm cannon offset (-50 left to +50 right)."),
+                            defaultValue: 25, set: { apply(.armPositionLeftRight($0)) }),
+        SettingsRow.stepper("primehack-arm-y", L("Arm Forward / Back"), s.armPositionForwardBack,
+                            range: PrimeHackSettingsState.armOffsetRange, step: 5, format: whole,
+                            L("Depth arm cannon offset (-50 back to +50 forward)."),
+                            defaultValue: -35, set: { apply(.armPositionForwardBack($0)) }),
+        SettingsRow.stepper("primehack-arm-z", L("Arm Up / Down"), s.armPositionUpDown,
+                            range: PrimeHackSettingsState.armOffsetRange, step: 5, format: whole,
+                            L("Vertical arm cannon offset (-50 down to +50 up)."),
+                            defaultValue: -30, set: { apply(.armPositionUpDown($0)) }),
+      ])
+    }
+    visualItems.append(contentsOf: [
       SettingsRow.toggle("primehack-gunfx", L("Secondary Gun Effects"), s.secondaryGunFX,
                          L("Restores the GameCube version's extra arm cannon beam effects in Trilogy's Metroid Prime."),
                          defaultValue: false, set: { apply(.secondaryGunFX($0)) }),
@@ -168,6 +264,7 @@ enum PrimeHackSettingsModelBuilder {
                          L("Draws objects outside the original view so a wide field of view has no pop-in. Costs performance."),
                          defaultValue: false, set: { apply(.toggleCulling($0)) }),
     ])
+    let visuals = MenuSection(id: "primehack-visuals", header: L("Visuals"), items: visualItems)
 
     let gameplay = MenuSection(id: "primehack-gameplay", header: L("Gameplay"),
                                footer: L("Changes apply straight away, in the games each one supports."), items: [
@@ -333,11 +430,17 @@ struct PrimeHackSettingsView: View {
     s.enabled = PrimeHackBridge.enabled()
     s.controllerOnly = ControllerManager.controllerOnly()
     s.adaptiveTriggers = PrimeHackAdaptiveTriggers.isEnabled()
+    s.triggerStrength = PrimeHackAdaptiveTriggers.triggerStrengthLevel()
     s.dualSenseLightbar = PrimeHackAdaptiveTriggers.isLightbarEnabled()
+    s.lightbarBrightness = PrimeHackAdaptiveTriggers.lightbarBrightnessLevel()
+    s.rumbleStrength = Double(PrimeHackAdaptiveTriggers.rumbleStrengthPercent())
     s.horizontalSensitivity = Double(PrimeHackBridge.stickHorizontalSensitivity())
     s.verticalSensitivity = Double(PrimeHackBridge.stickVerticalSensitivity())
+    s.stickDeadzone = Double(PrimeHackBridge.stickDeadzone())
+    s.aimCurve = PrimeHackBridge.aimCurve()
     s.invertX = PrimeHackBridge.invertX()
     s.invertY = PrimeHackBridge.invertY()
+    s.lockOnFreeAim = PrimeHackBridge.lockOnFreeAim()
     s.lockCameraInPuzzles = PrimeHackBridge.lockCameraInMotionPuzzles()
     s.fovEnabled = PrimeHackBridge.fovEnabled()
     s.fov = Double(PrimeHackBridge.fov())
@@ -348,6 +451,10 @@ struct PrimeHackSettingsView: View {
     s.bloomIntensity = Double(PrimeHackBridge.bloomIntensity())
     s.autoEFB = PrimeHackBridge.autoEFB()
     s.armReposition = PrimeHackBridge.armReposition()
+    s.armPositionMode = PrimeHackBridge.armPositionMode()
+    s.armPositionLeftRight = Double(PrimeHackBridge.armPositionLeftRight())
+    s.armPositionForwardBack = Double(PrimeHackBridge.armPositionForwardBack())
+    s.armPositionUpDown = Double(PrimeHackBridge.armPositionUpDown())
     s.secondaryGunFX = PrimeHackBridge.secondaryGunFX()
     s.toggleCulling = PrimeHackBridge.toggleCulling()
     s.skippableCutscenes = PrimeHackBridge.skippableCutscenes()
@@ -367,11 +474,17 @@ struct PrimeHackSettingsView: View {
     case .enabled(let v): state.enabled = v; PrimeHackBridge.setEnabled(v)
     case .controllerOnly(let v): state.controllerOnly = v; ControllerManager.setControllerOnly(v)
     case .adaptiveTriggers(let v): state.adaptiveTriggers = v; PrimeHackAdaptiveTriggers.setEnabled(v)
+    case .triggerStrength(let v): state.triggerStrength = v; PrimeHackAdaptiveTriggers.setTriggerStrengthLevel(v)
     case .dualSenseLightbar(let v): state.dualSenseLightbar = v; PrimeHackAdaptiveTriggers.setLightbarEnabled(v)
+    case .lightbarBrightness(let v): state.lightbarBrightness = v; PrimeHackAdaptiveTriggers.setLightbarBrightnessLevel(v)
+    case .rumbleStrength(let v): state.rumbleStrength = v; PrimeHackAdaptiveTriggers.setRumbleStrengthPercent(Int(v.rounded()))
     case .horizontalSensitivity(let v): state.horizontalSensitivity = v; PrimeHackBridge.setStickHorizontalSensitivity(Int(v.rounded()))
     case .verticalSensitivity(let v): state.verticalSensitivity = v; PrimeHackBridge.setStickVerticalSensitivity(Int(v.rounded()))
+    case .stickDeadzone(let v): state.stickDeadzone = v; PrimeHackBridge.setStickDeadzone(Int(v.rounded()))
+    case .aimCurve(let v): state.aimCurve = v; PrimeHackBridge.setAimCurve(v)
     case .invertX(let v): state.invertX = v; PrimeHackBridge.setInvertX(v)
     case .invertY(let v): state.invertY = v; PrimeHackBridge.setInvertY(v)
+    case .lockOnFreeAim(let v): state.lockOnFreeAim = v; PrimeHackBridge.setLockOnFreeAim(v)
     case .lockCameraInPuzzles(let v): state.lockCameraInPuzzles = v; PrimeHackBridge.setLockCameraInMotionPuzzles(v)
     case .fovEnabled(let v): state.fovEnabled = v; PrimeHackBridge.setFovEnabled(v)
     case .fov(let v): state.fov = v; PrimeHackBridge.setFov(Int(v.rounded()))
@@ -382,6 +495,10 @@ struct PrimeHackSettingsView: View {
     case .bloomIntensity(let v): state.bloomIntensity = v; PrimeHackBridge.setBloomIntensity(Int(v.rounded()))
     case .autoEFB(let v): state.autoEFB = v; PrimeHackBridge.setAutoEFB(v)
     case .armReposition(let v): state.armReposition = v; PrimeHackBridge.setArmReposition(v)
+    case .armPositionMode(let v): state.armPositionMode = v; PrimeHackBridge.setArmPositionMode(v)
+    case .armPositionLeftRight(let v): state.armPositionLeftRight = v; PrimeHackBridge.setArmPositionLeftRight(Int(v.rounded()))
+    case .armPositionForwardBack(let v): state.armPositionForwardBack = v; PrimeHackBridge.setArmPositionForwardBack(Int(v.rounded()))
+    case .armPositionUpDown(let v): state.armPositionUpDown = v; PrimeHackBridge.setArmPositionUpDown(Int(v.rounded()))
     case .secondaryGunFX(let v): state.secondaryGunFX = v; PrimeHackBridge.setSecondaryGunFX(v)
     case .toggleCulling(let v): state.toggleCulling = v; PrimeHackBridge.setToggleCulling(v)
     case .skippableCutscenes(let v): state.skippableCutscenes = v; PrimeHackBridge.setSkippableCutscenes(v)

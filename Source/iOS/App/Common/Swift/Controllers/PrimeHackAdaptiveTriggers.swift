@@ -23,7 +23,10 @@ final class PrimeHackAdaptiveTriggers {
   static let shared = PrimeHackAdaptiveTriggers()
 
   static let enabledDefaultsKey = "primehack_adaptive_triggers"
+  static let triggerStrengthDefaultsKey = "primehack_adaptive_trigger_strength"
   static let lightbarDefaultsKey = "primehack_dualsense_lightbar"
+  static let lightbarBrightnessDefaultsKey = "primehack_lightbar_brightness"
+  static let rumbleStrengthDefaultsKey = "primehack_rumble_strength"
   private static let settingsChangedNotification = Notification.Name("PrimeHackDualSenseSettingsChanged")
 
   nonisolated static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
@@ -36,6 +39,17 @@ final class PrimeHackAdaptiveTriggers {
     NotificationCenter.default.post(name: settingsChangedNotification, object: nil)
   }
 
+  /// 0 = Light (0.65x), 1 = Medium (1.0x, default), 2 = Strong (1.25x).
+  nonisolated static func triggerStrengthLevel(in defaults: UserDefaults = .standard) -> Int {
+    guard let raw = defaults.object(forKey: triggerStrengthDefaultsKey) as? Int else { return 1 }
+    return min(max(raw, 0), 2)
+  }
+
+  nonisolated static func setTriggerStrengthLevel(_ level: Int, in defaults: UserDefaults = .standard) {
+    defaults.set(min(max(level, 0), 2), forKey: triggerStrengthDefaultsKey)
+    NotificationCenter.default.post(name: settingsChangedNotification, object: nil)
+  }
+
   nonisolated static func isLightbarEnabled(in defaults: UserDefaults = .standard) -> Bool {
     (defaults.object(forKey: lightbarDefaultsKey) as? Bool) ?? true
   }
@@ -45,13 +59,42 @@ final class PrimeHackAdaptiveTriggers {
     NotificationCenter.default.post(name: settingsChangedNotification, object: nil)
   }
 
+  /// 0 = Subtle (0.45x), 1 = Medium (1.0x, default), 2 = Bright (1.8x).
+  nonisolated static func lightbarBrightnessLevel(in defaults: UserDefaults = .standard) -> Int {
+    guard let raw = defaults.object(forKey: lightbarBrightnessDefaultsKey) as? Int else { return 1 }
+    return min(max(raw, 0), 2)
+  }
+
+  nonisolated static func setLightbarBrightnessLevel(_ level: Int, in defaults: UserDefaults = .standard) {
+    defaults.set(min(max(level, 0), 2), forKey: lightbarBrightnessDefaultsKey)
+    NotificationCenter.default.post(name: settingsChangedNotification, object: nil)
+  }
+
+  /// 25...100 percent, default 100.
+  nonisolated static func rumbleStrengthPercent(in defaults: UserDefaults = .standard) -> Int {
+    guard let raw = defaults.object(forKey: rumbleStrengthDefaultsKey) as? Int else { return 100 }
+    return min(max(raw, 25), 100)
+  }
+
+  nonisolated static func setRumbleStrengthPercent(_ percent: Int, in defaults: UserDefaults = .standard) {
+    defaults.set(min(max(percent, 25), 100), forKey: rumbleStrengthDefaultsKey)
+  }
+
+  private enum BeamFeel: Equatable {
+    case power
+    case heavy     // Ice / Dark
+    case electric  // Wave / Annihilator
+    case searing   // Plasma / Light / Phazon
+    case hypermode // MP3 Hypermode
+  }
+
   /// The trigger setup last written to a controller, so a mode is only sent when it changes.
   private enum RightMode: Equatable {
     case off
-    case ready
+    case ready(BeamFeel, Int)
     /// 1...10: how far the charge has built.
-    case charging(Int)
-    case charged
+    case charging(Int, BeamFeel, Int)
+    case charged(BeamFeel, Int)
   }
 
   private struct LightTint: Equatable {
@@ -63,7 +106,8 @@ final class PrimeHackAdaptiveTriggers {
   private struct PadState {
     // A newly connected pad may already have a trigger effect applied.
     var right: RightMode?
-    var leftOn: Bool?
+    /// nil = unknown, -1 = off, 0..2 = on at triggerStrengthLevel.
+    var leftState: Int?
     var pressStart: CFTimeInterval?
     /// True after entering active gameplay while R2 was already depressed (e.g. unpausing/unmorphing),
     /// suppressing a phantom click/charge until the player releases R2.
@@ -185,20 +229,91 @@ final class PrimeHackAdaptiveTriggers {
     return ["GM8E", "GM8P", "G2ME", "G2MP", "R3ME", "R3MP", "RM3E", "RM3P"].contains { id.hasPrefix($0) }
   }
 
-  private static func lightTintForGameplay(morphBall: Bool, visorKind: Int) -> LightTint {
-    // Softly dimmed (<= 0.45 channel brightness) so the lightbar is pleasant in a dark cabin.
+  private static func clamp01(_ value: Float) -> Float {
+    min(max(value, 0.0), 1.0)
+  }
+
+  private static func triggerStrengthScale(level: Int) -> Float {
+    switch level {
+    case 0: return 0.65
+    case 2: return 1.25
+    default: return 1.0
+    }
+  }
+
+  private static func lightbarBrightnessScale(level: Int) -> Float {
+    switch level {
+    case 0: return 0.45
+    case 2: return 1.8
+    default: return 1.0
+    }
+  }
+
+  private static func beamFeelFor(beamKind: Int, inHypermode: Bool) -> BeamFeel {
+    if inHypermode { return .hypermode }
+    switch beamKind {
+    case 1, 5: return .heavy     // Ice / Dark
+    case 2, 7: return .electric  // Wave / Annihilator
+    case 3, 4, 6: return .searing // Plasma / Phazon / Light
+    default: return .power
+    }
+  }
+
+  private static func lightTintForGameplay(morphBall: Bool,
+                                           visorKind: Int,
+                                           beamKind: Int,
+                                           inHypermode: Bool,
+                                           lowHealth: Bool,
+                                           brightnessLevel: Int,
+                                           now: CFTimeInterval) -> LightTint {
+    // Base palette softly dimmed (<= 0.48 channel) for dark-cabin comfort; scaled by brightnessLevel.
+    var base: LightTint
     if morphBall {
-      return LightTint(r: 0.45, g: 0.34, b: 0.03)  // Morph Ball gold
+      base = LightTint(r: 0.45, g: 0.34, b: 0.03)  // Morph Ball gold
+    } else if inHypermode {
+      base = LightTint(r: 0.04, g: 0.26, b: 0.50)  // MP3 Hypermode vivid Phazon blue
+    } else {
+      switch visorKind {
+      case 1: base = LightTint(r: 0.04, g: 0.34, b: 0.45)  // Scan Visor cyan
+      case 2: base = LightTint(r: 0.45, g: 0.08, b: 0.04)  // Thermal Visor crimson
+      case 3: base = LightTint(r: 0.14, g: 0.18, b: 0.45)  // X-Ray Visor icy violet-blue
+      case 4: base = LightTint(r: 0.28, g: 0.06, b: 0.42)  // Dark Visor deep purple
+      case 5: base = LightTint(r: 0.03, g: 0.42, b: 0.30)  // Echo Visor teal
+      case 6: base = LightTint(r: 0.06, g: 0.42, b: 0.14)  // Command Visor emerald
+      default:
+        // Combat Visor reflects the equipped beam.
+        switch beamKind {
+        case 1: base = LightTint(r: 0.06, g: 0.32, b: 0.45) // Ice Beam frost blue
+        case 2: base = LightTint(r: 0.34, g: 0.08, b: 0.45) // Wave Beam electric violet
+        case 3: base = LightTint(r: 0.45, g: 0.10, b: 0.03) // Plasma Beam fiery crimson-orange
+        case 4: base = LightTint(r: 0.04, g: 0.22, b: 0.48) // Phazon Beam blue
+        case 5: base = LightTint(r: 0.26, g: 0.06, b: 0.42) // Dark Beam indigo
+        case 6: base = LightTint(r: 0.44, g: 0.40, b: 0.26) // Light Beam warm white-gold
+        case 7: base = LightTint(r: 0.26, g: 0.34, b: 0.45) // Annihilator Beam silver-blue
+        default: base = LightTint(r: 0.42, g: 0.22, b: 0.02) // Power Beam / Varia amber
+        }
+      }
     }
-    switch visorKind {
-    case 1: return LightTint(r: 0.04, g: 0.34, b: 0.45)  // Scan Visor cyan
-    case 2: return LightTint(r: 0.45, g: 0.08, b: 0.04)  // Thermal Visor crimson
-    case 3: return LightTint(r: 0.14, g: 0.18, b: 0.45)  // X-Ray Visor icy violet-blue
-    case 4: return LightTint(r: 0.28, g: 0.06, b: 0.42)  // Dark Visor deep purple
-    case 5: return LightTint(r: 0.03, g: 0.42, b: 0.30)  // Echo Visor teal
-    case 6: return LightTint(r: 0.06, g: 0.42, b: 0.14)  // Command Visor emerald
-    default: return LightTint(r: 0.42, g: 0.22, b: 0.02) // Combat Visor / Varia amber
+
+    if lowHealth {
+      // Gentle 1 Hz breathing red pulse, quantized to 8 steps to keep Bluetooth HID traffic low.
+      let rawWave = Float(0.5 + 0.5 * sin(now * 2.0 * .pi))
+      let stepped = (rawWave * 8.0).rounded() / 8.0
+      let blend: Float = 0.25 + 0.60 * stepped
+      let alertR: Float = 0.46
+      let alertG: Float = 0.03
+      let alertB: Float = 0.02
+      base = LightTint(
+        r: base.r + (alertR - base.r) * blend,
+        g: base.g + (alertG - base.g) * blend,
+        b: base.b + (alertB - base.b) * blend
+      )
     }
+
+    let scale = lightbarBrightnessScale(level: brightnessLevel)
+    return LightTint(r: clamp01(base.r * scale),
+                     g: clamp01(base.g * scale),
+                     b: clamp01(base.b * scale))
   }
 
   private func tick() {
@@ -209,17 +324,32 @@ final class PrimeHackAdaptiveTriggers {
       stopTimer()
       return
     }
+    let now = CACurrentMediaTime()
     // Use the latched per-run PrimeHack flag so flipping Settings mid-game doesn't desync triggers.
     let inPlay = PrimeHackBridge.enabledForCurrentRun() && !TVEmulationBridge.isPaused()
       && UIApplication.shared.applicationState == .active && PrimeHackBridge.inGameplay()
     let morphBall = inPlay && PrimeHackBridge.inMorphBall()
     let scanVisor = inPlay && !morphBall && PrimeHackBridge.inScanVisor()
+    let hasChargeBeam = PrimeHackBridge.hasChargeBeam()
+    let inHypermode = inPlay && PrimeHackBridge.inHypermode()
+    let lowHealth = inPlay && PrimeHackBridge.isLowHealth()
+    let visorKind = PrimeHackBridge.activeVisorKind()
+    let beamKind = PrimeHackBridge.activeBeamKind()
+    let triggerStrength = Self.triggerStrengthLevel()
+    let brightnessLevel = Self.lightbarBrightnessLevel()
+    let beamFeel = Self.beamFeelFor(beamKind: beamKind, inHypermode: inHypermode)
+
     let triggersActive = triggersEnabled && inPlay && !morphBall
     let lightTint: LightTint? = (lightbarEnabled && inPlay)
-      ? Self.lightTintForGameplay(morphBall: morphBall, visorKind: PrimeHackBridge.activeVisorKind())
+      ? Self.lightTintForGameplay(morphBall: morphBall,
+                                  visorKind: visorKind,
+                                  beamKind: beamKind,
+                                  inHypermode: inHypermode,
+                                  lowHealth: lowHealth,
+                                  brightnessLevel: brightnessLevel,
+                                  now: now)
       : nil
 
-    let now = CACurrentMediaTime()
     var seen = Set<ObjectIdentifier>()
     for controller in GCController.controllers() {
       guard let pad = controller.extendedGamepad as? GCDualSenseGamepad else { continue }
@@ -227,7 +357,14 @@ final class PrimeHackAdaptiveTriggers {
       seen.insert(id)
       var state = states[id] ?? PadState()
       let isPlayer1 = (cachedPlayer1ID == id)
-      updateTriggers(pad, state: &state, active: isPlayer1 && triggersActive, scanVisor: scanVisor, now: now)
+      updateTriggers(pad,
+                     state: &state,
+                     active: isPlayer1 && triggersActive,
+                     scanVisor: scanVisor,
+                     hasChargeBeam: hasChargeBeam,
+                     beamFeel: beamFeel,
+                     strengthLevel: triggerStrength,
+                     now: now)
       updateLightbar(controller, state: &state, tint: isPlayer1 ? lightTint : nil)
       states[id] = state
     }
@@ -237,16 +374,23 @@ final class PrimeHackAdaptiveTriggers {
     }
   }
 
-  private func updateTriggers(_ pad: GCDualSenseGamepad, state: inout PadState, active: Bool, scanVisor: Bool, now: CFTimeInterval) {
+  private func updateTriggers(_ pad: GCDualSenseGamepad,
+                              state: inout PadState,
+                              active: Bool,
+                              scanVisor: Bool,
+                              hasChargeBeam: Bool,
+                              beamFeel: BeamFeel,
+                              strengthLevel: Int,
+                              now: CFTimeInterval) {
     guard active else {
       apply(.off, to: pad.rightTrigger, state: &state)
-      setLeft(false, pad: pad, state: &state)
+      setLeft(false, strengthLevel: strengthLevel, pad: pad, state: &state)
       state.pressStart = nil
       state.wasFireActive = false
       state.waitForRightRelease = false
       return
     }
-    setLeft(true, pad: pad, state: &state)
+    setLeft(true, strengthLevel: strengthLevel, pad: pad, state: &state)
 
     // In Scan Visor, R2 does not fire or charge: keep it slack while L2 still gives lock/scan feel.
     if scanVisor {
@@ -278,21 +422,26 @@ final class PrimeHackAdaptiveTriggers {
     // Past the fire point (the emulator's button threshold is 0.5, just after the weapon snap at
     // 0.45): the shot has fired and the button is held.
     if right.value > 0.5 {
+      if !hasChargeBeam {
+        state.pressStart = nil
+        apply(.ready(beamFeel, strengthLevel), to: right, state: &state)
+        return
+      }
       let start = state.pressStart ?? now
       state.pressStart = start
       let held = now - start
       if held < Self.chargeDelay {
         // Keep the weapon mode while the click happens.
-        apply(.ready, to: right, state: &state)
+        apply(.ready(beamFeel, strengthLevel), to: right, state: &state)
       } else if held < Self.chargeFull {
         let level = max(1, min(10, Int(((held - Self.chargeDelay) / (Self.chargeFull - Self.chargeDelay)) * 10) + 1))
-        apply(.charging(level), to: right, state: &state)
+        apply(.charging(level, beamFeel, strengthLevel), to: right, state: &state)
       } else {
-        apply(.charged, to: right, state: &state)
+        apply(.charged(beamFeel, strengthLevel), to: right, state: &state)
       }
     } else {
       state.pressStart = nil
-      apply(.ready, to: right, state: &state)
+      apply(.ready(beamFeel, strengthLevel), to: right, state: &state)
     }
   }
 
@@ -319,24 +468,56 @@ final class PrimeHackAdaptiveTriggers {
     switch mode {
     case .off:
       trigger.setModeOff()
-    case .ready:
-      // A short, firm wall between 25% and 45% of the travel that gives way with a click, so the
-      // snap carries the trigger past the 0.5 fire point.
-      trigger.setModeWeaponWithStartPosition(0.25, endPosition: 0.45, resistiveStrength: 0.6)
-    case .charging(let level):
+    case .ready(let feel, let strengthLevel):
+      let scale = Self.triggerStrengthScale(level: strengthLevel)
+      // A short, firm wall that gives way with a click just before the 0.5 fire point, tuned per beam.
+      let (startPos, endPos, baseStrength): (Float, Float, Float)
+      switch feel {
+      case .power:     (startPos, endPos, baseStrength) = (0.25, 0.45, 0.60)
+      case .heavy:     (startPos, endPos, baseStrength) = (0.20, 0.46, 0.78)
+      case .electric:  (startPos, endPos, baseStrength) = (0.26, 0.44, 0.52)
+      case .searing:   (startPos, endPos, baseStrength) = (0.24, 0.45, 0.72)
+      case .hypermode: (startPos, endPos, baseStrength) = (0.22, 0.45, 0.85)
+      }
+      trigger.setModeWeaponWithStartPosition(startPos, endPosition: endPos,
+                                             resistiveStrength: Self.clamp01(baseStrength * scale))
+    case .charging(let level, let feel, let strengthLevel):
+      let scale = Self.triggerStrengthScale(level: strengthLevel)
       let progress = Float(level) / 10
-      trigger.setModeVibrationWithStartPosition(0.0, amplitude: 0.15 + 0.45 * progress,
-                                                frequency: 0.12 + 0.18 * progress)
-    case .charged:
-      trigger.setModeVibrationWithStartPosition(0.0, amplitude: 0.7, frequency: 0.32)
+      let (ampMin, ampSpan, freqMin, freqSpan): (Float, Float, Float, Float)
+      switch feel {
+      case .power:     (ampMin, ampSpan, freqMin, freqSpan) = (0.15, 0.45, 0.12, 0.18)
+      case .heavy:     (ampMin, ampSpan, freqMin, freqSpan) = (0.18, 0.50, 0.08, 0.14)
+      case .electric:  (ampMin, ampSpan, freqMin, freqSpan) = (0.16, 0.46, 0.18, 0.22)
+      case .searing:   (ampMin, ampSpan, freqMin, freqSpan) = (0.18, 0.48, 0.15, 0.21)
+      case .hypermode: (ampMin, ampSpan, freqMin, freqSpan) = (0.22, 0.53, 0.16, 0.22)
+      }
+      trigger.setModeVibrationWithStartPosition(0.0,
+                                                amplitude: Self.clamp01((ampMin + ampSpan * progress) * scale),
+                                                frequency: Self.clamp01(freqMin + freqSpan * progress))
+    case .charged(let feel, let strengthLevel):
+      let scale = Self.triggerStrengthScale(level: strengthLevel)
+      let (amp, freq): (Float, Float)
+      switch feel {
+      case .power:     (amp, freq) = (0.70, 0.32)
+      case .heavy:     (amp, freq) = (0.76, 0.24)
+      case .electric:  (amp, freq) = (0.72, 0.42)
+      case .searing:   (amp, freq) = (0.76, 0.38)
+      case .hypermode: (amp, freq) = (0.82, 0.40)
+      }
+      trigger.setModeVibrationWithStartPosition(0.0,
+                                                amplitude: Self.clamp01(amp * scale),
+                                                frequency: freq)
     }
   }
 
-  private func setLeft(_ on: Bool, pad: GCDualSenseGamepad, state: inout PadState) {
-    guard on != state.leftOn else { return }
-    state.leftOn = on
+  private func setLeft(_ on: Bool, strengthLevel: Int, pad: GCDualSenseGamepad, state: inout PadState) {
+    let desired = on ? strengthLevel : -1
+    guard desired != state.leftState else { return }
+    state.leftState = desired
     if on {
-      pad.leftTrigger.setModeFeedbackWithStartPosition(0.15, resistiveStrength: 0.25)
+      let scale = Self.triggerStrengthScale(level: strengthLevel)
+      pad.leftTrigger.setModeFeedbackWithStartPosition(0.15, resistiveStrength: Self.clamp01(0.25 * scale))
     } else {
       pad.leftTrigger.setModeOff()
     }

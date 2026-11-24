@@ -15,7 +15,11 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (BOOL)inGameplay;
 + (BOOL)inMorphBall;
 + (BOOL)inScanVisor;
++ (BOOL)hasChargeBeam;
++ (BOOL)inHypermode;
++ (BOOL)isLowHealth;
 + (NSInteger)activeVisorKind;
++ (NSInteger)activeBeamKind;
 
 // Controls
 + (BOOL)enabled;
@@ -24,10 +28,16 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (void)setStickHorizontalSensitivity:(NSInteger)value;
 + (NSInteger)stickVerticalSensitivity;
 + (void)setStickVerticalSensitivity:(NSInteger)value;
++ (NSInteger)stickDeadzone;
++ (void)setStickDeadzone:(NSInteger)value;
++ (NSInteger)aimCurve;
++ (void)setAimCurve:(NSInteger)value;
 + (BOOL)invertX;
 + (void)setInvertX:(BOOL)value;
 + (BOOL)invertY;
 + (void)setInvertY:(BOOL)value;
++ (BOOL)lockOnFreeAim;
++ (void)setLockOnFreeAim:(BOOL)value;
 + (BOOL)lockCameraInMotionPuzzles;
 + (void)setLockCameraInMotionPuzzles:(BOOL)value;
 
@@ -50,6 +60,14 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (void)setAutoEFB:(BOOL)value;
 + (BOOL)armReposition;
 + (void)setArmReposition:(BOOL)value;
++ (NSInteger)armPositionMode;
++ (void)setArmPositionMode:(NSInteger)value;
++ (NSInteger)armPositionLeftRight;
++ (void)setArmPositionLeftRight:(NSInteger)value;
++ (NSInteger)armPositionForwardBack;
++ (void)setArmPositionForwardBack:(NSInteger)value;
++ (NSInteger)armPositionUpDown;
++ (void)setArmPositionUpDown:(NSInteger)value;
 + (BOOL)secondaryGunFX;
 + (void)setSecondaryGunFX:(BOOL)value;
 + (BOOL)toggleCulling;

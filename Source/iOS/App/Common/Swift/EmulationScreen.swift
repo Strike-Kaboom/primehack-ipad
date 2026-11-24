@@ -407,6 +407,9 @@ struct EmulationScreen: View {
   /// The pad being edited: the one on screen when editing began.
   @State private var layoutEditPadKind: TouchOverlayPadKind = .gameCube
   private let statusPollTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+  @State private var batteryPollTicks: Int = 29
+  @State private var warnedBattery20: Bool = false
+  @State private var warnedBattery10: Bool = false
 
   private static let topRevealStripHeight: CGFloat = 80
 
@@ -1136,12 +1139,33 @@ struct EmulationScreen: View {
       touchPadsRefreshToken = UUID()
     }
     .onReceive(NotificationCenter.default.publisher(for: .DOLEditTouchLayout)) { _ in beginLayoutEdit() }
-    // iOS has no 1s timer (the tvOS branch does); poll paused-state for the HUD pill.
+    // iOS has no 1s timer (the tvOS branch does); poll paused-state for the HUD pill and check
+    // wireless controller battery every 30s for low-battery flight warnings.
     .onReceive(statusPollTimer) { _ in
       isPaused = TVEmulationBridge.isPaused()
       // Clear a stale disconnect banner if the game resumed via any other path.
       if controllerManager.disconnectPause != nil && !TVEmulationBridge.isPaused() {
         controllerManager.clearDisconnectPause()
+      }
+      batteryPollTicks += 1
+      if batteryPollTicks >= 30 {
+        batteryPollTicks = 0
+        if let battery = ControllerBatterySnapshot.readPlayer1(), !battery.isCharging {
+          if battery.percent >= 25 {
+            warnedBattery20 = false
+            warnedBattery10 = false
+          } else if battery.percent <= 10 && !warnedBattery10 {
+            warnedBattery10 = true
+            warnedBattery20 = true
+            EmulationToast.post(String(format: L("Controller battery critical (%d%%)"), battery.percent))
+          } else if battery.percent <= 20 && !warnedBattery20 {
+            warnedBattery20 = true
+            EmulationToast.post(String(format: L("Controller battery low (%d%%)"), battery.percent))
+          }
+        } else {
+          warnedBattery20 = false
+          warnedBattery10 = false
+        }
       }
     }
     .onChange(of: showPauseMenu) { _, visible in
