@@ -921,8 +921,8 @@ bool Metal::Gfx::TryComputeBlitRGBA8(AbstractTexture* dst, const MathUtil::Recta
 {
   if (!dst || !src)
     return false;
-  if (src->GetType() != AbstractTextureType::Texture_2D ||
-      dst->GetType() != AbstractTextureType::Texture_2D)
+  if (src->GetConfig().type != AbstractTextureType::Texture_2D ||
+      dst->GetConfig().type != AbstractTextureType::Texture_2D)
     return false;
   if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
     return false;
@@ -1017,8 +1017,8 @@ bool Metal::Gfx::TryComputeResolveDepth(AbstractTexture* dst,
 {
   if (!dst || !src)
     return false;
-  if (src->GetType() != AbstractTextureType::Texture_2D ||
-      dst->GetType() != AbstractTextureType::Texture_2D)
+  if (src->GetConfig().type != AbstractTextureType::Texture_2D ||
+      dst->GetConfig().type != AbstractTextureType::Texture_2D)
     return false;
   if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
     return false;
@@ -1075,8 +1075,8 @@ bool Metal::Gfx::TryComputeScaleRGBA8(AbstractTexture* dst, const MathUtil::Rect
 {
   if (!dst || !src)
     return false;
-  if (src->GetType() != AbstractTextureType::Texture_2D ||
-      dst->GetType() != AbstractTextureType::Texture_2D)
+  if (src->GetConfig().type != AbstractTextureType::Texture_2D ||
+      dst->GetConfig().type != AbstractTextureType::Texture_2D)
     return false;
   if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
     return false;
@@ -1133,8 +1133,8 @@ bool Metal::Gfx::TryComputeGammaRGBA8(AbstractTexture* dst, const MathUtil::Rect
 {
   if (!dst || !src)
     return false;
-  if (src->GetType() != AbstractTextureType::Texture_2D ||
-      dst->GetType() != AbstractTextureType::Texture_2D)
+  if (src->GetConfig().type != AbstractTextureType::Texture_2D ||
+      dst->GetConfig().type != AbstractTextureType::Texture_2D)
     return false;
   if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
     return false;
