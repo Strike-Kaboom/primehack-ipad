@@ -2870,8 +2870,8 @@ static bool CI_TryPsqGatherStore(PowerPC::PowerPCState& ppc_state, UGeckoInstruc
   const UGQR gqr(ppc_state.spr[SPR_GQR0 + (indexed ? inst.Ix : inst.I)]);
   if (HID2(ppc_state).LSQE == 0 || gqr.st_type != QUANTIZE_FLOAT)
     return false;
-  const u32 ea = ppc_state.gpr[inst.RA] +
-                 (indexed ? ppc_state.gpr[inst.RB] : static_cast<u32>(s32{inst.SIMM_12}));
+  const u32 base = inst.RA ? ppc_state.gpr[inst.RA] : 0;
+  const u32 ea = base + (indexed ? ppc_state.gpr[inst.RB] : static_cast<u32>(s32{inst.SIMM_12}));
   const bool single = (indexed ? inst.Wx : inst.W) != 0;
   if ((ea & 3) || (ea & 0xfff) > 0x1000u - (single ? 4u : 8u) ||
       !CI_IsGatherPipeWrite(ppc_state, ea))
@@ -3051,6 +3051,34 @@ s32 CachedInterpreter::LoadStoreFast(PowerPC::PowerPCState& ppc_state, const voi
     if (HID2(ppc_state).LSQE == 0 || (ppc_state.Exceptions & EXCEPTION_DSI) ||
         (checked && (ppc_state.Exceptions & EXCEPTION_PROGRAM))) [[unlikely]]
       CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
+    if (type == QUANTIZE_FLOAT) [[likely]]
+    {
+      if ((ea & 3) || (!single && offset > PowerPC::BAT_PAGE_SIZE - 2 * sizeof(u32))) [[unlikely]]
+      {
+        CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
+      }
+      if constexpr (kind == CIMemKind::PSQL)
+      {
+        // The u64 SetBoth overload is inline; the double one is an out-of-line call (a stack frame in
+        // an otherwise leaf handler), and the bits are what we have anyway.
+        const u64 ps0 = ConvertToDouble(Common::swap32(CI_ReadHost<u32>(host)));
+        const u64 ps1 =
+            single ? std::bit_cast<u64>(1.0) :
+                     ConvertToDouble(Common::swap32(CI_ReadHost<u32>(host + sizeof(u32))));
+        ppc_state.ps[inst.RD].SetBoth(ps0, ps1);
+      }
+      else
+      {
+        CI_WriteHost<u32>(host,
+                          Common::swap32(ConvertToSingleFTZ(ppc_state.ps[inst.RS].PS0AsU64())));
+        if (!single)
+        {
+          CI_WriteHost<u32>(host + sizeof(u32),
+                            Common::swap32(ConvertToSingleFTZ(ppc_state.ps[inst.RS].PS1AsU64())));
+        }
+      }
+      break;
+    }
     if constexpr (kind == CIMemKind::PSQL)
     {
       if (type == QUANTIZE_U8 || type == QUANTIZE_S8 || type == QUANTIZE_U16 || type == QUANTIZE_S16)
@@ -3077,31 +3105,7 @@ s32 CachedInterpreter::LoadStoreFast(PowerPC::PowerPCState& ppc_state, const voi
         break;
       }
     }
-    if (type != QUANTIZE_FLOAT || (ea & 3) ||
-        (!single && offset > PowerPC::BAT_PAGE_SIZE - 2 * sizeof(u32))) [[unlikely]]
-    {
-      CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
-    }
-    if constexpr (kind == CIMemKind::PSQL)
-    {
-      // The u64 SetBoth overload is inline; the double one is an out-of-line call (a stack frame in
-      // an otherwise leaf handler), and the bits are what we have anyway.
-      const u64 ps0 = ConvertToDouble(Common::swap32(CI_ReadHost<u32>(host)));
-      const u64 ps1 = single ? std::bit_cast<u64>(1.0) :
-                               ConvertToDouble(Common::swap32(CI_ReadHost<u32>(host + sizeof(u32))));
-      ppc_state.ps[inst.RD].SetBoth(ps0, ps1);
-    }
-    else
-    {
-      CI_WriteHost<u32>(host,
-                        Common::swap32(ConvertToSingleFTZ(ppc_state.ps[inst.RS].PS0AsU64())));
-      if (!single)
-      {
-        CI_WriteHost<u32>(host + sizeof(u32),
-                          Common::swap32(ConvertToSingleFTZ(ppc_state.ps[inst.RS].PS1AsU64())));
-      }
-    }
-    break;
+    CI_MUSTTAIL return LoadStoreFastCold<kind, chain, checked>(ppc_state, payload);
   }
   case CIMemKind::DCBZ:
     // Interpreter::dcbz: alignment exception without HID0.DCE, and the low-MEM1 hack skips the clear.
@@ -3562,11 +3566,13 @@ CachedInterpreter::AnyCallback CachedInterpreter::GetLoadStoreFastCallback(CIMem
 // lookup and the same fall-back rules as LoadStoreFast.
 namespace
 {
-template <bool indexed, bool zero_base = false>
+template <bool indexed, bool zero_base = false, bool psq = false>
 inline u32 CI_MicroMemEA(const PowerPC::PowerPCState& ppc_state, const MicroOpPayload& m)
 {
   const u32 base = zero_base && m.ra == 0 ? 0 : ppc_state.gpr[m.ra];
-  const u32 offset = indexed ? ppc_state.gpr[m.rb] : static_cast<u32>(s32{static_cast<s16>(m.imm)});
+  const u32 offset = indexed ? ppc_state.gpr[m.rb] :
+                     psq     ? static_cast<u32>(static_cast<s32>(m.imm << 20) >> 20) :
+                               static_cast<u32>(s32{static_cast<s16>(m.imm)});
   return base + offset;
 }
 
@@ -3586,6 +3592,14 @@ std::optional<MicroOp> DecodeFPMicroOp(UGeckoInstruction inst, bool load_store_f
     case 52: code = MicroOpCode::MEM_STFS; break;
     default: code = MicroOpCode::MEM_STFD; break;
     }
+  }
+  else if (inst.OPCD == 56 || inst.OPCD == 60)
+  {
+    if (!load_store_fast || !s_mem_microops || s_microop_fusion_validate)
+      return std::nullopt;
+    code = inst.OPCD == 56 ? MicroOpCode::MEM_PSQL : MicroOpCode::MEM_PSQST;
+    // Pack GQR index into rb and single-lane flag W into rc; imm keeps full inst.hex (SIMM_12).
+    return MicroOp{code, u8(inst.FD), u8(inst.RA), u8(inst.I), u8(inst.W), inst.hex};
   }
   else
   {
@@ -3630,11 +3644,12 @@ std::optional<MicroOp> DecodeAnalyzedFPMicroOp(const PPCAnalyst::CodeOp& op, boo
 template <CIMemKind kind, bool indexed, bool update>
 inline bool CI_MicroMemAccess(PowerPC::PowerPCState& ppc_state, const MicroOpPayload& m)
 {
-  constexpr bool fp = kind == CIMemKind::LFS || kind == CIMemKind::LFD ||
+  constexpr bool psq = kind == CIMemKind::PSQL || kind == CIMemKind::PSQST;
+  constexpr bool fp = psq || kind == CIMemKind::LFS || kind == CIMemKind::LFD ||
                       kind == CIMemKind::STFS || kind == CIMemKind::STFD;
-  const u32 ea = CI_MicroMemEA<indexed, fp>(ppc_state, m);
+  const u32 ea = CI_MicroMemEA<indexed, fp, psq>(ppc_state, m);
   u8* const page = CI_PagePtr(ppc_state, ea);
-  if (page == nullptr || (ea & CI_AlignMask(kind)) != 0) [[unlikely]]
+  if (page == nullptr || (kind != CIMemKind::PSQL && (ea & CI_AlignMask(kind)) != 0)) [[unlikely]]
     return false;
   if constexpr (CI_IsSubWordStore(kind))
   {
@@ -3688,6 +3703,66 @@ inline bool CI_MicroMemAccess(PowerPC::PowerPCState& ppc_state, const MicroOpPay
       CI_WriteHost<u64>(host, Common::swap64(ppc_state.ps[m.rd].PS0AsU64()));
     }
     break;
+  case CIMemKind::PSQL:
+  case CIMemKind::PSQST:
+  {
+    if (HID2(ppc_state).LSQE == 0 || (ppc_state.Exceptions & EXCEPTION_DSI)) [[unlikely]]
+      return false;
+    const bool single = m.rc != 0;
+    const UGQR gqr(ppc_state.spr[SPR_GQR0 + m.rb]);
+    const EQuantizeType type = (kind == CIMemKind::PSQL) ? gqr.ld_type : gqr.st_type;
+    const u32 offset = ea & CI_PAGE_OFFSET_MASK;
+    if (type == QUANTIZE_FLOAT) [[likely]]
+    {
+      if ((ea & 3) || (!single && offset > PowerPC::BAT_PAGE_SIZE - 2 * sizeof(u32))) [[unlikely]]
+        return false;
+      if constexpr (kind == CIMemKind::PSQL)
+      {
+        const u64 ps0 = ConvertToDouble(Common::swap32(CI_ReadHost<u32>(host)));
+        const u64 ps1 =
+            single ? std::bit_cast<u64>(1.0) :
+                     ConvertToDouble(Common::swap32(CI_ReadHost<u32>(host + sizeof(u32))));
+        ppc_state.ps[m.rd].SetBoth(ps0, ps1);
+      }
+      else
+      {
+        CI_WriteHost<u32>(host, Common::swap32(ConvertToSingleFTZ(ppc_state.ps[m.rd].PS0AsU64())));
+        if (!single)
+        {
+          CI_WriteHost<u32>(host + sizeof(u32),
+                            Common::swap32(ConvertToSingleFTZ(ppc_state.ps[m.rd].PS1AsU64())));
+        }
+      }
+      break;
+    }
+    if constexpr (kind == CIMemKind::PSQL)
+    {
+      if (type == QUANTIZE_U8 || type == QUANTIZE_S8 || type == QUANTIZE_U16 || type == QUANTIZE_S16)
+      {
+        const bool half = type == QUANTIZE_U16 || type == QUANTIZE_S16;
+        const u32 width = half ? 2 : 1;
+        if ((ea & (width - 1)) || offset > PowerPC::BAT_PAGE_SIZE - width * (single ? 1 : 2))
+          return false;
+        const float scale = PAIRED_DEQUANTIZE_SCALE[gqr.ld_scale];
+        const auto lane = [type, half, scale](const u8* ptr) -> double {
+          int value;
+          if (half)
+          {
+            const u16 bits = Common::swap16(CI_ReadHost<u16>(ptr));
+            value = type == QUANTIZE_S16 ? static_cast<s16>(bits) : int(bits);
+          }
+          else
+          {
+            value = type == QUANTIZE_S8 ? static_cast<s8>(*ptr) : int(*ptr);
+          }
+          return static_cast<float>(value) * scale;
+        };
+        ppc_state.ps[m.rd].SetBoth(lane(host), single ? 1.0 : lane(host + width));
+        break;
+      }
+    }
+    return false;
+  }
   default:
     break;
   }
@@ -3731,6 +3806,11 @@ template <CIMemKind kind, bool indexed, bool update>
   if constexpr (kind == CIMemKind::STFS || kind == CIMemKind::STFD)
   {
     if (CI_TryGatherPipeStore<kind>(ppc_state, inst, CI_MicroMemEA<indexed, true>(ppc_state, m)))
+      return;
+  }
+  else if constexpr (kind == CIMemKind::PSQST)
+  {
+    if (CI_TryPsqGatherStore(ppc_state, inst))
       return;
   }
   Interpreter::GetInterpreterOp(inst)(*s_interpreter, inst);
@@ -4531,6 +4611,8 @@ struct CachedInterpreter::MicroOpHandlers
   CI_MICRO_MEM(MEM_LFD, LFD, false, false)
   CI_MICRO_MEM(MEM_STFS, STFS, false, false)
   CI_MICRO_MEM(MEM_STFD, STFD, false, false)
+  CI_MICRO_MEM(MEM_PSQL, PSQL, false, false)
+  CI_MICRO_MEM(MEM_PSQST, PSQST, false, false)
   CI_MICRO_MEM(MEM_LBZU, LBZ, false, true)
   CI_MICRO_MEM(MEM_LHZU, LHZ, false, true)
   CI_MICRO_MEM(MEM_LHAU, LHA, false, true)
@@ -4720,6 +4802,8 @@ const CachedInterpreter::AnyCallback
             &MicroOpHandlers::MEM_LFD<false>,
             &MicroOpHandlers::MEM_STFS<false>,
             &MicroOpHandlers::MEM_STFD<false>,
+            &MicroOpHandlers::MEM_PSQL<false>,
+            &MicroOpHandlers::MEM_PSQST<false>,
 #define CI_FP_ENTRY(name) \
   &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<false, InterpreterFP::Decoded>, false>, \
   &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<true, InterpreterFP::Decoded>, false>,
@@ -4815,6 +4899,8 @@ const CachedInterpreter::AnyCallback
             &MicroOpHandlers::MEM_LFD<true>,
             &MicroOpHandlers::MEM_STFS<true>,
             &MicroOpHandlers::MEM_STFD<true>,
+            &MicroOpHandlers::MEM_PSQL<true>,
+            &MicroOpHandlers::MEM_PSQST<true>,
 #define CI_FP_ENTRY(name) \
   &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<false, InterpreterFP::Decoded>, true>, \
   &MicroOpHandlers::FloatingPoint<&InterpreterFP::name<true, InterpreterFP::Decoded>, true>,
@@ -4890,12 +4976,17 @@ CachedInterpreter::AnyCallback CachedInterpreter::MicroOpHandlers::GetPair(Micro
   CI_FP_MA(LFS, fmsubsx)
   CI_FP_MA(LFS, fnmsubsx)
   CI_FP_MA(LFS, fnmaddsx)
+  CI_FP_MA(LFS, fnegx)
+  CI_FP_MA(LFS, fabsx)
+  CI_FP_MA(LFS, fmrx)
   CI_FP_MA(LFD, frspx)
   CI_FP_AM(fmulsx, STFS)
   CI_FP_AM(faddsx, STFS)
   CI_FP_AM(fsubsx, STFS)
   CI_FP_AM(fmaddsx, STFS)
   CI_FP_AM(fmsubsx, STFS)
+  CI_FP_AM(fnegx, STFS)
+  CI_FP_AM(fabsx, STFS)
   CI_FP_AM(fmrx, STFD)
   CI_FP_AM(frspx, STFS)
   CI_FP_AA(fmulsx, faddsx)
@@ -4904,8 +4995,23 @@ CachedInterpreter::AnyCallback CachedInterpreter::MicroOpHandlers::GetPair(Micro
   CI_FP_AA(fmaddsx, fmaddsx)
   CI_FP_AA(fmaddsx, faddsx)
   // Paired-single matrix / transform / skinning pairs (hot across Metroid Prime 1-3).
+  CI_FP_MA(PSQL, ps_muls0)
+  CI_FP_MA(PSQL, ps_madds1)
+  CI_FP_MA(PSQL, ps_madds0)
+  CI_FP_MA(PSQL, ps_mul)
+  CI_FP_MA(PSQL, ps_madd)
+  CI_FP_MA(PSQL, ps_add)
+  CI_FP_MA(PSQL, ps_sub)
+  CI_FP_MA(PSQL, ps_merge00)
+  CI_FP_AM(ps_madds1, PSQST)
+  CI_FP_AM(ps_madds0, PSQST)
+  CI_FP_AM(ps_madd, PSQST)
+  CI_FP_AM(ps_add, PSQST)
+  CI_FP_AM(ps_sub, PSQST)
+  CI_FP_AM(ps_mul, PSQST)
   CI_FP_AA(ps_muls0, ps_madds1)
   CI_FP_AA(ps_muls0, ps_madds0)
+  CI_FP_AA(ps_muls0, ps_nmsub)
   CI_FP_AA(ps_muls1, ps_madds1)
   CI_FP_AA(ps_madds0, ps_madds1)
   CI_FP_AA(ps_madds1, ps_madds0)
@@ -4918,11 +5024,15 @@ CachedInterpreter::AnyCallback CachedInterpreter::MicroOpHandlers::GetPair(Micro
   CI_FP_AA(ps_merge00, ps_mul)
   CI_FP_AA(ps_add, ps_sum0)
   CI_FP_AA(ps_madd, ps_sum0)
+  CI_FP_AA(ps_add, ps_sum1)
+  CI_FP_AA(ps_madd, ps_sum1)
   CI_CELL_MM(LFS, LFS)
   CI_CELL_MM(STFS, STFS)
   CI_CELL_MM(LFD, LFD)
   CI_CELL_MM(STFD, STFD)
   CI_CELL_MM(STFS, LFS)
+  CI_CELL_MM(PSQL, PSQL)
+  CI_CELL_MM(PSQST, PSQST)
 #undef CI_FP_AA
 #undef CI_FP_AM
 #undef CI_FP_MA

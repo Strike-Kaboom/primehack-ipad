@@ -65,6 +65,23 @@ void Mixer::DoState(PointerWrap& p)
 // Executed from sound stream thread
 void Mixer::MixerFifo::Mix(s16* samples, std::size_t num_samples)
 {
+  const u32 seq = m_enqueue_seq.load(std::memory_order_acquire);
+  if (!m_is_primary)
+  {
+    if (m_asleep)
+    {
+      if (seq == m_seen_seq)
+        return;
+      m_asleep = false;
+      m_silent_granules = 0;
+    }
+    if (seq != m_seen_seq)
+    {
+      m_seen_seq = seq;
+      m_silent_granules = 0;
+    }
+  }
+
   constexpr u32 INDEX_HALF = 0x80000000;
   constexpr DT_s FADE_IN_RC = DT_s(0.008);
   constexpr DT_s FADE_OUT_RC = DT_s(0.064);
@@ -160,6 +177,15 @@ void Mixer::MixerFifo::Mix(s16* samples, std::size_t num_samples)
     m_quantization_error.r = std::clamp(samples[1] - sample.r, -1.0f, 1.0f);
 
     samples += 2;
+  }
+
+  if (!m_is_primary && m_silent_granules >= 4 &&
+      m_enqueue_seq.load(std::memory_order_acquire) == m_seen_seq)
+  {
+    std::fill(m_front.begin(), m_front.end(), StereoPair{0.0f, 0.0f});
+    std::fill(m_back.begin(), m_back.end(), StereoPair{0.0f, 0.0f});
+    m_quantization_error = StereoPair{0.0f, 0.0f};
+    m_asleep = true;
   }
 }
 
@@ -550,6 +576,7 @@ void Mixer::MixerFifo::Enqueue()
   m_queue_head.store(next_head, std::memory_order_release);
   m_queue_fading.store(false, std::memory_order_relaxed);
   m_queue_looping.store(false, std::memory_order_relaxed);
+  m_enqueue_seq.fetch_add(1, std::memory_order_release);
 }
 
 bool Mixer::MixerFifo::Dequeue(Granule* granule)
@@ -593,14 +620,22 @@ bool Mixer::MixerFifo::Dequeue(Granule* granule)
       bool looping = m_queue_looping.load(std::memory_order_relaxed);
       m_queue_fading.store(looping, std::memory_order_relaxed);
       m_queue_looping.store(true, std::memory_order_relaxed);
+      if (!m_is_primary && looping && m_fade_volume < 1e-4f)
+        ++m_silent_granules;
     }
     else
     {
       std::fill(granule->begin(), granule->end(), StereoPair{0.0f, 0.0f});
       m_queue_fading.store(false, std::memory_order_relaxed);
       m_queue_looping.store(false, std::memory_order_relaxed);
+      if (!m_is_primary)
+        ++m_silent_granules;
       return false;
     }
+  }
+  else
+  {
+    m_silent_granules = 0;
   }
 
   *granule = m_queue[tail];

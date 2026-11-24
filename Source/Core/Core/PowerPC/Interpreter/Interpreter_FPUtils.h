@@ -126,7 +126,7 @@ inline double Force25Bit(double d)
   u64 exponent = integral & Common::DOUBLE_EXP;
   u64 fraction = integral & Common::DOUBLE_FRAC;
 
-  if (exponent == 0 && fraction != 0)
+  if (exponent == 0 && fraction != 0) [[unlikely]]
   {
     // Subnormals get "normalized" before they're rounded
     // In the end, this practically just means that the rounding is
@@ -209,10 +209,18 @@ inline FPResult NI_mul(PowerPC::PowerPCState& ppc_state, double a, double b)
   return result;
 }
 
-// PrimeHack for iPad: keep NaN handling out of the finite arithmetic path.
-[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_div_nan(PowerPC::PowerPCState& ppc_state,
-                                                           double a, double b)
+// PrimeHack for iPad: keep Inf/NaN handling out of the finite division path.
+[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_div_nonfinite(PowerPC::PowerPCState& ppc_state,
+                                                                 double a, double b, double val)
 {
+  if (std::isinf(val))
+  {
+    FPResult result{val};
+    if (b == 0.0)
+      result.SetException(ppc_state, FPSCR_ZX);
+    return result;
+  }
+
   FPResult result;
   if (Common::IsSNAN(a) || Common::IsSNAN(b))
     result.SetException(ppc_state, FPSCR_VXSNAN);
@@ -243,27 +251,26 @@ inline FPResult NI_div(PowerPC::PowerPCState& ppc_state, double a, double b)
 {
   FPResult result{a / b};
 
-  if (std::isinf(result.value))
-  {
-    if (b == 0.0)
-    {
-      result.SetException(ppc_state, FPSCR_ZX);
-      return result;
-    }
-  }
-  else if (std::isnan(result.value)) [[unlikely]]
-    return NI_div_nan(ppc_state, a, b);
+  if (!std::isfinite(result.value)) [[unlikely]]
+    return NI_div_nonfinite(ppc_state, a, b, result.value);
 
   return result;
 }
 
-// PrimeHack for iPad (no-JIT speed): the NaN tail shared by NI_add and NI_sub (identical text in
-// both), moved out of line and marked cold so the common one-instruction case inlines into the
-// interpreter handlers. Before, clang emitted NI_add/NI_sub as ~400-byte out-of-line functions, so
-// every fadds/fsubs paid a call plus an FPResult round trip through integer registers.
-[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_add_sub_nan(PowerPC::PowerPCState& ppc_state,
-                                                                double a, double b)
+// PrimeHack for iPad (no-JIT speed): the Inf/NaN tail shared by NI_add and NI_sub, moved out of
+// line and marked cold so the common finite case is a single branch. Under IEEE-754, if either
+// operand is +/-Inf or NaN, a +/- b is never finite, so !std::isfinite(result.value) catches both
+// NaN and Inf-operand ClearFIFR in one check.
+[[gnu::cold]] [[gnu::noinline]] inline FPResult
+NI_add_sub_nonfinite(PowerPC::PowerPCState& ppc_state, double a, double b, double val)
 {
+  if (!std::isnan(val))
+  {
+    if (std::isinf(a) || std::isinf(b))
+      ppc_state.fpscr.ClearFIFR();
+    return FPResult{val};
+  }
+
   FPResult result;
 
   if (Common::IsSNAN(a) || Common::IsSNAN(b))
@@ -291,11 +298,8 @@ DOLPHIN_FORCE_INLINE FPResult NI_add(PowerPC::PowerPCState& ppc_state, double a,
 {
   FPResult result{a + b};
 
-  if (std::isnan(result.value)) [[unlikely]]
-    return NI_add_sub_nan(ppc_state, a, b);
-
-  if (std::isinf(a) || std::isinf(b)) [[unlikely]]
-    ppc_state.fpscr.ClearFIFR();
+  if (!std::isfinite(result.value)) [[unlikely]]
+    return NI_add_sub_nonfinite(ppc_state, a, b, result.value);
 
   return result;
 }
@@ -304,19 +308,25 @@ DOLPHIN_FORCE_INLINE FPResult NI_sub(PowerPC::PowerPCState& ppc_state, double a,
 {
   FPResult result{a - b};
 
-  if (std::isnan(result.value)) [[unlikely]]
-    return NI_add_sub_nan(ppc_state, a, b);
-
-  if (std::isinf(a) || std::isinf(b)) [[unlikely]]
-    ppc_state.fpscr.ClearFIFR();
+  if (!std::isfinite(result.value)) [[unlikely]]
+    return NI_add_sub_nonfinite(ppc_state, a, b, result.value);
 
   return result;
 }
 
-// PrimeHack for iPad: NaN tail of NI_madd_msub, moved out of line unchanged (a, c, b order kept).
-[[gnu::cold]] [[gnu::noinline]] inline FPResult NI_madd_msub_nan(PowerPC::PowerPCState& ppc_state,
-                                                                  double a, double c, double b)
+// PrimeHack for iPad: Inf/NaN tail of NI_madd_msub, moved out of line (a, c, b order kept).
+// Under IEEE-754 (and since Force25Bit preserves Inf/NaN), if any of a, b, c is +/-Inf or NaN,
+// std::fma(a, c_or_c_round, +/-b) is never finite.
+[[gnu::cold]] [[gnu::noinline]] inline FPResult
+NI_madd_msub_nonfinite(PowerPC::PowerPCState& ppc_state, double a, double c, double b, double val)
 {
+  if (!std::isnan(val))
+  {
+    if (std::isinf(a) || std::isinf(b) || std::isinf(c))
+      ppc_state.fpscr.ClearFIFR();
+    return FPResult{val};
+  }
+
   FPResult result;
 
   if (Common::IsSNAN(a) || Common::IsSNAN(b) || Common::IsSNAN(c))
@@ -346,6 +356,27 @@ DOLPHIN_FORCE_INLINE FPResult NI_sub(PowerPC::PowerPCState& ppc_state, double a,
 }
 
 // The bulk work for fm(add/sub)(s)x operations
+// PrimeHack for iPad: keep the 1-in-2^29 Ole Moller 2Sum even-tie correction out of the hot
+// fmaddsx/fmsubsx/fnmaddsx/fnmsubsx micro-op bodies so paired handlers stay compact in I-cache.
+[[gnu::cold]] [[gnu::noinline]] inline double
+FixFmaEvenTie(double a, double c_round, double b_sign, double result_value, u64 result_bits)
+{
+  const double a_prime = b_sign - result_value;
+  const double b_prime = result_value + a_prime;
+  const double delta_a = std::fma(a, c_round, a_prime);
+  const double delta_b = b_sign - b_prime;
+  const double error = delta_a + delta_b;
+
+  if (error != 0.0)
+  {
+    if ((error > 0.0) == (result_value > 0.0))
+      return std::bit_cast<double>(result_bits + 1);  // Tie is too small, round up.
+    else
+      return std::bit_cast<double>(result_bits - 1);  // Tie is too large, round down.
+  }
+  return result_value;
+}
+
 template <bool sub, bool single>
 inline FPResult NI_madd_msub(PowerPC::PowerPCState& ppc_state, double a, double c, double b)
 {
@@ -491,76 +522,12 @@ inline FPResult NI_madd_msub(PowerPC::PowerPCState& ppc_state, double a, double 
 
     // Because we check this entire mask which includes a 1 bit, we can be sure that
     // if this result passes, the input is not an infinity that would become a NaN.
-    // If we had only checked for a subset of these bits (e.g. only checking if the last
-    // one was 0), we would have needed to also check if the exponent was all ones.
-    if ((result_bits & D_MASK) == EVEN_TIE)
-    {
-      // Because we have a tie, we now compute any error in the FMA calculation
-      // via an error-free transformation (Ole Møller's 2Sum algorithm)
-      // s  := a  + b
-      // a' := s  - b
-      // b' := s  - a'
-      // da := a  - a'
-      // db := b  - b'
-      // t  := da + db
-      // But for these calculations, we assume "a" := a * c_round, allowing the usage of FMA,
-      // both being shorter and allowing for likely necessary increased precision!
-      // We also switch up the signs a bit so we don't introduce an instruction simply to
-      // negate one of the operands of an FMA
-      const double a_prime = b_sign - result.value;
-      const double b_prime = result.value + a_prime;
-      const double delta_a = std::fma(a, c_round, a_prime);
-      const double delta_b = b_sign - b_prime;
-      const double error = delta_a + delta_b;
-
-      // `error` will properly match the direction for rounding *even for 64-bit inputs*.
-      // Thoroughly proving that this works for even all normal values isn't entirely trivial,
-      // nor are the exact details really important, but the basic logic is:
-      // result.value = roundf64(a * c_round + b_sign) = a * c_round + b_sign - e0
-      // a_prime = roundf64(b_sign - a * c_round - b_sign + e0)
-      //         = -a * c_round + e0 - e1
-      // b_prime = roundf64(a * c_round + b_sign - e0 - a * c_round + e0 - e1)
-      //         = b_sign - e1 - e2
-      // delta_a = roundf64(a * c_round - a * c_round + e0 - e1)
-      //         = e0 - e1 - e3
-      // delta_b = roundf64(b_sign - b_sign + e1 + e2)
-      //         = e1 + e2 - e4
-      // error   = roundf64(delta_a + delta_b)
-      //         = roundf64(e0 + e2 - e3 - e4)
-      // Then showing that e2 - e3 - e4 is tiny enough to not change the sign of
-      // e0 (the true error value, as `error` can't capture all of the possible precision),
-      // including that if the true e0 = 0 then e1 = e2 = e3 = e4 = error = 0.
-
-      // This "error" value represents the number such that `result.value - error == exact_result`.
-      if (error != 0.0)
-      {
-        // Because the error is nonzero here, we actually do need to round a specific direction
-        // and don't want to just tie to even!
-
-        // Note that it should never be possible for the error to be NaN if the result isn't either
-        // infinite or NaN itself. It would require:
-        // da == inf, db == -inf
-        // Which expanded out is:
-        // a - ((a + b) - b) == inf, b - ((a + b) - ((a + b) - b)) == -inf, where
-        // a + b isn't infinite. This means (a + b) - b must be infinite on the left,
-        // but this will end up giving the right hand side the same sign of infinity.
-        // All this to say we don't check for `if (!std::isnan(error))` for the `else` statement.
-        // Also note that we do not cast to a float here,
-        // as individual instructions using this function will on their own afterwards.
-
-        if ((error > 0.0) == (result.value > 0.0))
-          result.value = std::bit_cast<double>(result_bits + 1);  // Tie is too small, round up.
-        else
-          result.value = std::bit_cast<double>(result_bits - 1);  // Tie is too large, round down.
-      }
-    }
+    if ((result_bits & D_MASK) == EVEN_TIE) [[unlikely]]
+      result.value = FixFmaEvenTie(a, c_round, b_sign, result.value, result_bits);
   }
 
-  if (std::isnan(result.value)) [[unlikely]]
-    return NI_madd_msub_nan(ppc_state, a, c, b);
-
-  if (std::isinf(a) || std::isinf(b) || std::isinf(c)) [[unlikely]]
-    ppc_state.fpscr.ClearFIFR();
+  if (!std::isfinite(result.value)) [[unlikely]]
+    return NI_madd_msub_nonfinite(ppc_state, a, c, b, result.value);
 
   return result;
 }

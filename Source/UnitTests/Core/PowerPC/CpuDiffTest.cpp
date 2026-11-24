@@ -575,31 +575,44 @@ void FPPairCases(Corpus& corpus)
   constexpr u32 msub = A(59, 28, 1, 1, 1, 2), nmsub = A(59, 30, 1, 1, 1, 2);
   constexpr u32 nmadd = A(59, 31, 1, 1, 1, 2);
   constexpr u32 frsp = X(63, 12, 1, 0, 1), fmr = X(63, 72, 1, 0, 2);
+  constexpr u32 fneg = X(63, 40, 1, 0, 2), fabs_op = X(63, 264, 1, 0, 2);
   constexpr u32 lfs = D(48, 1, 5, 0), lfd = D(50, 1, 5, 0);
   constexpr u32 stfs = D(52, 1, 5, 0), stfd = D(54, 1, 5, 0);
+  constexpr u32 psq_l = D(56, 1, 5, 0), psq_st = D(60, 1, 5, 0);
   constexpr u32 ps_muls0 = A(4, 12, 1, 1, 0, 2), ps_muls1 = A(4, 13, 1, 1, 0, 2);
   constexpr u32 ps_madds0 = A(4, 14, 1, 1, 1, 2), ps_madds1 = A(4, 15, 1, 1, 1, 2);
-  constexpr u32 ps_add = X(4, 21, 1, 1, 2), ps_mul = A(4, 25, 1, 1, 0, 2);
-  constexpr u32 ps_madd = A(4, 29, 1, 1, 1, 2), ps_merge00 = X(4, 528, 1, 1, 2);
-  constexpr u32 ps_sum0 = A(4, 10, 1, 1, 2, 3);
+  constexpr u32 ps_sub = X(4, 20, 1, 1, 2), ps_add = X(4, 21, 1, 1, 2);
+  constexpr u32 ps_mul = A(4, 25, 1, 1, 0, 2), ps_madd = A(4, 29, 1, 1, 1, 2);
+  constexpr u32 ps_nmsub = A(4, 30, 1, 1, 1, 2), ps_merge00 = X(4, 528, 1, 1, 2);
+  constexpr u32 ps_sum0 = A(4, 10, 1, 1, 2, 3), ps_sum1 = A(4, 11, 1, 1, 2, 3);
   constexpr u32 pairs[][2] = {
       {lfs, mul},          {lfs, add},          {lfs, sub},        {lfs, madd},
-      {lfs, msub},         {lfs, nmsub},        {lfs, nmadd},      {lfd, frsp},
-      {mul, stfs},         {add, stfs},         {sub, stfs},       {madd, stfs},
-      {msub, stfs},        {fmr, stfd},         {frsp, stfs},      {mul, add},
-      {mul, mul},          {mul, madd},         {madd, madd},      {madd, add},
-      {ps_muls0, ps_madds1}, {ps_muls0, ps_madds0}, {ps_muls1, ps_madds1},
+      {lfs, msub},         {lfs, nmsub},        {lfs, nmadd},      {lfs, fneg},
+      {lfs, fabs_op},      {lfs, fmr},          {lfd, frsp},       {mul, stfs},
+      {add, stfs},         {sub, stfs},         {madd, stfs},      {msub, stfs},
+      {fneg, stfs},        {fabs_op, stfs},     {fmr, stfd},       {frsp, stfs},
+      {mul, add},          {mul, mul},          {mul, madd},       {madd, madd},
+      {madd, add},         {psq_l, ps_muls0},   {psq_l, ps_madds1}, {psq_l, ps_madds0},
+      {psq_l, ps_mul},     {psq_l, ps_madd},    {psq_l, ps_add},   {psq_l, ps_sub},
+      {psq_l, ps_merge00}, {ps_madds1, psq_st}, {ps_madds0, psq_st}, {ps_madd, psq_st},
+      {ps_add, psq_st},    {ps_sub, psq_st},    {ps_mul, psq_st},  {ps_muls0, ps_madds1},
+      {ps_muls0, ps_madds0}, {ps_muls0, ps_nmsub}, {ps_muls1, ps_madds1},
       {ps_madds0, ps_madds1}, {ps_madds1, ps_madds0}, {ps_madds0, ps_madds0},
       {ps_mul, ps_madd},   {ps_madd, ps_madd},  {ps_mul, ps_add},  {ps_mul, ps_mul},
       {ps_merge00, ps_muls0}, {ps_merge00, ps_mul}, {ps_add, ps_sum0}, {ps_madd, ps_sum0},
-      {lfs, lfs},          {stfs, stfs},        {lfd, lfd},        {stfd, stfd},
-      {lfs, stfs},
+      {ps_add, ps_sum1},   {ps_madd, ps_sum1},  {lfs, lfs},        {stfs, stfs},
+      {lfd, lfd},          {stfd, stfd},        {lfs, stfs},       {psq_l, psq_l},
+      {psq_st, psq_st},
   };
-  static_assert(std::size(pairs) == 39);
+  static_assert(std::size(pairs) == 63);
   for (const auto& [first, second] : pairs)
   {
-    const bool mem1 = first >> 26 >= 48 && first >> 26 <= 55;
-    const bool mem2 = second >> 26 >= 48 && second >> 26 <= 55;
+    const auto is_mem = [](u32 inst) {
+      const u32 op = inst >> 26;
+      return (op >= 48 && op <= 55) || op == 56 || op == 60;
+    };
+    const bool mem1 = is_mem(first);
+    const bool mem2 = is_mem(second);
     for (u32 cold = 0; cold < 4; ++cold)
     {
       if (((cold & 1) && !mem1) || ((cold & 2) && !mem2))

@@ -4,7 +4,13 @@
 #pragma once
 
 #include <cmath>
+#include <cstddef>
+#include <cstring>
 #include <utility>
+
+#if defined(_M_ARM_64) || defined(__aarch64__)
+#include <arm_neon.h>
+#endif
 
 #include "Core/PowerPC/Interpreter/Interpreter_FPUtils.h"
 
@@ -697,6 +703,133 @@ extern template void ps_msub<false>(PowerPC::PowerPCState&, Decoded);
 extern template void ps_msub<true>(PowerPC::PowerPCState&, Decoded);
 
 template <bool fprf, typename Inst>
+void ps_nmsub(PowerPC::PowerPCState& ppc_state, Inst inst);
+extern template void ps_nmsub<false>(PowerPC::PowerPCState&, Decoded);
+extern template void ps_nmsub<true>(PowerPC::PowerPCState&, Decoded);
+
+template <bool fprf, typename Inst>
+void ps_nmadd(PowerPC::PowerPCState& ppc_state, Inst inst);
+extern template void ps_nmadd<false>(PowerPC::PowerPCState&, Decoded);
+extern template void ps_nmadd<true>(PowerPC::PowerPCState&, Decoded);
+
+template <bool fprf, typename Inst>
+inline void fdivx(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
+  const auto& a = ppc_state.ps[inst.FA];
+  const auto& b = ppc_state.ps[inst.FB];
+
+  const FPResult quotient = NI_div(ppc_state, a.PS0AsDouble(), b.PS0AsDouble());
+  const bool not_divide_by_zero = ppc_state.fpscr.ZE == 0 || quotient.exception != FPSCR_ZX;
+  const bool not_invalid = ppc_state.fpscr.VE == 0 || quotient.HasNoInvalidExceptions();
+
+  if (not_divide_by_zero && not_invalid)
+  {
+    const double result = ForceDouble(ppc_state.fpscr, quotient.value);
+    ppc_state.ps[inst.FD].SetPS0(result);
+    if constexpr (fprf)
+      ppc_state.UpdateFPRFDouble(result);
+  }
+
+  if (inst.Rc)
+    ppc_state.UpdateCR1();
+}
+
+#if defined(_M_ARM_64) || defined(__aarch64__)
+inline uint64x2_t LoadPSBits(const PowerPC::PairedSingle& p)
+{
+  static_assert(sizeof(PowerPC::PairedSingle) == 16 &&
+                offsetof(PowerPC::PairedSingle, ps0) == 0 &&
+                offsetof(PowerPC::PairedSingle, ps1) == 8);
+  u64 raw[2];
+  std::memcpy(raw, &p, sizeof(raw));
+  return vld1q_u64(raw);
+}
+
+inline void StorePSBits(PowerPC::PairedSingle& dst, uint64x2_t bits)
+{
+  u64 raw[2];
+  vst1q_u64(raw, bits);
+  std::memcpy(&dst, raw, sizeof(raw));
+}
+#endif
+
+template <bool fprf, typename Inst>
+inline void ps_sel(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
+  const auto& a = ppc_state.ps[inst.FA];
+  const auto& b = ppc_state.ps[inst.FB];
+  const auto& c = ppc_state.ps[inst.FC];
+
+#if defined(_M_ARM_64) || defined(__aarch64__)
+  const uint64x2_t mask = vcgeq_f64(vreinterpretq_f64_u64(LoadPSBits(a)), vdupq_n_f64(0.0));
+  StorePSBits(ppc_state.ps[inst.FD], vbslq_u64(mask, LoadPSBits(c), LoadPSBits(b)));
+#else
+  ppc_state.ps[inst.FD].SetBoth(a.PS0AsDouble() >= -0.0 ? c.PS0AsDouble() : b.PS0AsDouble(),
+                                a.PS1AsDouble() >= -0.0 ? c.PS1AsDouble() : b.PS1AsDouble());
+#endif
+
+  if (inst.Rc)
+    ppc_state.UpdateCR1();
+}
+
+template <bool fprf, typename Inst>
+inline void ps_neg(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
+  const auto& b = ppc_state.ps[inst.FB];
+
+#if defined(_M_ARM_64) || defined(__aarch64__)
+  StorePSBits(ppc_state.ps[inst.FD], veorq_u64(LoadPSBits(b), vdupq_n_u64(UINT64_C(1) << 63)));
+#else
+  ppc_state.ps[inst.FD].SetBoth(b.PS0AsU64() ^ (UINT64_C(1) << 63),
+                                b.PS1AsU64() ^ (UINT64_C(1) << 63));
+#endif
+
+  if (inst.Rc)
+    ppc_state.UpdateCR1();
+}
+
+template <bool fprf, typename Inst>
+inline void ps_mr(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
+  ppc_state.ps[inst.FD] = ppc_state.ps[inst.FB];
+
+  if (inst.Rc)
+    ppc_state.UpdateCR1();
+}
+
+template <bool fprf, typename Inst>
+inline void ps_nabs(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
+  const auto& b = ppc_state.ps[inst.FB];
+
+#if defined(_M_ARM_64) || defined(__aarch64__)
+  StorePSBits(ppc_state.ps[inst.FD], vorrq_u64(LoadPSBits(b), vdupq_n_u64(UINT64_C(1) << 63)));
+#else
+  ppc_state.ps[inst.FD].SetBoth(b.PS0AsU64() | (UINT64_C(1) << 63),
+                                b.PS1AsU64() | (UINT64_C(1) << 63));
+#endif
+
+  if (inst.Rc)
+    ppc_state.UpdateCR1();
+}
+
+template <bool fprf, typename Inst>
+inline void ps_abs(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
+  const auto& b = ppc_state.ps[inst.FB];
+
+#if defined(_M_ARM_64) || defined(__aarch64__)
+  StorePSBits(ppc_state.ps[inst.FD], vbicq_u64(LoadPSBits(b), vdupq_n_u64(UINT64_C(1) << 63)));
+#else
+  ppc_state.ps[inst.FD].SetBoth(b.PS0AsU64() & ~(UINT64_C(1) << 63),
+                                b.PS1AsU64() & ~(UINT64_C(1) << 63));
+#endif
+
+  if (inst.Rc)
+    ppc_state.UpdateCR1();
+}
+
+template <bool fprf, typename Inst>
 inline void ps_merge00(PowerPC::PowerPCState& ppc_state, Inst inst)
 {
   const auto& a = ppc_state.ps[inst.FA];
@@ -758,6 +891,25 @@ inline void ps_sum0(PowerPC::PowerPCState& ppc_state, Inst inst)
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
   if constexpr (fprf)
     ppc_state.UpdateFPRFSingle(ps0);
+
+  if (inst.Rc)
+    ppc_state.UpdateCR1();
+}
+
+template <bool fprf, typename Inst>
+inline void ps_sum1(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
+  const auto& a = ppc_state.ps[inst.FA];
+  const auto& b = ppc_state.ps[inst.FB];
+  const auto& c = ppc_state.ps[inst.FC];
+
+  const float ps0 = ForceSingle(ppc_state.fpscr, c.PS0AsDouble());
+  const float ps1 =
+      ForceSingle(ppc_state.fpscr, NI_add(ppc_state, a.PS0AsDouble(), b.PS1AsDouble()).value);
+
+  ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps1);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();

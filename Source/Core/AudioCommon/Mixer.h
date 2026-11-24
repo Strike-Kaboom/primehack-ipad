@@ -164,6 +164,13 @@ private:
     std::atomic<s32> m_LVolume{256};
     std::atomic<s32> m_RVolume{256};
 
+    // PrimeHack for iPad: skip 6-point Hermite resampling on silent secondary FIFOs
+    // (streaming, Wiimote speakers, Skylander, GBA) until samples are enqueued.
+    std::atomic<u32> m_enqueue_seq{0};
+    u32 m_seen_seq = 0;
+    u32 m_silent_granules = 0;
+    bool m_asleep = true;
+
     StereoPair m_quantization_error;
   };
 

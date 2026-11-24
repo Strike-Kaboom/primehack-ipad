@@ -151,7 +151,7 @@ inline void PsNeonCountBail(PsNeonOp op, PsNeonBail why)
 // excluded per-RESULT-lane by ResultNiIndependent below. Lane-level finite/normal checks are done per-op.
 inline bool PsNeonModeOk(const PowerPC::PowerPCState& ppc_state, PsNeonOp op)
 {
-  if (!PsNeonEnabled())
+  if (!PsNeonEnabled()) [[unlikely]]
     return false;
   if (ppc_state.fpscr.RN == Common::FPU::ROUND_NEAR) [[likely]]
     return true;
@@ -223,40 +223,43 @@ std::string Interpreter::BuildPsNeonReport()
 
 namespace
 {
-// True iff BOTH lanes are an exact +/-0 or finite with magnitude >= `lo` (sign stripped). The range
-// test is (magnitude - lo) < (DOUBLE_EXP - lo) unsigned, i.e. lo <= magnitude < inf; a zero lane
-// wraps below lo and is admitted by the separate zero compare.
-template <u64 lo>
-inline bool BothZeroOrFiniteAtLeast(float64x2_t v)
+// True iff every 64-bit lane in `mask` is all-ones (single ARM64 `uminv` + `fmov` + `cbz`).
+inline bool AllLanesSet(uint64x2_t mask)
 {
-  const uint64x2_t magnitude =
-      vandq_u64(vreinterpretq_u64_f64(v), vdupq_n_u64(Common::DOUBLE_EXP | Common::DOUBLE_FRAC));
+  return vminvq_u32(vreinterpretq_u32_u64(mask)) != 0;
+}
+
+// Per-lane mask (all-ones per passing lane) for: lane is exact +/-0 or finite with magnitude >= `lo`.
+// `vabsq_f64` clears bit 63 in 1 cycle with no constant load, bit-exact across all bit patterns.
+template <u64 lo>
+inline uint64x2_t ZeroOrFiniteAtLeastMask(float64x2_t v)
+{
+  const uint64x2_t magnitude = vreinterpretq_u64_f64(vabsq_f64(v));
   const uint64x2_t in_range =
       vcltq_u64(vsubq_u64(magnitude, vdupq_n_u64(lo)), vdupq_n_u64(Common::DOUBLE_EXP - lo));
-  const uint64x2_t ok = vorrq_u64(in_range, vceqzq_u64(magnitude));
-  return (vgetq_lane_u64(ok, 0) & vgetq_lane_u64(ok, 1)) != 0;
+  return vorrq_u64(in_range, vceqzq_u64(magnitude));
 }
 
-// Input guard: every lane is +/-0 or a finite NORMAL double (>= the smallest normal double), so no
-// subnormal, inf or NaN reaches the fast path. See the correctness contract above.
-inline bool BothInputsOk(float64x2_t v)
+// Input guard mask: every lane is +/-0 or a finite NORMAL double (>= the smallest normal double).
+inline uint64x2_t InputsOkMask(float64x2_t v)
 {
-  return BothZeroOrFiniteAtLeast<0x0010000000000000ULL>(v);
+  return ZeroOrFiniteAtLeastMask<0x0010000000000000ULL>(v);
 }
 
-// Result guard: every lane is +/-0 or finite and >= the smallest normal single represented as a
-// double (0x3810000000000000). That threshold is ForceSingle's OWN NI==1 flush comparison
-// (Interpreter_FPUtils.h): at or above it the flush never fires and the converted single is normal,
-// so the secondary FlushToZero(x) is a no-op too; below it (nonzero) NI=1 flushes while NI=0 does
-// not, so we bail.
+// Result guard mask: every lane is +/-0 or finite and >= the smallest normal single (0x3810...).
+inline uint64x2_t ResultsOkMask(float64x2_t v)
+{
+  return ZeroOrFiniteAtLeastMask<0x3810000000000000ULL>(v);
+}
+
 inline bool BothResultsOk(float64x2_t v)
 {
-  return BothZeroOrFiniteAtLeast<0x3810000000000000ULL>(v);
+  return AllLanesSet(ResultsOkMask(v));
 }
 
 // SIMD Force25Bit for finite normal or +/-0 lanes (subnormal lanes are excluded by the predicate,
 // so we only need the `else` branch of the scalar Force25Bit: integral = (integral & 0x...F8000000)
-// + (integral & 0x8000000), which maps +/-0 to itself). Caller guarantees BothInputsOk.
+// + (integral & 0x8000000), which maps +/-0 to itself). Caller guarantees InputsOkMask.
 inline float64x2_t Force25BitNormal(float64x2_t v)
 {
   const uint64x2_t bits = vreinterpretq_u64_f64(v);
@@ -265,14 +268,13 @@ inline float64x2_t Force25BitNormal(float64x2_t v)
   return vreinterpretq_f64_u64(vaddq_u64(kept, round));
 }
 
-// True if EITHER result lane lands exactly on the FMA even-tie (the only case where NI_madd_msub's
-// single-precision once-rounding correction could differ by +/-1 ULP from a plain fma). Bail to scalar.
-inline bool EitherEvenTie(float64x2_t v)
+// Per-lane mask: all-ones where lane is NOT an FMA even-tie (0x10000000 in the low 29 bits).
+inline uint64x2_t NotEvenTieMask(float64x2_t v)
 {
   const uint64x2_t bits = vreinterpretq_u64_f64(v);
   const uint64x2_t masked = vandq_u64(bits, vdupq_n_u64(0x000000001FFFFFFFULL));
   const uint64x2_t is_tie = vceqq_u64(masked, vdupq_n_u64(0x0000000010000000ULL));
-  return (vgetq_lane_u64(is_tie, 0) | vgetq_lane_u64(is_tie, 1)) != 0;
+  return vreinterpretq_u64_u32(vmvnq_u32(vreinterpretq_u32_u64(is_tie)));
 }
 
 // Bail classifiers for the profiler (see PsNeonBail). Only ever called on a bail with the profiler
@@ -354,7 +356,9 @@ inline float64x2_t Splat(double d)
 inline bool FmaSingle(PsNeonOp op, float64x2_t va, float64x2_t vc, float64x2_t vb, bool sub,
                       float64x2_t* out)
 {
-  if (!BothInputsOk(va) || !BothInputsOk(vc) || !BothInputsOk(vb))
+  const uint64x2_t inputs_ok =
+      vandq_u64(vandq_u64(InputsOkMask(va), InputsOkMask(vc)), InputsOkMask(vb));
+  if (!AllLanesSet(inputs_ok)) [[unlikely]]
   {
     if (s_ps_neon_profile) [[unlikely]]
     {
@@ -368,7 +372,7 @@ inline bool FmaSingle(PsNeonOp op, float64x2_t va, float64x2_t vc, float64x2_t v
   const float64x2_t b_signed = sub ? vnegq_f64(vb) : vb;
   // vfmaq_f64(acc, x, y) == x*y + acc, single-rounded — matches std::fma(a, c_round, b_sign).
   const float64x2_t vr = vfmaq_f64(b_signed, va, vc25);
-  if (!BothResultsOk(vr) || EitherEvenTie(vr))
+  if (!AllLanesSet(vandq_u64(ResultsOkMask(vr), NotEvenTieMask(vr)))) [[unlikely]]
   {
     PsNeonCountResultBail(op, vr);
     return false;
@@ -393,61 +397,27 @@ inline void StorePSFromSingles(PowerPC::PairedSingle& dst, float32x2_t singles)
 // These "binary instructions" do not alter FPSCR.
 void Interpreter::ps_sel(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-  const auto& c = ppc_state.ps[inst.FC];
-
-  ppc_state.ps[inst.FD].SetBoth(a.PS0AsDouble() >= -0.0 ? c.PS0AsDouble() : b.PS0AsDouble(),
-                                a.PS1AsDouble() >= -0.0 ? c.PS1AsDouble() : b.PS1AsDouble());
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_sel<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_neg(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& b = ppc_state.ps[inst.FB];
-
-  ppc_state.ps[inst.FD].SetBoth(b.PS0AsU64() ^ (UINT64_C(1) << 63),
-                                b.PS1AsU64() ^ (UINT64_C(1) << 63));
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_neg<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_mr(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  ppc_state.ps[inst.FD] = ppc_state.ps[inst.FB];
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_mr<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_nabs(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& b = ppc_state.ps[inst.FB];
-
-  ppc_state.ps[inst.FD].SetBoth(b.PS0AsU64() | (UINT64_C(1) << 63),
-                                b.PS1AsU64() | (UINT64_C(1) << 63));
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_nabs<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_abs(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& b = ppc_state.ps[inst.FB];
-
-  ppc_state.ps[inst.FD].SetBoth(b.PS0AsU64() & ~(UINT64_C(1) << 63),
-                                b.PS1AsU64() & ~(UINT64_C(1) << 63));
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_abs<true>(interpreter.m_ppc_state, inst);
 }
 
 // These are just moves, double is OK.
@@ -565,10 +535,10 @@ void InterpreterFP::ps_sub(PowerPC::PowerPCState& ppc_state, Inst inst)
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vb = LoadPS(b);
-    if (BothInputsOk(va) && BothInputsOk(vb))
+    if (AllLanesSet(vandq_u64(InputsOkMask(va), InputsOkMask(vb)))) [[likely]]
     {
       const float64x2_t vr = vsubq_f64(va, vb);
-      if (BothResultsOk(vr))
+      if (BothResultsOk(vr)) [[likely]]
       {
         const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -633,10 +603,10 @@ void InterpreterFP::ps_add(PowerPC::PowerPCState& ppc_state, Inst inst)
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vb = LoadPS(b);
-    if (BothInputsOk(va) && BothInputsOk(vb))
+    if (AllLanesSet(vandq_u64(InputsOkMask(va), InputsOkMask(vb)))) [[likely]]
     {
       const float64x2_t vr = vaddq_f64(va, vb);
-      if (BothResultsOk(vr))
+      if (BothResultsOk(vr)) [[likely]]
       {
         const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -701,11 +671,11 @@ void InterpreterFP::ps_mul(PowerPC::PowerPCState& ppc_state, Inst inst)
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vc = LoadPS(c);
-    if (BothInputsOk(va) && BothInputsOk(vc))
+    if (AllLanesSet(vandq_u64(InputsOkMask(va), InputsOkMask(vc)))) [[likely]]
     {
       const float64x2_t vc25 = Force25BitNormal(vc);
       const float64x2_t vr = vmulq_f64(va, vc25);
-      if (BothResultsOk(vr))
+      if (BothResultsOk(vr)) [[likely]]
       {
         const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -771,7 +741,7 @@ void InterpreterFP::ps_msub(PowerPC::PowerPCState& ppc_state, Inst inst)
   if (PsNeonModeOk(ppc_state, PsNeonOp::Msub)) [[likely]]
   {
     float64x2_t vr;
-    if (FmaSingle(PsNeonOp::Msub, LoadPS(a), LoadPS(c), LoadPS(b), true, &vr))
+    if (FmaSingle(PsNeonOp::Msub, LoadPS(a), LoadPS(c), LoadPS(b), true, &vr)) [[likely]]
     {
       const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -833,7 +803,7 @@ void InterpreterFP::ps_madd(PowerPC::PowerPCState& ppc_state, Inst inst)
   if (PsNeonModeOk(ppc_state, PsNeonOp::Madd)) [[likely]]
   {
     float64x2_t vr;
-    if (FmaSingle(PsNeonOp::Madd, LoadPS(a), LoadPS(c), LoadPS(b), false, &vr))
+    if (FmaSingle(PsNeonOp::Madd, LoadPS(a), LoadPS(c), LoadPS(b), false, &vr)) [[likely]]
     {
       const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -883,9 +853,9 @@ void Interpreter::ps_madd(Interpreter& interpreter, UGeckoInstruction inst)
   InterpreterFP::ps_madd<true>(interpreter.m_ppc_state, inst);
 }
 
-void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_nmsub(PowerPC::PowerPCState& ppc_state, Inst inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
   const auto& c = ppc_state.ps[inst.FC];
@@ -894,7 +864,7 @@ void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
   if (PsNeonModeOk(ppc_state, PsNeonOp::Nmsub)) [[likely]]
   {
     float64x2_t vr;
-    if (FmaSingle(PsNeonOp::Nmsub, LoadPS(a), LoadPS(c), LoadPS(b), true, &vr))
+    if (FmaSingle(PsNeonOp::Nmsub, LoadPS(a), LoadPS(c), LoadPS(b), true, &vr)) [[likely]]
     {
       // Result is finite (never NaN), so the scalar `isnan(tmp) ? tmp : -tmp` is always the negate;
       // a +/-0 result negates to -/+0 on both paths.
@@ -919,7 +889,8 @@ void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
       }
 
       StorePSFromSingles(ppc_state.ps[inst.FD], singles);
-      ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
+      if constexpr (fprf)
+        ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -938,15 +909,21 @@ void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
   const float ps1 = std::isnan(tmp1) ? tmp1 : -tmp1;
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
 }
 
-void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
+void Interpreter::ps_nmsub(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
+  InterpreterFP::ps_nmsub<true>(interpreter.m_ppc_state, inst);
+}
+
+template <bool fprf, typename Inst>
+void InterpreterFP::ps_nmadd(PowerPC::PowerPCState& ppc_state, Inst inst)
+{
   const auto& a = ppc_state.ps[inst.FA];
   const auto& b = ppc_state.ps[inst.FB];
   const auto& c = ppc_state.ps[inst.FC];
@@ -955,7 +932,7 @@ void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
   if (PsNeonModeOk(ppc_state, PsNeonOp::Nmadd)) [[likely]]
   {
     float64x2_t vr;
-    if (FmaSingle(PsNeonOp::Nmadd, LoadPS(a), LoadPS(c), LoadPS(b), false, &vr))
+    if (FmaSingle(PsNeonOp::Nmadd, LoadPS(a), LoadPS(c), LoadPS(b), false, &vr)) [[likely]]
     {
       // Result is finite (never NaN), so the scalar `isnan(tmp) ? tmp : -tmp` is always the negate;
       // a +/-0 result negates to -/+0 on both paths.
@@ -980,7 +957,8 @@ void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
       }
 
       StorePSFromSingles(ppc_state.ps[inst.FD], singles);
-      ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
+      if constexpr (fprf)
+        ppc_state.UpdateFPRFSingle(vget_lane_f32(singles, 0));
       if (inst.Rc)
         ppc_state.UpdateCR1();
       return;
@@ -999,10 +977,16 @@ void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
   const float ps1 = std::isnan(tmp1) ? tmp1 : -tmp1;
 
   ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps0);
+  if constexpr (fprf)
+    ppc_state.UpdateFPRFSingle(ps0);
 
   if (inst.Rc)
     ppc_state.UpdateCR1();
+}
+
+void Interpreter::ps_nmadd(Interpreter& interpreter, UGeckoInstruction inst)
+{
+  InterpreterFP::ps_nmadd<true>(interpreter.m_ppc_state, inst);
 }
 
 void Interpreter::ps_sum0(Interpreter& interpreter, UGeckoInstruction inst)
@@ -1012,20 +996,7 @@ void Interpreter::ps_sum0(Interpreter& interpreter, UGeckoInstruction inst)
 
 void Interpreter::ps_sum1(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-  const auto& c = ppc_state.ps[inst.FC];
-
-  const float ps0 = ForceSingle(ppc_state.fpscr, c.PS0AsDouble());
-  const float ps1 =
-      ForceSingle(ppc_state.fpscr, NI_add(ppc_state, a.PS0AsDouble(), b.PS1AsDouble()).value);
-
-  ppc_state.ps[inst.FD].SetBoth(ps0, ps1);
-  ppc_state.UpdateFPRFSingle(ps1);
-
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::ps_sum1<true>(interpreter.m_ppc_state, inst);
 }
 
 // PrimeHack for iPad: the decoded path shares every NEON guard, validation and scalar fallback.
@@ -1040,11 +1011,11 @@ void InterpreterFP::ps_muls0(PowerPC::PowerPCState& ppc_state, Inst inst)
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vc = Splat(c.PS0AsDouble());  // broadcast the PS0 multiplier into both lanes
-    if (BothInputsOk(va) && BothInputsOk(vc))
+    if (AllLanesSet(vandq_u64(InputsOkMask(va), InputsOkMask(vc)))) [[likely]]
     {
       const float64x2_t vc25 = Force25BitNormal(vc);
       const float64x2_t vr = vmulq_f64(va, vc25);
-      if (BothResultsOk(vr))
+      if (BothResultsOk(vr)) [[likely]]
       {
         const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -1107,11 +1078,11 @@ void InterpreterFP::ps_muls1(PowerPC::PowerPCState& ppc_state, Inst inst)
   {
     const float64x2_t va = LoadPS(a);
     const float64x2_t vc = Splat(c.PS1AsDouble());  // broadcast the PS1 multiplier into both lanes
-    if (BothInputsOk(va) && BothInputsOk(vc))
+    if (AllLanesSet(vandq_u64(InputsOkMask(va), InputsOkMask(vc)))) [[likely]]
     {
       const float64x2_t vc25 = Force25BitNormal(vc);
       const float64x2_t vr = vmulq_f64(va, vc25);
-      if (BothResultsOk(vr))
+      if (BothResultsOk(vr)) [[likely]]
       {
         const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -1175,7 +1146,7 @@ void InterpreterFP::ps_madds0(PowerPC::PowerPCState& ppc_state, Inst inst)
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Madds0, LoadPS(a), Splat(c.PS0AsDouble()), LoadPS(b), false,
-                  &vr))  // C broadcast from PS0
+                  &vr)) [[likely]]  // C broadcast from PS0
     {
       const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -1238,7 +1209,7 @@ void InterpreterFP::ps_madds1(PowerPC::PowerPCState& ppc_state, Inst inst)
   {
     float64x2_t vr;
     if (FmaSingle(PsNeonOp::Madds1, LoadPS(a), Splat(c.PS1AsDouble()), LoadPS(b), false,
-                  &vr))  // C broadcast from PS1
+                  &vr)) [[likely]]  // C broadcast from PS1
     {
       const float32x2_t singles = vcvt_f32_f64(vr);
 
@@ -1345,4 +1316,8 @@ template void ps_sub<false>(PowerPC::PowerPCState&, Decoded);
 template void ps_sub<true>(PowerPC::PowerPCState&, Decoded);
 template void ps_msub<false>(PowerPC::PowerPCState&, Decoded);
 template void ps_msub<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_nmsub<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_nmsub<true>(PowerPC::PowerPCState&, Decoded);
+template void ps_nmadd<false>(PowerPC::PowerPCState&, Decoded);
+template void ps_nmadd<true>(PowerPC::PowerPCState&, Decoded);
 }  // namespace InterpreterFP

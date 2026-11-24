@@ -33,11 +33,12 @@ enum class State;
 #define CIR_FP_MICRO_OPS(X) \
   X(fmulsx) X(faddsx) X(fsubsx) X(fmulx) X(faddx) X(fsubx) \
   X(fmaddsx) X(fmsubsx) X(fnmaddsx) X(fnmsubsx) X(fmaddx) X(fmsubx) \
-  X(fnmaddx) X(fnmsubx) X(frspx) X(fctiwzx) X(fdivsx) X(fmrx) \
+  X(fnmaddx) X(fnmsubx) X(frspx) X(fctiwzx) X(fdivsx) X(fdivx) X(fmrx) \
   X(fabsx) X(fnegx) X(fnabsx) X(fselx) X(fcmpo) X(fcmpu) \
   X(ps_madd) X(ps_mul) X(ps_madds0) X(ps_madds1) X(ps_muls0) X(ps_muls1) \
-  X(ps_add) X(ps_sub) X(ps_msub) X(ps_merge00) X(ps_merge01) X(ps_merge10) \
-  X(ps_merge11) X(ps_sum0)
+  X(ps_add) X(ps_sub) X(ps_msub) X(ps_nmadd) X(ps_nmsub) \
+  X(ps_merge00) X(ps_merge01) X(ps_merge10) X(ps_merge11) \
+  X(ps_sum0) X(ps_sum1) X(ps_mr) X(ps_neg) X(ps_abs) X(ps_nabs) X(ps_sel)
 
 enum class MicroOpCode : u8
 {
@@ -139,6 +140,8 @@ enum class MicroOpCode : u8
   MEM_LFD,
   MEM_STFS,
   MEM_STFD,
+  MEM_PSQL,
+  MEM_PSQST,
 #define CI_FP_CODE(name) name, name##_FPRF,
   CIR_FP_MICRO_OPS(CI_FP_CODE)
 #undef CI_FP_CODE

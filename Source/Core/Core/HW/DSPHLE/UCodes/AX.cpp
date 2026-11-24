@@ -472,11 +472,24 @@ void AXUCode::ProcessPBList(u32 pb_addr)
 
     ReadPB(memory, pb_addr, pb);
 
-    PBUpdateData updates = LoadPBUpdates(memory, pb);
+    const bool has_updates =
+        (pb.updates.num_updates[0] | pb.updates.num_updates[1] | pb.updates.num_updates[2] |
+         pb.updates.num_updates[3] | pb.updates.num_updates[4]) != 0;
+
+    if (!has_updates && pb.running != 1)
+    {
+      pb_addr = HILO_TO_32(pb.next_pb);
+      continue;
+    }
+
+    PBUpdateData updates;
+    if (has_updates)
+      updates = LoadPBUpdates(memory, pb);
 
     for (int curr_ms = 0; curr_ms < 5; ++curr_ms)
     {
-      ApplyUpdatesForMs(curr_ms, pb, pb.updates.num_updates, updates);
+      if (has_updates)
+        ApplyUpdatesForMs(curr_ms, pb, pb.updates.num_updates, updates);
 
       ProcessVoice(static_cast<HLEAccelerator*>(m_accelerator.get()), pb, buffers, spms,
                    ConvertMixerControl(pb.mixer_control),

@@ -110,24 +110,7 @@ void Interpreter::faddsx(Interpreter& interpreter, UGeckoInstruction inst)
 
 void Interpreter::fdivx(Interpreter& interpreter, UGeckoInstruction inst)
 {
-  auto& ppc_state = interpreter.m_ppc_state;
-  const auto& a = ppc_state.ps[inst.FA];
-  const auto& b = ppc_state.ps[inst.FB];
-
-  const FPResult quotient = NI_div(ppc_state, a.PS0AsDouble(), b.PS0AsDouble());
-  const bool not_divide_by_zero = ppc_state.fpscr.ZE == 0 || quotient.exception != FPSCR_ZX;
-  const bool not_invalid = ppc_state.fpscr.VE == 0 || quotient.HasNoInvalidExceptions();
-
-  if (not_divide_by_zero && not_invalid)
-  {
-    const double result = ForceDouble(ppc_state.fpscr, quotient.value);
-    ppc_state.ps[inst.FD].SetPS0(result);
-    ppc_state.UpdateFPRFDouble(result);
-  }
-
-  // FR,FI,OX,UX???
-  if (inst.Rc)
-    ppc_state.UpdateCR1();
+  InterpreterFP::fdivx<true>(interpreter.m_ppc_state, inst);
 }
 void Interpreter::fdivsx(Interpreter& interpreter, UGeckoInstruction inst)
 {
