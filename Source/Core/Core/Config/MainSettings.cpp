@@ -283,6 +283,9 @@ const Info<int> PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY{
     {System::Main, "PrimeHack", "StickVerticalSensitivity"}, 35};
 const Info<bool> PRIMEHACK_IOS_INVERT_X{{System::Main, "PrimeHack", "InvertX"}, false};
 const Info<bool> PRIMEHACK_IOS_INVERT_Y{{System::Main, "PrimeHack", "InvertY"}, false};
+const Info<int> PRIMEHACK_IOS_STICK_DEADZONE{{System::Main, "PrimeHack", "StickDeadzone"}, 10};
+const Info<int> PRIMEHACK_IOS_AIM_CURVE{{System::Main, "PrimeHack", "AimCurve"}, 0};
+const Info<bool> PRIMEHACK_IOS_LOCKON_FREE_AIM{{System::Main, "PrimeHack", "LockOnFreeAim"}, false};
 
 GPUDeterminismMode GetGPUDeterminismMode()
 {

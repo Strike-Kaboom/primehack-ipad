@@ -111,6 +111,7 @@ void LoadLastSaved(Core::System& system, int i = 1);
 void SaveFirstSaved(Core::System& system);
 void UndoSaveState(Core::System& system);
 void UndoLoadState(Core::System& system);
+bool HasUndoLoadState();
 
 // for calling back into UI code without introducing a dependency on it in core
 using AfterLoadCallbackFunc = std::function<void()>;

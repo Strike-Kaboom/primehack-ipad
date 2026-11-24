@@ -84,7 +84,8 @@ void FpsControls::run_mod(Game game, Region region) {
   }
 
   // PrimeHack for iPad: tell the app whether the player is in control (not on the pause menu, map
-  // or inventory), morph ball state, and active visor for DualSense adaptive triggers & lightbar.
+  // or inventory), morph ball state, visor, beam, Charge Beam ownership, Hypermode, and low-health
+  // status for DualSense adaptive triggers & lightbar.
   u32 player_state = 0;
   if (game != Game::MENU && game != Game::INVALID_GAME) {
     LOOKUP_DYN(player);
@@ -95,6 +96,17 @@ void FpsControls::run_mod(Game game, Region region) {
         player_state |= kPlayerStateMorphBall;
       }
       PublishedVisor visor = PublishedVisor::Combat;
+      PublishedBeam beam = PublishedBeam::Power;
+      bool has_charge_beam = true;
+      bool in_hypermode = false;
+      bool low_health = false;
+      auto check_low_health = [this, &low_health](u32 health_addr) {
+        if (health_addr != 0) {
+          const float hp = readf32(health_addr);
+          low_health = std::isfinite(hp) && hp > 0.0f && hp < 30.0f;
+        }
+      };
+
       if (game == Game::PRIME_1) {
         LOOKUP_DYN(active_visor);
         if (active_visor != 0) {
@@ -105,7 +117,23 @@ void FpsControls::run_mod(Game game, Region region) {
             default: visor = PublishedVisor::Combat; break;
           }
         }
-      } else if (game == Game::PRIME_2) {
+        LOOKUP_DYN(current_beam);
+        if (current_beam != 0) {
+          switch (read32(current_beam)) {
+            case 1u: beam = PublishedBeam::Ice; break;
+            case 2u: beam = PublishedBeam::Wave; break;
+            case 3u: beam = PublishedBeam::Plasma; break;
+            case 4u: beam = PublishedBeam::Phazon; break;
+            default: beam = PublishedBeam::Power; break;
+          }
+        }
+        LOOKUP_DYN(powerups_array);
+        if (powerups_array != 0) {
+          has_charge_beam = read32(powerups_array + 0xa * 8 + 0x30) != 0;
+        }
+        LOOKUP_DYN(health);
+        check_low_health(health);
+      } else if (game == Game::PRIME_2 || game == Game::PRIME_2_GCN) {
         LOOKUP_DYN(active_visor);
         if (active_visor != 0) {
           switch (read32(active_visor)) {
@@ -115,6 +143,17 @@ void FpsControls::run_mod(Game game, Region region) {
             default: visor = PublishedVisor::Combat; break;
           }
         }
+        LOOKUP_DYN(current_beam);
+        if (current_beam != 0) {
+          switch (read32(current_beam)) {
+            case 1u: beam = PublishedBeam::Dark; break;
+            case 2u: beam = PublishedBeam::Light; break;
+            case 3u: beam = PublishedBeam::Annihilator; break;
+            default: beam = PublishedBeam::Power; break;
+          }
+        }
+        LOOKUP_DYN(health);
+        check_low_health(health);
       } else if (game == Game::PRIME_3 || game == Game::PRIME_3_STANDALONE) {
         LOOKUP_DYN(active_visor);
         if (active_visor != 0) {
@@ -125,11 +164,30 @@ void FpsControls::run_mod(Game game, Region region) {
             default: visor = PublishedVisor::Combat; break;
           }
         }
+        if (game == Game::PRIME_3) {
+          LOOKUP_DYN(hypermode_state);
+          if (hypermode_state != 0) {
+            const u32 hm = read32(hypermode_state);
+            in_hypermode = (hm != 0 && hm != 4);
+          }
+          LOOKUP_DYN(health);
+          check_low_health(health);
+        }
       }
       if (visor == PublishedVisor::Scan) {
         player_state |= kPlayerStateScanVisor;
       }
+      if (has_charge_beam) {
+        player_state |= kPlayerStateHasChargeBeam;
+      }
+      if (in_hypermode) {
+        player_state |= kPlayerStateHypermode;
+      }
+      if (low_health) {
+        player_state |= kPlayerStateLowHealth;
+      }
       player_state |= (static_cast<u32>(visor) << kPlayerStateVisorShift) & kPlayerStateVisorMask;
+      player_state |= (static_cast<u32>(beam) << kPlayerStateBeamShift) & kPlayerStateBeamMask;
     }
   }
   PublishPlayerState(player_state);

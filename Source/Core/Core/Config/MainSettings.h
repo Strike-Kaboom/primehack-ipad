@@ -428,6 +428,9 @@ extern const Info<int> PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY;
 extern const Info<int> PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY;
 extern const Info<bool> PRIMEHACK_IOS_INVERT_X;
 extern const Info<bool> PRIMEHACK_IOS_INVERT_Y;
+extern const Info<int> PRIMEHACK_IOS_STICK_DEADZONE;
+extern const Info<int> PRIMEHACK_IOS_AIM_CURVE;
+extern const Info<bool> PRIMEHACK_IOS_LOCKON_FREE_AIM;
 
 // GameCube path utility functions
 

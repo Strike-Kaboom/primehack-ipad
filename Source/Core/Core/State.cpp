@@ -5,6 +5,7 @@
 #include "Core/StateFileTransaction.h"
 
 #include <algorithm>
+#include <atomic>
 #include <filesystem>
 #include <future>
 #include <memory>
@@ -81,6 +82,7 @@ static Common::EventHook s_flush_unsaved_data_hook;
 
 // Temporary undo state buffer
 static Common::UniqueBuffer<u8> s_undo_load_buffer;
+static std::atomic<bool> s_has_undo_load_state{false};
 
 // Used to estimate buffer size for the next save.
 static u32 s_last_state_size = 0;
@@ -939,6 +941,7 @@ static bool LoadAsFromCore(Core::System& system, std::string filename)
   if (!movie.IsJustStartingRecordingInputFromSaveState())
   {
     SaveToBuffer(system, s_undo_load_buffer);
+    s_has_undo_load_state.store(!s_undo_load_buffer.empty(), std::memory_order_release);
     const std::string dtmpath = File::GetUserPath(D_STATESAVES_IDX) + "undo.dtm";
     if (movie.IsMovieActive())
       movie.SaveRecording(dtmpath);
@@ -1030,6 +1033,7 @@ void Shutdown()
 {
   s_compress_and_dump_thread.Shutdown();
   s_undo_load_buffer.reset();
+  s_has_undo_load_state.store(false, std::memory_order_release);
   s_flush_unsaved_data_hook.reset();
 }
 
@@ -1084,6 +1088,11 @@ void SaveFirstSaved(Core::System& system)
 }
 
 // Load the last state before loading the state
+bool HasUndoLoadState()
+{
+  return s_has_undo_load_state.load(std::memory_order_acquire);
+}
+
 void UndoLoadState(Core::System& system)
 {
   if (!CheckIfStateLoadIsAllowed(system))

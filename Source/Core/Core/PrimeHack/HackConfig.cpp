@@ -22,7 +22,9 @@
 #include "InputCommon/InputConfig.h"
 
 #ifdef IPHONEOS
+#include <algorithm>
 #include <chrono>
+#include <cmath>
 
 #include "Core/HW/GCPadEmu.h"
 #include "Core/HW/WiimoteEmu/ExtensionPort.h"
@@ -417,8 +419,35 @@ void SetSensitivity(float sens) {
 }
 
 bool HandleReticleLockOn() {
+#ifdef IPHONEOS
+  return Config::Get(Config::PRIMEHACK_IOS_LOCKON_FREE_AIM);
+#else
   return reticle_lock;
+#endif
 }
+
+#ifdef IPHONEOS
+std::tuple<double, double> ShapeIOSPrimeStick(double x, double y) {
+  const double horizontal = Config::Get(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
+  const double vertical = Config::Get(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
+  const int deadzone_pct = std::clamp(Config::Get(Config::PRIMEHACK_IOS_STICK_DEADZONE), 0, 30);
+  const double dz = static_cast<double>(deadzone_pct) / 100.0;
+  const double r = std::hypot(x, y);
+  if (r <= dz || r <= 1e-6)
+    return {0.0, 0.0};
+
+  const double norm = std::min(1.0, (r - dz) / (1.0 - dz));
+  const int curve = Config::Get(Config::PRIMEHACK_IOS_AIM_CURVE);
+  double shaped = norm;
+  if (curve == 1)
+    shaped = std::pow(norm, 1.6);
+  else if (curve == 2)
+    shaped = std::pow(norm, 2.2);
+
+  const double scale = shaped / r;
+  return {x * scale * horizontal, y * scale * -vertical};
+}
+#endif
 
 bool NewMapControlsEnabled() {
   return new_map_controls;

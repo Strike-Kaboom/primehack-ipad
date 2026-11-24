@@ -78,6 +78,8 @@ typedef NS_ENUM(NSInteger, TVDiscChangeResult) {
 // YES while the core can take a save or load (running, including a user pause).
 + (BOOL)isStateOperationAllowed;
 + (void)loadStateFromSlot:(NSInteger)slot;
++ (BOOL)canUndoLoadState;
++ (void)undoLoadState;
 
 // Save-state identity / paths.
 // Authoritative values from the core, used by the Swift save-manager to name

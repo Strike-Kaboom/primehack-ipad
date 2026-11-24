@@ -21,6 +21,8 @@ bool IsSupportedGameID(std::string_view game_id);
 // PrimeHack for iPad: during a Metroid Prime game, keeps player 1's PrimeHack controller layout
 // (and, on Wii, the Nunchuk) in place when something reloads the controller config mid-game.
 void EnforceIOSControllerLayout(Game game);
+// Applies iOS radial deadzone, response curve, and horizontal/vertical sensitivity to the camera stick.
+std::tuple<double, double> ShapeIOSPrimeStick(double x, double y);
 #endif
 void EnableDefaultMods();
 

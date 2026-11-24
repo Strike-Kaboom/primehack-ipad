@@ -641,6 +641,19 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
   }, true);
 }
 
++ (BOOL)canUndoLoadState {
+  return Core::IsRunning(Core::System::GetInstance()) && State::HasUndoLoadState();
+}
+
++ (void)undoLoadState {
+  if (![self canUndoLoadState])
+    return;
+  Core::QueueHostJob([](Core::System& system) {
+    if (StateOperationAllowed(system, "undo load") && State::HasUndoLoadState())
+      State::UndoLoadState(system);
+  });
+}
+
 + (BOOL)stateFileIsCompatibleAtPath:(NSString*)path {
   if (path.length == 0)
     return NO;

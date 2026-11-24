@@ -9,6 +9,8 @@ import Foundation
 /// The Test Rumble pulse: buzzes every connected controller and the device, then toasts what fired.
 enum RumbleTest {
   static func run() {
+    let rawPct = UserDefaults.standard.object(forKey: "primehack_rumble_strength") as? Int ?? 100
+    let strength = Float(min(max(rawPct, 25), 100)) / 100.0
     var controllersTestedCount = 0
     var deviceTested = false
     for controller in GCController.controllers() {
@@ -17,7 +19,7 @@ enum RumbleTest {
         try engine.start()
         let pattern = try CHHapticPattern(events: [
           CHHapticEvent(eventType: .hapticTransient, parameters: [
-            CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.9),
+            CHHapticEventParameter(parameterID: .hapticIntensity, value: 0.9 * strength),
             CHHapticEventParameter(parameterID: .hapticSharpness, value: 0.8),
           ], relativeTime: 0),
         ], parameters: [])
@@ -32,7 +34,7 @@ enum RumbleTest {
         try engine.start()
         let pattern = try CHHapticPattern(events: [
           CHHapticEvent(eventType: .hapticTransient, parameters: [
-            CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0),
+            CHHapticEventParameter(parameterID: .hapticIntensity, value: 1.0 * strength),
             CHHapticEventParameter(parameterID: .hapticSharpness, value: 1.0),
           ], relativeTime: 0),
         ], parameters: [])

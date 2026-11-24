@@ -12,6 +12,9 @@
 #include "Common/CommonTypes.h"
 
 #include "Core/HW/GCPad.h"
+#ifdef IPHONEOS
+#include "Core/PrimeHack/HackConfig.h"
+#endif
 
 #include "InputCommon/ControllerEmu/Control/Input.h"
 #include "InputCommon/ControllerEmu/ControlGroup/AnalogStick.h"
@@ -445,14 +448,13 @@ std::tuple<double, double> GCPad::GetPrimeStickXY()
   const auto stick_state = m_primehack_stick->GetState();
 
 #ifdef IPHONEOS
-  // PrimeHack for iPad: the app's settings screen owns the camera stick sensitivity.
-  const double horizontal = Config::Get(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
-  const double vertical = Config::Get(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
+  // PrimeHack for iPad: apply radial deadzone, aim curve, and H/V sensitivity from settings.
+  return prime::ShapeIOSPrimeStick(stick_state.x, stick_state.y);
 #else
   const double horizontal = m_primehack_horizontal_sensitivity.GetValue();
   const double vertical = m_primehack_vertical_sensitivity.GetValue();
-#endif
   return std::make_tuple(stick_state.x * horizontal, stick_state.y * -vertical);
+#endif
 }
 
 bool GCPad::CheckPitchRecentre()

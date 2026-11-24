@@ -6,8 +6,10 @@
 #include <Foundation/Foundation.h>
 #include <TargetConditionals.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <mutex>
 #include <optional>
 #include <utility>
@@ -33,15 +35,37 @@ dispatch_queue_t HapticsQueue()
   return queue;
 }
 
+std::atomic<float> s_rumble_strength{1.0f};
 #if !TARGET_OS_TV
 std::atomic<int> s_rumble_destination{1};
-
-void RefreshRumbleDestination()
-{
-  NSNumber* value = [[NSUserDefaults standardUserDefaults] objectForKey:@"rumble_destination"];
-  s_rumble_destination.store(value ? value.intValue : 1, std::memory_order_relaxed);
-}
 #endif
+
+void RefreshRumbleSettings()
+{
+  NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+#if !TARGET_OS_TV
+  NSNumber* dest = [defaults objectForKey:@"rumble_destination"];
+  s_rumble_destination.store(dest ? dest.intValue : 1, std::memory_order_relaxed);
+#endif
+  NSNumber* pct = [defaults objectForKey:@"primehack_rumble_strength"];
+  const int clamped_pct = pct ? std::clamp(pct.intValue, 25, 100) : 100;
+  s_rumble_strength.store(static_cast<float>(clamped_pct) / 100.0f, std::memory_order_relaxed);
+}
+
+void EnsureRumbleDefaultsObserver()
+{
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    RefreshRumbleSettings();
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSUserDefaultsDidChangeNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(NSNotification*) {
+                  RefreshRumbleSettings();
+                }];
+  });
+}
 
 /// User-selected rumble destination (NSUserDefaults "rumble_destination"):
 /// 0 = device haptics, 1 = controller rumble (default), 2 = both. tvOS has no
@@ -51,19 +75,15 @@ int RumbleDestination()
 #if TARGET_OS_TV
   return 1;
 #else
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    RefreshRumbleDestination();
-    [[NSNotificationCenter defaultCenter]
-        addObserverForName:NSUserDefaultsDidChangeNotification
-                    object:nil
-                     queue:nil
-                usingBlock:^(NSNotification*) {
-                  RefreshRumbleDestination();
-                }];
-  });
+  EnsureRumbleDefaultsObserver();
   return s_rumble_destination.load(std::memory_order_relaxed);
 #endif
+}
+
+float RumbleStrength()
+{
+  EnsureRumbleDefaultsObserver();
+  return s_rumble_strength.load(std::memory_order_relaxed);
 }
 }  // namespace
 
@@ -73,7 +93,7 @@ int RumbleDestination()
 /// Shared because every emulated motor routes through the same physical device.
 @interface DOLDeviceHaptics : NSObject
 + (instancetype)shared;
-- (void)setState:(bool)on;
+- (void)setState:(bool)on strength:(float)strength;
 @end
 
 @implementation DOLDeviceHaptics {
@@ -81,6 +101,7 @@ int RumbleDestination()
   id<CHHapticAdvancedPatternPlayer> _player;
   bool _started;
   bool _on;
+  float _appliedStrength;
   // CoreHaptics callbacks run on an internal queue; set an atomic flag there instead of mutating
   // ARC ivars or taking @synchronized(self) (which can deadlock against startAndReturnError:).
   std::atomic<bool> _engineLost;
@@ -101,6 +122,7 @@ int RumbleDestination()
   if ((self = [super init]))
   {
     _engineLost.store(false, std::memory_order_relaxed);
+    _appliedStrength = -1.0f;
     [self prepareLocked];
   }
   return self;
@@ -113,6 +135,7 @@ int RumbleDestination()
 
   _started = false;
   _on = false;
+  _appliedStrength = -1.0f;
   _player = nil;
   _engine = nil;
 
@@ -149,7 +172,7 @@ int RumbleDestination()
   [_player setLoopEnd:0.0f];
 }
 
-- (void)setState:(bool)on
+- (void)setState:(bool)on strength:(float)strength
 {
   @synchronized(self)
   {
@@ -157,6 +180,7 @@ int RumbleDestination()
     {
       _started = false;
       _on = false;
+      _appliedStrength = -1.0f;
       _player = nil;
       if (on)
         [self prepareLocked];
@@ -177,7 +201,7 @@ int RumbleDestination()
 
     if (!_player)
       [self prepareLocked];
-    if (!_player || _on)
+    if (!_player)
       return;
 
     NSError* error = nil;
@@ -187,6 +211,19 @@ int RumbleDestination()
         return;
       _started = true;
     }
+
+    if (std::fabs(_appliedStrength - strength) > 0.01f)
+    {
+      CHHapticDynamicParameter* param = [[CHHapticDynamicParameter alloc]
+          initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
+                        value:strength
+                 relativeTime:0.0f];
+      if ([_player sendParameters:@[ param ] atTime:CHHapticTimeImmediate error:&error])
+        _appliedStrength = strength;
+    }
+
+    if (_on)
+      return;
 
     if ([_player startAtTime:CHHapticTimeImmediate error:&error])
       _on = true;
@@ -213,6 +250,7 @@ struct Motor::State
   {
     haptic_player = nil;
     applied_controller_on.reset();
+    applied_strength = -1.0f;
   }
 
   void ConsumeEngineLostOnQueue()
@@ -225,6 +263,7 @@ struct Motor::State
   std::mutex lock;
   bool desired_controller_on = false;
   bool desired_device_on = false;
+  float desired_strength = 1.0f;
   bool update_scheduled = false;
   bool destroyed = false;
 
@@ -239,6 +278,8 @@ struct Motor::State
   bool recreate_player = false;
   std::optional<bool> applied_controller_on;
   bool applied_device_on = false;
+  float applied_device_strength = -1.0f;
+  float applied_strength = -1.0f;
   Clock::time_point next_start_attempt = Clock::time_point::min();
 };
 
@@ -310,7 +351,7 @@ Motor::~Motor()
 #if !TARGET_OS_TV
       if (state->applied_device_on)
       {
-        [[DOLDeviceHaptics shared] setState:false];
+        [[DOLDeviceHaptics shared] setState:false strength:1.0f];
         state->applied_device_on = false;
       }
 #endif
@@ -399,6 +440,7 @@ bool Motor::State::StartEngineOnQueue()
   haptic_player = player;
   recreate_player = false;
   applied_controller_on.reset();
+  applied_strength = -1.0f;
 
   return true;
 }
@@ -409,6 +451,7 @@ void Motor::State::ApplyOnQueue()
   {
     bool want_controller = false;
     bool want_device = false;
+    float want_strength = 1.0f;
     {
       std::lock_guard<std::mutex> guard(lock);
       if (pass == 0)
@@ -417,14 +460,17 @@ void Motor::State::ApplyOnQueue()
         return;
       want_controller = desired_controller_on;
       want_device = desired_device_on;
+      want_strength = desired_strength;
     }
 
 #if !TARGET_OS_TV
     // Route on-device Taptic Engine transitions off the CPU thread as well.
-    if (want_device != applied_device_on)
+    if (want_device != applied_device_on ||
+        (want_device && std::fabs(applied_device_strength - want_strength) > 0.01f))
     {
-      [[DOLDeviceHaptics shared] setState:want_device];
+      [[DOLDeviceHaptics shared] setState:want_device strength:want_strength];
       applied_device_on = want_device;
+      applied_device_strength = want_strength;
     }
 #endif
 
@@ -449,6 +495,26 @@ void Motor::State::ApplyOnQueue()
     else
     {
       needs_retry.store(false, std::memory_order_release);
+    }
+
+    if (haptic_player && want_controller && std::fabs(applied_strength - want_strength) > 0.01f)
+    {
+      NSError* param_error = nil;
+      CHHapticDynamicParameter* intensity_control = [[CHHapticDynamicParameter alloc]
+          initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
+                        value:want_strength
+                 relativeTime:0.0f];
+      if ([haptic_player sendParameters:@[ intensity_control ]
+                                 atTime:CHHapticTimeImmediate
+                                  error:&param_error])
+      {
+        applied_strength = want_strength;
+      }
+      else
+      {
+        recreate_player = true;
+        MOTOR_ERROR_LOG("Motor failed to update rumble strength: {}", param_error);
+      }
     }
 
     if (haptic_player && applied_controller_on != want_controller)
@@ -491,7 +557,8 @@ void Motor::State::ApplyOnQueue()
     {
       std::lock_guard<std::mutex> guard(lock);
       if (destroyed ||
-          (desired_controller_on == want_controller && desired_device_on == want_device))
+          (desired_controller_on == want_controller && desired_device_on == want_device &&
+           std::fabs(desired_strength - want_strength) <= 0.01f))
       {
         return;
       }
@@ -508,6 +575,7 @@ void Motor::SetState(ControlState state)
 {
   const bool on = state > 0;
   const int destination = RumbleDestination();
+  const float strength = RumbleStrength();
 #if !TARGET_OS_TV
   const bool want_device = (destination == 0 || destination == 2) && on;
 #else
@@ -525,6 +593,8 @@ void Motor::SetState(ControlState state)
     const bool unchanged =
         (m_state->desired_controller_on == want_controller) &&
         (m_state->desired_device_on == want_device) &&
+        (!(want_controller || want_device) ||
+         std::fabs(m_state->desired_strength - strength) <= 0.01f) &&
         !m_state->engine_lost.load(std::memory_order_relaxed) &&
         !(want_controller && m_state->needs_retry.load(std::memory_order_relaxed));
     if (unchanged)
@@ -532,6 +602,7 @@ void Motor::SetState(ControlState state)
 
     m_state->desired_controller_on = want_controller;
     m_state->desired_device_on = want_device;
+    m_state->desired_strength = strength;
     if (!m_state->update_scheduled)
     {
       m_state->update_scheduled = true;

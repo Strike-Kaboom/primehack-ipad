@@ -49,6 +49,8 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1, "beamvisor_menu_mode", "beamvisor_menu_base", {rp0, rp(0x334, 0x334)});
 
   addr_db.register_dynamic_address(Game::PRIME_1, "powerups_array", "powerups_array_base", {rp0, rp0});
+  addr_db.register_dynamic_address(Game::PRIME_1, "current_beam", "powerups_array", {mrp1(0x08)});
+  addr_db.register_dynamic_address(Game::PRIME_1, "health", "powerups_array", {mrp1(0x0c)});
   addr_db.register_dynamic_address(Game::PRIME_1, "active_visor", "powerups_array", {mrp1(0x1c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1, "world_id", "world", {mrp1(0x14)});
@@ -183,6 +185,8 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_2, "beamvisor_menu_state", "beamvisor_menu_base", {rp0, mrp1(0x340)});
   addr_db.register_dynamic_address(Game::PRIME_2, "beamvisor_menu_mode", "beamvisor_menu_base", {rp0, mrp1(0x34c)});
 
+  addr_db.register_dynamic_address(Game::PRIME_2, "current_beam", "powerups_array", {mrp1(0x0c)});
+  addr_db.register_dynamic_address(Game::PRIME_2, "health", "powerups_array", {mrp1(0x14)});
   addr_db.register_dynamic_address(Game::PRIME_2, "active_visor", "powerups_array", {mrp1(0x34)});
 
   addr_db.register_dynamic_address(Game::PRIME_2, "world_id", "world_id_ptr", {rp0, rp0});
@@ -217,6 +221,9 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_2_GCN, "orbit_state", "player", {mrp1(0x3a4)});
   addr_db.register_dynamic_address(Game::PRIME_2_GCN, "firstperson_pitch", "player", {mrp1(0x604)});
   addr_db.register_dynamic_address(Game::PRIME_2_GCN, "player_state", "player", {mrp1(0x1314), rp0});
+  addr_db.register_dynamic_address(Game::PRIME_2_GCN, "current_beam", "player_state", {mrp1(0x0c)});
+  addr_db.register_dynamic_address(Game::PRIME_2_GCN, "health", "player_state", {mrp1(0x14)});
+  addr_db.register_dynamic_address(Game::PRIME_2_GCN, "active_visor", "player_state", {mrp1(0x34)});
 
   addr_db.register_dynamic_address(Game::PRIME_2_GCN, "world_id", "world", {mrp1(0x8)});
 
@@ -270,7 +277,9 @@ void init_db(AddressDB& addr_db) {
 
   addr_db.register_dynamic_address(Game::PRIME_3, "cursor", "cursor_base", {rp0, rp(0xc54, 0xd04), rp0});
 
+  addr_db.register_dynamic_address(Game::PRIME_3, "health", "powerups_array", {mrp1(0x0c)});
   addr_db.register_dynamic_address(Game::PRIME_3, "active_visor", "powerups_array", {mrp1(0x34)});
+  addr_db.register_dynamic_address(Game::PRIME_3, "hypermode_state", "powerups_array", {mrp1(0x94c)});
 
   addr_db.register_dynamic_address(Game::PRIME_3, "world_id", "world_id_base", {rp0, mrp1(0x8)});
 
