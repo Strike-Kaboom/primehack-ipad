@@ -158,6 +158,7 @@ static void ICubeStoreDefaultISO(NSString* path)
 + (void)startConfigAutoSyncBridge {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
+    static std::atomic<bool> s_base_config_dirty{false};
     [[maybe_unused]] Config::ConfigChangedCallbackID callbackID = Config::AddConfigChangedCallback([] {
       // (b) one UI-refresh notification per runloop tick (cheap no-op when no settings view observes).
       if (!s_cfg_notify_pending.exchange(true)) {
@@ -166,16 +167,30 @@ static void ICubeStoreDefaultISO(NSString* path)
           [[NSNotificationCenter defaultCenter] postNotificationName:DOLConfigChangedNotification object:nil];
         });
       }
-      // (a) one debounced Base-layer save (skip during emulation; re-check at fire time).
+      // (a) mark dirty and schedule one debounced Base-layer save (deferred if emulation resumes
+      // within 0.8s, and flushed as soon as emulation pauses or stops).
+      s_base_config_dirty.store(true, std::memory_order_release);
       if (!ICubeEmulationActive() && !s_cfg_save_pending.exchange(true)) {
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
           s_cfg_save_pending = false;
-          if (!ICubeEmulationActive())
+          if (!ICubeEmulationActive() && s_base_config_dirty.exchange(false, std::memory_order_acq_rel))
             Config::Save();
         });
       }
     });
+    static const auto s_stateHook = Core::AddOnStateChangedCallback([](Core::State state) {
+      if ((state == Core::State::Paused || state == Core::State::Uninitialized) &&
+          s_base_config_dirty.exchange(false, std::memory_order_acq_rel)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+          if (!ICubeEmulationActive())
+            Config::Save();
+          else
+            s_base_config_dirty.store(true, std::memory_order_release);
+        });
+      }
+    });
+    (void)s_stateHook;
   });
 }
 
@@ -1662,7 +1677,7 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
       break;
     case 2:
       safe_delete(Config::MAIN_INPUT_BACKGROUND_INPUT);
-      for (int p = 1; p <= 4; ++p) {
+      for (int p = 0; p < 4; ++p) {
         safe_delete(Config::GetInfoForSIDevice(p));
         safe_delete(Config::GetInfoForWiimoteSource(p));
       }

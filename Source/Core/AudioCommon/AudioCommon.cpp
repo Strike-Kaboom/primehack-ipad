@@ -56,6 +56,12 @@ static std::unique_ptr<SoundStream> CreateSoundStreamForBackend(std::string_view
   return {};
 }
 
+std::recursive_mutex& GetSoundStreamMutex()
+{
+  static std::recursive_mutex s_mutex;
+  return s_mutex;
+}
+
 void InitSoundStream(Core::System& system)
 {
   std::string backend = Config::Get(Config::MAIN_AUDIO_BACKEND);
@@ -76,6 +82,7 @@ void InitSoundStream(Core::System& system)
     sound_stream->Init();
   }
 
+  std::lock_guard<std::recursive_mutex> lock(GetSoundStreamMutex());
   system.SetSoundStream(std::move(sound_stream));
 }
 
@@ -97,6 +104,7 @@ void ShutdownSoundStream(Core::System& system)
   if (Config::Get(Config::MAIN_DUMP_AUDIO) && system.IsAudioDumpStarted())
     StopAudioDump(system);
 
+  std::lock_guard<std::recursive_mutex> lock(GetSoundStreamMutex());
   SetSoundStreamRunning(system, false);
   system.SetSoundStream(nullptr);
 

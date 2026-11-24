@@ -154,8 +154,9 @@ private final class EmuContainerViewController: UIViewController {
       launchCore()
     }
 
-    exitObserver = NotificationCenter.default.addObserver(forName: Notification.Name("DOLEmulationRequestExitToLibrary"), object: nil, queue: .main) { [weak self] _ in
-      self?.handleExit()
+    exitObserver = NotificationCenter.default.addObserver(forName: Notification.Name("DOLEmulationRequestExitToLibrary"), object: nil, queue: .main) { [weak self] note in
+      let alreadyStopping = (note.userInfo?["alreadyStopping"] as? Bool) ?? false
+      self?.handleExit(alreadyStopping: alreadyStopping)
     }
     #if os(tvOS)
     // Toggle GC controller interception based on pause overlay visibility
@@ -178,9 +179,16 @@ private final class EmuContainerViewController: UIViewController {
     #endif
   }
 
-  private func handleExit() {
+  private func handleExit(alreadyStopping: Bool) {
+    if alreadyStopping {
+      // Caller already ran stopForUser / stopWithoutSavingForUser (WMUserStop is in flight);
+      // EmulationCoordinator posts DOLEmulationDidEndNotification once teardown finishes.
+      return
+    }
     if TVEmulationBridge.isRunning() {
-      TVEmulationBridge.stop()
+      DispatchQueue.global(qos: .userInitiated).async {
+        TVEmulationBridge.stop()
+      }
     } else {
       NotificationCenter.default.post(name: Notification.Name("DOLEmulationDidEndNotification"), object: nil)
     }
@@ -398,6 +406,7 @@ struct EmulationScreen: View {
   @State private var layoutEditToken: PauseArbiter.Token?
   /// The pad being edited: the one on screen when editing began.
   @State private var layoutEditPadKind: TouchOverlayPadKind = .gameCube
+  private let statusPollTimer = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
 
   private static let topRevealStripHeight: CGFloat = 80
 
@@ -1128,7 +1137,7 @@ struct EmulationScreen: View {
     }
     .onReceive(NotificationCenter.default.publisher(for: .DOLEditTouchLayout)) { _ in beginLayoutEdit() }
     // iOS has no 1s timer (the tvOS branch does); poll paused-state for the HUD pill.
-    .onReceive(Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()) { _ in
+    .onReceive(statusPollTimer) { _ in
       isPaused = TVEmulationBridge.isPaused()
       // Clear a stale disconnect banner if the game resumed via any other path.
       if controllerManager.disconnectPause != nil && !TVEmulationBridge.isPaused() {
@@ -1788,7 +1797,9 @@ struct EmulationScreen: View {
     #if canImport(ActivityKit) && !targetEnvironment(macCatalyst)
     GameActivityManager.end()
     #endif
-    NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"), object: nil)
+    NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"),
+                                    object: nil,
+                                    userInfo: ["alreadyStopping": true])
   }
 
   /// The settings sheet claimed a pause on open; release that claim (the game resumes only if nothing else

@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import SwiftUI
+import os
 
 /// Arbitrates which on-screen surface "owns" the game controller for APP-UI
 /// navigation.
@@ -37,17 +38,15 @@ final class ControllerFocusCoordinator: ObservableObject {
 
   private var stack: [UUID] = []
 
-  /// Non-isolated mirror of the top of the stack.
+  /// Lock-protected mirror of the top of the stack.
   ///
   /// Raw `GCController` handlers are invoked on GameController's own queue, not
-  /// the main actor, so they cannot touch `activeScope` directly. This is
-  /// written only from `push`/`pop` (both main-actor) and read as a plain
-  /// value, which is why the unchecked annotation is sound here.
-  nonisolated(unsafe) private static var activeScopeMirror: UUID?
+  /// the main actor, so they cannot touch `activeScope` directly.
+  private static let activeScopeLock = OSAllocatedUnfairLock<UUID?>(initialState: nil)
 
   /// Main-actor-free scope check for raw controller handlers.
   nonisolated static func isActiveScope(_ id: UUID) -> Bool {
-    activeScopeMirror == id
+    activeScopeLock.withLock { $0 == id }
   }
 
   private init() {}
@@ -58,7 +57,7 @@ final class ControllerFocusCoordinator: ObservableObject {
     stack.removeAll { $0 == id }
     stack.append(id)
     activeScope = stack.last
-    Self.activeScopeMirror = stack.last
+    Self.activeScopeLock.withLock { $0 = stack.last }
   }
 
   /// Remove `id` wherever it sits, not just from the top, so a disappear that
@@ -66,7 +65,7 @@ final class ControllerFocusCoordinator: ObservableObject {
   func pop(_ id: UUID) {
     stack.removeAll { $0 == id }
     activeScope = stack.last
-    Self.activeScopeMirror = stack.last
+    Self.activeScopeLock.withLock { $0 = stack.last }
   }
 
   /// True when `id` is the topmost (owning) scope.

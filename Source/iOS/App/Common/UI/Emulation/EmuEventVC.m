@@ -17,7 +17,24 @@ NSNotificationName const DOLGameplayInputBeganNotification = @"DOLGameplayInputB
 static BOOL sPauseOverlayVisible = NO;
 static BOOL sMenuPressActive = NO;
 static NSUInteger sGameplayTouchCount = 0;
+static BOOL sInputDebugEnabled = NO;
 const NSTimeInterval DOLMenuLongPressDuration = 2.0;
+
+static BOOL IsInputDebugEnabled(void) {
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    sInputDebugEnabled = [[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"];
+    [[NSNotificationCenter defaultCenter]
+        addObserverForName:NSUserDefaultsDidChangeNotification
+                    object:nil
+                     queue:nil
+                usingBlock:^(__unused NSNotification* note) {
+                  sInputDebugEnabled =
+                      [[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"];
+                }];
+  });
+  return sInputDebugEnabled;
+}
 
 // Observe descendants without cancelling their touch handling or competing with gestures.
 @interface DOLGameplayTouchObserver : UIGestureRecognizer
@@ -58,7 +75,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
 - (BOOL)canBecomeFocused { return YES; }
 // Forward press events to the next responder (the GCEventViewController) so it can handle them.
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
-  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+  if (IsInputDebugEnabled()) {
     DOLDebugLog(@"[INPUT] EmuFocusTrapView pressesBegan forwarding %lu presses", (unsigned long)presses.count);
   }
   [self.nextResponder pressesBegan:presses withEvent:event];
@@ -116,7 +133,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
     [_focusTrap.leadingAnchor constraintEqualToAnchor:self.view.leadingAnchor],
     [_focusTrap.trailingAnchor constraintEqualToAnchor:self.view.trailingAnchor]
   ]];
-  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+  if (IsInputDebugEnabled()) {
     DOLDebugLog(@"[INPUT] EmuEventVC viewDidLoad – focus trap installed");
   }
 #endif
@@ -146,7 +163,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
 #if TARGET_OS_TV
   [self setNeedsFocusUpdate];
   [self updateFocusIfNeeded];
-  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+  if (IsInputDebugEnabled()) {
     DOLDebugLog(@"[INPUT] EmuEventVC viewDidAppear – isFirstResponder=%d", self.isFirstResponder);
   }
 #endif
@@ -157,7 +174,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
   if (!_menuPressOwnedByGame) return;
 #endif
   if (gr.state == UIGestureRecognizerStateBegan) {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+    if (IsInputDebugEnabled()) {
       DOLDebugLog(@"[INPUT] Menu long-press began – posting DOLEmulationRequestExitToLibrary");
     }
     dispatch_async(dispatch_get_main_queue(), ^{
@@ -179,7 +196,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
 - (void)pressesBegan:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
   for (UIPress* press in presses) { if (press.type == UIPressTypeMenu) sMenuPressActive = YES; }
 #ifdef DEBUG
-  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+  if (IsInputDebugEnabled()) {
     for (UIPress* p in presses) {
       DOLDebugLog(@"[INPUT] pressesBegan type=%ld force=%.2f timestamp=%.3f", (long)p.type, p.force, p.timestamp);
     }
@@ -201,12 +218,12 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
     handledMenu = YES;
     if (_menuLongPressTimer != nil)
       continue;
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+    if (IsInputDebugEnabled()) {
       DOLDebugLog(@"[INPUT] Starting Menu long-press timer (%.1fs)", DOLMenuLongPressDuration);
     }
     __weak typeof(self) weakSelf = self;
     _menuLongPressTimer = [NSTimer scheduledTimerWithTimeInterval:DOLMenuLongPressDuration repeats:NO block:^(__unused NSTimer * _Nonnull t) {
-      if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+      if (IsInputDebugEnabled()) {
         DOLDebugLog(@"[INPUT] Menu long-press timer fired – posting DOLEmulationRequestExitToLibrary");
       }
       dispatch_async(dispatch_get_main_queue(), ^{
@@ -228,7 +245,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
 
 - (void)pressesChanged:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
 #ifdef DEBUG
-  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+  if (IsInputDebugEnabled()) {
     for (UIPress* p in presses) {
       DOLDebugLog(@"[INPUT] pressesChanged type=%ld force=%.2f timestamp=%.3f", (long)p.type, p.force, p.timestamp);
     }
@@ -244,7 +261,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
 - (void)pressesEnded:(NSSet<UIPress *> *)presses withEvent:(UIPressesEvent *)event {
   for (UIPress* press in presses) { if (press.type == UIPressTypeMenu) sMenuPressActive = NO; }
 #ifdef DEBUG
-  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+  if (IsInputDebugEnabled()) {
     for (UIPress* p in presses) {
       DOLDebugLog(@"[INPUT] pressesEnded type=%ld force=%.2f timestamp=%.3f", (long)p.type, p.force, p.timestamp);
     }
@@ -278,7 +295,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
   }
   _menuPressOwnedByGame = NO;
   if (_menuLongPressTimer) {
-    if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+    if (IsInputDebugEnabled()) {
       DOLDebugLog(@"[INPUT] Cancelling Menu long-press timer (press cancelled)");
     }
     [_menuLongPressTimer invalidate];
@@ -313,7 +330,7 @@ const NSTimeInterval DOLMenuLongPressDuration = 2.0;
 }
 
 - (void)handleExitKey:(UIKeyCommand *)command {
-  if ([[NSUserDefaults standardUserDefaults] boolForKey:@"input_debug"]) {
+  if (IsInputDebugEnabled()) {
     DOLDebugLog(@"[INPUT] Consumed Exit/Back key command (Escape)");
   }
 }

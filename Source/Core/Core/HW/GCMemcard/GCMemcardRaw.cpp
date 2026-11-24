@@ -31,6 +31,7 @@
 #include "Core/HW/GCMemcard/GCMemcard.h"
 #include "Core/HW/Sram.h"
 #include "Core/System.h"
+#include "UICommon/UICommon.h"
 
 #define SIZE_TO_Mb (1024 * 8 * 16)
 #define MC_HDR_SIZE 0xA000
@@ -79,16 +80,67 @@ MemoryCard::MemoryCard(std::string filename, ExpansionInterface::Slot card_slot,
   // it's safe to startup the flush thread (which reads them).
   m_flush_buffer = std::make_unique<u8[]>(m_memory_card_size);
   m_flush_thread = std::thread(&MemoryCard::FlushThread, this);
+  m_flush_unsaved_hook = UICommon::AddFlushUnsavedDataCallback([this] { FlushNow(); });
 }
 
 MemoryCard::~MemoryCard()
 {
+  m_flush_unsaved_hook.reset();
   if (m_flush_thread.joinable())
   {
     m_flush_trigger.Set();
 
     m_flush_thread.join();
   }
+}
+
+bool MemoryCard::WriteToDisk()
+{
+  std::lock_guard write_lock(m_write_mutex);
+
+  // Opening the file is purposefully done each iteration to ensure the
+  // file doesn't disappear out from under us after the first check.
+  File::IOFile file(m_filename, "r+b");
+
+  if (!file)
+  {
+    std::string dir;
+    SplitPath(m_filename, &dir, nullptr, nullptr);
+    if (!File::IsDirectory(dir))
+    {
+      File::CreateFullPath(dir);
+    }
+    file.Open(m_filename, "wb");
+  }
+
+  // Note - file may have changed above, after ctor
+  if (!file)
+  {
+    PanicAlertFmtT(
+        "Could not write memory card file {0}.\n\n"
+        "Are you running Dolphin from a CD/DVD, or is the save file maybe write protected?\n\n"
+        "Are you receiving this after moving the emulator directory?\nIf so, then you may "
+        "need to re-specify your memory card location in the options.",
+        m_filename);
+    return false;
+  }
+
+  {
+    std::unique_lock l(m_flush_mutex);
+    memcpy(&m_flush_buffer[0], &m_memcard_data[0], m_memory_card_size);
+  }
+  file.WriteBytes(&m_flush_buffer[0], m_memory_card_size);
+  file.Flush();
+  return true;
+}
+
+void MemoryCard::FlushNow()
+{
+  if (!Config::Get(Config::SESSION_SAVE_DATA_WRITABLE))
+    return;
+  if (!m_dirty.TestAndClear())
+    return;
+  WriteToDisk();
 }
 
 void MemoryCard::FlushThread()
@@ -115,42 +167,17 @@ void MemoryCard::FlushThread()
         continue;
       }
     }
-
-    // Opening the file is purposefully done each iteration to ensure the
-    // file doesn't disappear out from under us after the first check.
-    File::IOFile file(m_filename, "r+b");
-
-    if (!file)
+    else
     {
-      std::string dir;
-      SplitPath(m_filename, &dir, nullptr, nullptr);
-      if (!File::IsDirectory(dir))
-      {
-        File::CreateFullPath(dir);
-      }
-      file.Open(m_filename, "wb");
+      m_dirty.Clear();
     }
 
-    // Note - file may have changed above, after ctor
-    if (!file)
+    if (!WriteToDisk())
     {
-      PanicAlertFmtT(
-          "Could not write memory card file {0}.\n\n"
-          "Are you running Dolphin from a CD/DVD, or is the save file maybe write protected?\n\n"
-          "Are you receiving this after moving the emulator directory?\nIf so, then you may "
-          "need to re-specify your memory card location in the options.",
-          m_filename);
-
       // Exit the flushing thread - further flushes will be ignored unless
       // the thread is recreated.
       return;
     }
-
-    {
-      std::unique_lock l(m_flush_mutex);
-      memcpy(&m_flush_buffer[0], &m_memcard_data[0], m_memory_card_size);
-    }
-    file.WriteBytes(&m_flush_buffer[0], m_memory_card_size);
 
     if (do_exit)
       return;

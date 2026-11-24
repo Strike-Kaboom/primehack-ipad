@@ -66,7 +66,7 @@ void PortalSkipMP2::run_mod(Game game, Region region) {
   const auto find_object = [this, object_list](u32 editor_id) -> u32 {
     for (int i = 0; i < 1024; i++) {
       const u32 object_ptr = read32(object_list + (i * 8) + 4);
-      if (object_ptr != 0 && read32(object_ptr + 0xc) == editor_id) {
+      if (mem_check(object_ptr) && read32(object_ptr + 0xc) == editor_id) {
         return object_ptr;
       }
     }
@@ -77,6 +77,7 @@ void PortalSkipMP2::run_mod(Game game, Region region) {
   LOOKUP(seq_timer_vec_offset);
   LOOKUP(seq_timer_fire_size);
   LOOKUP(seq_timer_time_offset);
+  constexpr u32 kMaxPortalVecEntries = 256;
   for (const PortalControl& pc : world_portal_controls) {
     if (((pc.scan_eid >> 16) & 0x3ff) == tarea_id) {
       const u32 scan_obj = find_object(pc.scan_eid);
@@ -92,7 +93,8 @@ void PortalSkipMP2::run_mod(Game game, Region region) {
 
       const u32 scan_conn_vec_size = read32(scan_obj + conn_vec_offset);
       const u32 scan_conn_vec = read32(scan_obj + conn_vec_offset + 0x8);
-      if (scan_conn_vec_size != 0 && scan_conn_vec != 0) {
+      if (scan_conn_vec_size != 0 && scan_conn_vec_size <= kMaxPortalVecEntries &&
+          mem_check(scan_conn_vec)) {
         // remap all STRT
         for (u32 i = 0; i < scan_conn_vec_size; i++) {
           const u32 conn_msg_fcc = read32(scan_conn_vec + (i * 0xc) + 4);
@@ -105,7 +107,8 @@ void PortalSkipMP2::run_mod(Game game, Region region) {
 
       const u32 timer_conn_vec_size = read32(seq_timer_obj + conn_vec_offset);
       const u32 timer_conn_vec = read32(seq_timer_obj + conn_vec_offset + 0x8);
-      if (timer_conn_vec_size != 0 && timer_conn_vec != 0) {
+      if (timer_conn_vec_size != 0 && timer_conn_vec_size <= kMaxPortalVecEntries &&
+          mem_check(timer_conn_vec)) {
         // Remove Ripple FX
         for (u32 i = 0; i < timer_conn_vec_size; i++) {
           const u32 conn_eid = read32(timer_conn_vec + (i * 0xc) + 8);
@@ -118,12 +121,13 @@ void PortalSkipMP2::run_mod(Game game, Region region) {
 
       const u32 seq_timer_event_vec_size = read32(seq_timer_obj + seq_timer_vec_offset);
       const u32 seq_timer_event_vec = read32(seq_timer_obj + seq_timer_vec_offset + 0x8);
-      if (seq_timer_event_vec_size != 0 && seq_timer_event_vec != 0) {
+      if (seq_timer_event_vec_size != 0 && seq_timer_event_vec_size <= kMaxPortalVecEntries &&
+          mem_check(seq_timer_event_vec)) {
         for (u32 i = 0; i < seq_timer_event_vec_size; i++) {
           // Check if timer should be adjusted
           // These tables are all of size 1
           const u32 time_table_ptr = read32(seq_timer_event_vec + (i * seq_timer_fire_size) + seq_timer_time_offset);
-          if (time_table_ptr != 0) {
+          if (mem_check(time_table_ptr)) {
             const float time = readf32(time_table_ptr);
             if (time < 8.f) {
               writef32(0.f, time_table_ptr);

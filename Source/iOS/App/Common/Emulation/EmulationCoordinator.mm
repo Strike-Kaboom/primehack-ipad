@@ -434,7 +434,8 @@ static std::pair<std::string, std::string> ACLastDecisionAndLearned()
   unsigned long long _acDupBase;     // duplicate-present count at window start
   unsigned long long _acTotalBase;   // total-present count at window start
 
-  NSString* _adaptiveGameID;  // current game id, for persisting learned clocks per game
+  NSString* _adaptiveGameID;  // current game id, for persisting learned clocks per game (host-job thread only)
+  std::atomic<uint64_t> _acGeneration;  // bumped on start/stop/teardown to fence stale host jobs
   CGSize _lastDrawableSize;
   /// Last scale read on main thread; safe for emulation thread WSI setup.
   CGFloat _cachedRenderSurfaceScale;
@@ -819,78 +820,83 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
   const float sweepStep = [defaults objectForKey:@"adaptive_clock_sweep_step"]
                          ? [defaults floatForKey:@"adaptive_clock_sweep_step"] : ACSweepStep;
 
-  // Start BOTH levers at native (1.0), NOT the current Config value. Two reasons: (1) a fresh sweep
-  // finds f* by descending from the top, so it must begin at 1.0; (2) when Auto engages it must take
-  // OWNERSHIP of CPU *and* VI, not inherit wherever the manual sliders were left — otherwise a stale
-  // manual VI overclock bleeds through (Auto looked like it only moved the CPU). VI used to init from
-  // Config::Get here while CPU started at 1.0; that asymmetry was the bug. The per-game seed below
-  // overrides these if we've already converged for this title.
-  _acCPU = 1.0f;
-  _acVI = 1.0f;
-  _acStableCPU = 1.0f;
-  _acLastApplied = -1.f;
-  _acLastAppliedVI = -1.f;
-  _acLastPersisted = -1.f;
-  _acCpuYielded = NO;
-  _acViYielded = NO;
-  _acVerifyProbedUp = NO;
-  _acUpProbeLever = AC_LEVER_NONE;
-  _acUpCooldown = 0;
-  _acViRecoveryStalled = NO;
-  _acFineConfirmed = NO;
-  _acCpuLeverParked = NO;
-  _acHoldFailStreak = 0;
-  _acRef = AdaptiveClockFrameGuard::Reference{};
-  _acStarveConfirming = NO;
-  _acStarveTripRate = 0.0;
-  _acStarveTripCPU = 1.0f;
-  _acStarveTripVI = 1.0f;
-  _acStarveResumePhase = ACPhase_Search;
-  _acPointVetted = NO;
-  _acWindowStart = CACurrentMediaTime();
-  _acLastTick = _acWindowStart;
-  _acPhase = ACPhase_Search;  // default: full descending sweep from 1.0
-  _acPhaseTicks = 0;
-  _acUnderrunBase = PerformanceMetrics::GetAudioUnderrunCount();
-  _acDupBase = PerformanceMetrics::GetDuplicatePresentCount();
-  _acTotalBase = PerformanceMetrics::GetTotalPresentCount();
-  PerformanceMetrics::SetBound(PerformanceMetrics::Bound::Unknown);
-
-  // Per-game seed: if we converged + verified f* for this title before, start there and run a
-  // SHORT verify + bounded ±1-step re-find (thermal drift), instead of a full sweep.
+  // Read per-game seeds on main before hopping to the host-job thread so all _ac* ivars and
+  // _adaptiveGameID have strictly single-threaded ownership on the host-job queue.
   const std::string gid = SConfig::GetInstance().GetGameID();
-  _adaptiveGameID = gid.empty() ? nil : [NSString stringWithUTF8String:gid.c_str()];
-  if (_adaptiveGameID) {
-    NSString* cpuKey = [@"adaptive_clock_cpu_" stringByAppendingString:_adaptiveGameID];
+  NSString* gameIDCopy = gid.empty() ? nil : [NSString stringWithUTF8String:gid.c_str()];
+  float seedCPU = 1.0f;
+  float seedVI = 1.0f;
+  BOOL hasSeedCPU = NO;
+  if (gameIDCopy) {
+    NSString* cpuKey = [@"adaptive_clock_cpu_" stringByAppendingString:gameIDCopy];
     if ([defaults objectForKey:cpuKey]) {
-      _acCPU = MIN(1.0f, MAX(ACCpuFloor, [defaults floatForKey:cpuKey]));
-      _acStableCPU = _acCPU;
-      _acLastPersisted = _acCPU;
-      _acPhase = ACPhase_Verify;
+      seedCPU = MIN(1.0f, MAX(ACCpuFloor, [defaults floatForKey:cpuKey]));
+      hasSeedCPU = YES;
     }
-    NSString* viKey = [@"adaptive_clock_vi_" stringByAppendingString:_adaptiveGameID];
+    NSString* viKey = [@"adaptive_clock_vi_" stringByAppendingString:gameIDCopy];
     if ([defaults objectForKey:viKey])
-      _acVI = MAX(ACViFloor, [defaults floatForKey:viKey]);
+      seedVI = MAX(ACViFloor, [defaults floatForKey:viKey]);
   }
 
-  // Apply the starting clocks on the CurrentRun layer only (never Base/Dolphin.ini).
-  Config::SetCurrent(Config::MAIN_OVERCLOCK_ENABLE, _acCPU < 1.0f);
-  Config::SetCurrent(Config::MAIN_OVERCLOCK, _acCPU);
-  _acLastApplied = _acCPU;
-  // Restore the seeded VI overclock too (otherwise the per-game VI seed is read but never applied).
-  Config::SetCurrent(Config::MAIN_VI_OVERCLOCK_ENABLE, _acVI < 1.0f);
-  Config::SetCurrent(Config::MAIN_VI_OVERCLOCK, _acVI);
-  _acLastAppliedVI = _acVI;
+  const uint64_t generation = _acGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
+  Core::QueueHostJob([self, generation, gameIDCopy, seedCPU, seedVI, hasSeedCPU](Core::System& s) {
+    if (generation != self->_acGeneration.load(std::memory_order_acquire)) return;
+    if (Core::GetState(s) != Core::State::Running) return;
+
+    // Start BOTH levers at native (1.0), NOT the current Config value. The per-game seed below
+    // overrides these if we've already converged for this title.
+    self->_acCPU = hasSeedCPU ? seedCPU : 1.0f;
+    self->_acVI = seedVI;
+    self->_acStableCPU = self->_acCPU;
+    self->_acLastApplied = -1.f;
+    self->_acLastAppliedVI = -1.f;
+    self->_acLastPersisted = hasSeedCPU ? seedCPU : -1.f;
+    self->_acCpuYielded = NO;
+    self->_acViYielded = NO;
+    self->_acVerifyProbedUp = NO;
+    self->_acUpProbeLever = AC_LEVER_NONE;
+    self->_acUpCooldown = 0;
+    self->_acViRecoveryStalled = NO;
+    self->_acFineConfirmed = NO;
+    self->_acCpuLeverParked = NO;
+    self->_acHoldFailStreak = 0;
+    self->_acRef = AdaptiveClockFrameGuard::Reference{};
+    self->_acStarveConfirming = NO;
+    self->_acStarveTripRate = 0.0;
+    self->_acStarveTripCPU = 1.0f;
+    self->_acStarveTripVI = 1.0f;
+    self->_acStarveResumePhase = ACPhase_Search;
+    self->_acPointVetted = NO;
+    self->_acWindowStart = CACurrentMediaTime();
+    self->_acLastTick = self->_acWindowStart;
+    self->_acPhase = hasSeedCPU ? ACPhase_Verify : ACPhase_Search;
+    self->_acPhaseTicks = 0;
+    self->_acUnderrunBase = PerformanceMetrics::GetAudioUnderrunCount();
+    self->_acDupBase = PerformanceMetrics::GetDuplicatePresentCount();
+    self->_acTotalBase = PerformanceMetrics::GetTotalPresentCount();
+    self->_adaptiveGameID = gameIDCopy;
+    PerformanceMetrics::SetBound(PerformanceMetrics::Bound::Unknown);
+
+    // Apply the starting clocks on the CurrentRun layer only (never Base/Dolphin.ini).
+    Config::SetCurrent(Config::MAIN_OVERCLOCK_ENABLE, self->_acCPU < 1.0f);
+    Config::SetCurrent(Config::MAIN_OVERCLOCK, self->_acCPU);
+    self->_acLastApplied = self->_acCPU;
+    Config::SetCurrent(Config::MAIN_VI_OVERCLOCK_ENABLE, self->_acVI < 1.0f);
+    Config::SetCurrent(Config::MAIN_VI_OVERCLOCK, self->_acVI);
+    self->_acLastAppliedVI = self->_acVI;
+  });
 
   _adaptiveClockTimer = dispatch_source_create(DISPATCH_SOURCE_TYPE_TIMER, 0, 0, dispatch_get_global_queue(QOS_CLASS_UTILITY, 0));
   dispatch_source_set_timer(_adaptiveClockTimer, dispatch_time(DISPATCH_TIME_NOW, 0),
                             (uint64_t)NSEC_PER_MSEC * ACTickMs, NSEC_PER_MSEC * 50);
   dispatch_source_set_event_handler(_adaptiveClockTimer, ^{
+    if (generation != self->_acGeneration.load(std::memory_order_acquire)) return;
     auto& sys = Core::System::GetInstance();
     if (Core::GetState(sys) != Core::State::Running) return;
     const NSProcessInfoThermalState thermal = NSProcessInfo.processInfo.thermalState;
-    // Capture by value (self, thermal, tunables): the host job can run after this handler returns.
-    Core::QueueHostJob([self, thermal, speedThreshold, sweepStep](Core::System& s) {
+    // Capture by value (self, generation, thermal, tunables): the host job can run after this handler returns.
+    Core::QueueHostJob([self, generation, thermal, speedThreshold, sweepStep](Core::System& s) {
+      if (generation != self->_acGeneration.load(std::memory_order_acquire)) return;
       if (Core::GetState(s) != Core::State::Running) return;
 
       // --- Per-knob manual-override detection (step #2). ---
@@ -1453,6 +1459,7 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
     if (on) {
       [self startAdaptiveClockIfEnabled];
     } else {
+      _acGeneration.fetch_add(1, std::memory_order_acq_rel);
       if (_adaptiveClockTimer) {
         dispatch_source_cancel(_adaptiveClockTimer);
         _adaptiveClockTimer = nil;
@@ -1463,7 +1470,8 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
       // Clear the four CurrentRun keys the controller sets (CPU + VI clock + their enables). The
       // controller writes only the CurrentRun layer (never Base/Dolphin.ini), so deleting these keys
       // restores whatever the user set manually (Base) or the 1.0 default — no override left stuck.
-      Core::QueueHostJob([](Core::System&) {
+      Core::QueueHostJob([self](Core::System&) {
+        self->_adaptiveGameID = nil;
         if (Config::GetLayer(Config::LayerType::CurrentRun)) {
           Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_OVERCLOCK);
           Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_OVERCLOCK_ENABLE);
@@ -1896,7 +1904,9 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
     [[NSNotificationCenter defaultCenter] postNotificationName:DOLEmulationDidEndNotification
                                                         object:self
                                                       userInfo:nil];
-    _mainDisplayView = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      _mainDisplayView = nil;
+    });
     return;
   }
 
@@ -1919,7 +1929,9 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
     PanicAlertFmt("{}", [DOLCoreLocalizedString(@"The selected Default ISO is missing or unreadable. Select its new location in the library or clear it in General settings.") UTF8String]);
     [[NSNotificationCenter defaultCenter] postNotificationName:DOLEmulationDidEndNotification
                                                         object:self userInfo:nil];
-    _mainDisplayView = nil;
+    dispatch_async(dispatch_get_main_queue(), ^{
+      _mainDisplayView = nil;
+    });
     return;
   }
 
@@ -2133,8 +2145,12 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
     });
   });
 
-  if (supersededBoot)
+  if (supersededBoot) {
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      Core::DeclareAsHostThread();
+    });
     return;
+  }
 
   __block UIView* sessionDisplayView = nil;
   dispatch_sync(dispatch_get_main_queue(), ^{
@@ -2145,7 +2161,8 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
   if (Core::GetState(Core::System::GetInstance()) == Core::State::Uninitialized) {
     [DOLModdedBoot endBoot];
     [[NSNotificationCenter defaultCenter] postNotificationName:DOLEmulationDidEndNotification object:self userInfo:nil];
-    dispatch_async(dispatch_get_main_queue(), ^{
+    dispatch_sync(dispatch_get_main_queue(), ^{
+      Core::DeclareAsHostThread();
       if (_mainDisplayView == sessionDisplayView)
         _mainDisplayView = nil;
     });
@@ -2198,6 +2215,7 @@ static bool DOLWaitForCoreUninitialized(NSTimeInterval timeoutSeconds)
   callbackHandle.reset();
 
   [self stopInputPump];
+  _acGeneration.fetch_add(1, std::memory_order_acq_rel);
   dispatch_sync(dispatch_get_main_queue(), ^{
     Core::DeclareAsHostThread();
     // Tear down the adaptive clock timer + flag on main so it synchronizes with setAdaptiveClockEnabled:

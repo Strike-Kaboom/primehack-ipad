@@ -3,7 +3,9 @@
 #include "Common/SymbolDB.h"
 #include "Core/Boot/ElfReader.h"
 #include "Core/HW/Memmap.h"
+#include "Core/PowerPC/JitInterface.h"
 #include "Core/PowerPC/PPCSymbolDB.h"
+#include "Core/PowerPC/PowerPC.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PrimeHack/ElfModLoaderInterface.h"
 #include "Core/PrimeHack/PrimeUtils.h"
@@ -15,6 +17,17 @@
 namespace prime {
 
 using Symbol = Common::Symbol;
+
+namespace {
+constexpr u32 kMaxHooks = 1024;
+
+void InvalidateStubRange(u32 start, u32 bytes) {
+  auto& ppc = Core::System::GetInstance().GetPowerPC();
+  for (u32 off = 0; off < bytes; off += 4) {
+    ppc.ScheduleInvalidateCacheThreadSafe(start + off);
+  }
+}
+} // namespace
 
 void ElfModLoader::run_mod(Game game, Region region) {
   if (!ModLoaderEnabled()) {
@@ -49,6 +62,8 @@ void ElfModLoader::run_mod(Game game, Region region) {
       if (load_mod(mod, game, region)) {
         mod.state = State::ACTIVE;
         write8(kGuestStateActive, cg.state_table_base + mod.state_tbl_idx);
+      } else {
+        mod.state = State::NOT_FOUND;
       }
     } else if (mod.state == State::REINIT) {
       set_code_group_state(mod.pack_name, ModState::ENABLED);
@@ -114,14 +129,13 @@ void ElfModLoader::CallgateData::remap() {
   constexpr u32 kSentinelSize = 4;
   // 11 Instructions
   constexpr u32 kDispatcherSize = 13 * 4;
-  // 27 Instructions
+  // 30 Instructions
   constexpr u32 kCleanupSize = 30 * 4;
-  // BLR of Cleanup
-  constexpr u32 kFiniNullsubOffset = 26 * 4;
+  // BLR of Cleanup (instruction index 29 of 30)
+  constexpr u32 kFiniNullsubOffset = 29 * 4;
   constexpr u32 kStateTableSize = kStateEntSize * kMaxMods;
   // Cleanup table takes an extra entry which is never touched
   constexpr u32 kClTableSize = kClEntSize * (kMaxMods + 1);
-  constexpr u32 kMaxHooks = 1024;
   constexpr u32 kCgTableSize = kCgEntSize * kMaxHooks;
   constexpr u32 kDpTableSize = kDpEntSize * kMaxHooks;
   constexpr u32 kTrTableSize = kTrEntSize * kMaxHooks;
@@ -228,7 +242,8 @@ void ElfModLoader::CallgateData::remap() {
     0x80, 0x1e, 0x00, 0x04, 0x7c, 0x1f, 0x00, 0xae, 0x2c, 0x00, 0x00, 0x01,
     0x40, 0x82, 0x00, 0x18, 0x7d, 0x89, 0x03, 0xa6, 0x4e, 0x80, 0x04, 0x21,
     0x38, 0x00, 0x00, 0x02, 0x80, 0x7e, 0x00, 0x04, 0x7c, 0x1f, 0x19, 0xae,
-    0x3b, 0xde, 0x00, 0x08, 0x3b, 0xff, 0x00, 0x01, 0x4b, 0xff, 0xff, 0xc8,
+    // Keep r31 pinned at state_table_base (loop indexes r31 by mod_idx via lbzx/stbx).
+    0x3b, 0xde, 0x00, 0x08, 0x60, 0x00, 0x00, 0x00, 0x4b, 0xff, 0xff, 0xc8,
     0x80, 0x01, 0x00, 0x14, 0x83, 0xc1, 0x00, 0x08, 0x83, 0xe1, 0x00, 0x0c,
     0x38, 0x21, 0x00, 0x10, 0x7c, 0x08, 0x03, 0xa6, 0x4e, 0x80, 0x00, 0x20,
   };
@@ -240,6 +255,8 @@ void ElfModLoader::CallgateData::remap() {
   memory.Write_U32(kSentinel, sentinel_base);
   memory.CopyToEmu(dispatcher_base, dispatcher_stub, kDispatcherSize);
   memory.CopyToEmu(cleanup_base, cleanup_stub, kCleanupSize);
+  InvalidateStubRange(dispatcher_base, kDispatcherSize);
+  InvalidateStubRange(cleanup_base, kCleanupSize);
   memory.Memset(state_table_base, 0, kStateTableSize);
   memory.Memset(cl_table_base, 0, kClTableSize);
   memory.Memset(cg_table_base, 0, kCgTableSize);
@@ -391,6 +408,10 @@ void ElfModLoader::init_cleanup(Game game, Region region) {
 
 bool ElfModLoader::load_mod(LiveMod& mod, Game game, Region region) {
   ModPack const* template_pack = GetPack(mod.pack_name);
+  if (template_pack == nullptr) {
+    mod.state = State::NOT_FOUND;
+    return false;
+  }
 
   ElfMod const* template_mod = nullptr;
   for (auto const& game_mod : template_pack->supported_games) {
@@ -404,35 +425,47 @@ bool ElfModLoader::load_mod(LiveMod& mod, Game game, Region region) {
     mod.state = State::NOT_FOUND;
     return false;
   }
+
+  const size_t total_hooks =
+      template_mod->vt_hooks.size() + template_mod->bl_hooks.size() + template_mod->trampolines.size();
+  if (cg.state_free_idx >= kMaxMods || cg.cl_free_idx >= kMaxMods ||
+      cg.cg_free_idx + total_hooks > kMaxHooks || cg.dp_free_idx + total_hooks > kMaxHooks ||
+      cg.tr_free_idx + template_mod->trampolines.size() > kMaxHooks) {
+    ERROR_LOG_FMT(PRIMEHACK, "Callgate table capacity exceeded while loading mod {}", mod.pack_name);
+    return false;
+  }
+
   mod.linked.base = template_mod;
   mod.load_slide = next_load_slide;
 
   ElfReader elf_file(template_mod->elf_path);
 
   if (elf_file.IsValid()) {
-    elf_file.LoadIntoMemory(Core::System::GetInstance(), mod.load_slide, false);
+    auto& system = Core::System::GetInstance();
+    elf_file.LoadIntoMemory(system, mod.load_slide, false);
     elf_file.LoadSymbols(*active_guard, symbol_db, template_pack->name, mod.load_slide);
+    system.GetJitInterface().ClearCache(*active_guard);
   } else {
     ERROR_LOG_FMT(PRIMEHACK, "Failed to load mod {} for game {} {}",
                   mod.pack_name, game_str(game), region_str(region));
     return false;
   }
 
-  const u32 mod_idx = cg.state_free_idx++;
-
-  mod.state_tbl_idx = mod_idx;
-  mod.linked.var_addr_list.resize(template_mod->var_list.size());
-  for (size_t i = 0; i < mod.linked.base->var_list.size(); i++) {
-    CVar const& cvar = mod.linked.base->var_list[i];
+  // Resolve and validate all required symbols before allocating callgate slots or mutating hooks.
+  std::vector<u32> resolved_vars(template_mod->var_list.size());
+  for (size_t i = 0; i < template_mod->var_list.size(); i++) {
+    CVar const& cvar = template_mod->var_list[i];
     Symbol const* sym = symbol_db.GetSymbolFromName(cvar.name);
     if (sym == nullptr) {
       ERROR_LOG_FMT(PRIMEHACK, "Failed to locate cvar symbol {} in mod {} for game {} {}",
                     cvar.name, mod.pack_name, game_str(game), region_str(region));
       return false;
     }
-    mod.linked.var_addr_list[i] = sym->address;
+    resolved_vars[i] = sym->address;
   }
 
+  std::vector<std::pair<u32, u32>> resolved_vt;
+  resolved_vt.reserve(template_mod->vt_hooks.size());
   for (auto const& vt_hook : template_mod->vt_hooks) {
     Symbol const* sym = symbol_db.GetSymbolFromName(vt_hook.first);
     if (sym == nullptr) {
@@ -440,9 +473,11 @@ bool ElfModLoader::load_mod(LiveMod& mod, Game game, Region region) {
                     vt_hook.first, mod.pack_name, game_str(game), region_str(region));
       return false;
     }
-    mod.linked.vt_hooks.emplace_back(sym->address, vt_hook.second);
-    create_vthook_callgated(sym->address, vt_hook.second, mod_idx);
+    resolved_vt.emplace_back(sym->address, vt_hook.second);
   }
+
+  std::vector<std::pair<u32, u32>> resolved_bl;
+  resolved_bl.reserve(template_mod->bl_hooks.size());
   for (auto const& bl_hook : template_mod->bl_hooks) {
     Symbol const* sym = symbol_db.GetSymbolFromName(bl_hook.first);
     if (sym == nullptr) {
@@ -450,9 +485,11 @@ bool ElfModLoader::load_mod(LiveMod& mod, Game game, Region region) {
                     bl_hook.first, mod.pack_name, game_str(game), region_str(region));
       return false;
     }
-    mod.linked.bl_hooks.emplace_back(sym->address, bl_hook.second);
-    create_blhook_callgated(sym->address, bl_hook.second, mod_idx);
+    resolved_bl.emplace_back(sym->address, bl_hook.second);
   }
+
+  std::vector<std::pair<u32, u32>> resolved_tr;
+  resolved_tr.reserve(template_mod->trampolines.size());
   for (auto const& trampoline : template_mod->trampolines) {
     Symbol const* sym = symbol_db.GetSymbolFromName(trampoline.first);
     if (sym == nullptr) {
@@ -460,8 +497,24 @@ bool ElfModLoader::load_mod(LiveMod& mod, Game game, Region region) {
                     trampoline.first, mod.pack_name, game_str(game), region_str(region));
       return false;
     }
-    mod.linked.trampolines.emplace_back(sym->address, trampoline.second);
-    create_trampoline_callgated(sym->address, trampoline.second, mod_idx);
+    resolved_tr.emplace_back(sym->address, trampoline.second);
+  }
+
+  const u32 mod_idx = cg.state_free_idx++;
+  mod.state_tbl_idx = mod_idx;
+  mod.linked.var_addr_list = std::move(resolved_vars);
+  mod.linked.vt_hooks = std::move(resolved_vt);
+  mod.linked.bl_hooks = std::move(resolved_bl);
+  mod.linked.trampolines = std::move(resolved_tr);
+
+  for (auto const& vt_hook : mod.linked.vt_hooks) {
+    create_vthook_callgated(vt_hook.first, vt_hook.second, mod_idx);
+  }
+  for (auto const& bl_hook : mod.linked.bl_hooks) {
+    create_blhook_callgated(bl_hook.first, bl_hook.second, mod_idx);
+  }
+  for (auto const& trampoline : mod.linked.trampolines) {
+    create_trampoline_callgated(trampoline.first, trampoline.second, mod_idx);
   }
 
   create_cleanup_entry(mod_idx);
@@ -490,6 +543,7 @@ u32 ElfModLoader::add_callgate_entry(u32 hook_target, u32 original_target, u32 m
   write32(r11_dispatch_lis, callgate_fn_table_loc + 0);
   write32(r11_dispatch_ori, callgate_fn_table_loc + 4);
   write32(branch_to_cg_dispatch, callgate_fn_table_loc + 8);
+  InvalidateStubRange(callgate_fn_table_loc, kCgEntSize);
   cg.dp_free_idx++;
   cg.cg_free_idx++;
 
@@ -502,6 +556,7 @@ u32 ElfModLoader::add_trampoline_restore_entry(u32 func_start) {
   const u32 branch_to_after_trampoline = gen_branch(trampoline_restore_loc + 4, func_start + 4);
   write32(original_instruction, trampoline_restore_loc + 0);
   write32(branch_to_after_trampoline, trampoline_restore_loc + 4);
+  InvalidateStubRange(trampoline_restore_loc, kTrEntSize);
   cg.tr_free_idx++;
 
   return trampoline_restore_loc;

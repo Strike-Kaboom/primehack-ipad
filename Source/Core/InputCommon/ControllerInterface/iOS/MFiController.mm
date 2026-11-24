@@ -389,25 +389,30 @@ bool MFiController::AreControlsNeutral(GCController* controller)
 {
   // Read physical values, never gated GetState. Gravity/gyro do not participate: gravity is
   // nonzero at rest and motion should resume normally once the closing controls are released.
+  // Use a realistic rest tolerance for analog sticks/triggers so typical DualSense micro-drift
+  // never keeps gameplay input suppressed after dismissing an overlay.
+  constexpr float kButtonNeutralThreshold = 0.05f;
+  constexpr float kAxisNeutralThreshold = 0.15f;
   GCPhysicalInputProfile* snapshot = [controller.physicalInputProfile capture];
   for (GCControllerElement* element in snapshot.elements.allValues)
   {
     if ([element isKindOfClass:[GCControllerButtonInput class]])
     {
       GCControllerButtonInput* button = (GCControllerButtonInput*)element;
-      if (button.isPressed || std::abs(button.value) > 0.001f)
+      if (button.isPressed || std::abs(button.value) > kButtonNeutralThreshold)
         return false;
     }
     else if ([element isKindOfClass:[GCControllerAxisInput class]])
     {
-      if (std::abs(((GCControllerAxisInput*)element).value) > 0.001f)
+      if (std::abs(((GCControllerAxisInput*)element).value) > kAxisNeutralThreshold)
         return false;
     }
     else if ([element isKindOfClass:[GCControllerDirectionPad class]])
     {
       GCControllerDirectionPad* pad = (GCControllerDirectionPad*)element;
-      if (std::abs(pad.xAxis.value) > 0.001f || std::abs(pad.yAxis.value) > 0.001f ||
-          pad.up.isPressed || pad.down.isPressed || pad.left.isPressed || pad.right.isPressed)
+      if (std::abs(pad.xAxis.value) > kAxisNeutralThreshold ||
+          std::abs(pad.yAxis.value) > kAxisNeutralThreshold || pad.up.isPressed ||
+          pad.down.isPressed || pad.left.isPressed || pad.right.isPressed)
         return false;
     }
   }

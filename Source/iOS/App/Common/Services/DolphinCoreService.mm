@@ -42,6 +42,7 @@
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
+#include <memory>
 #include <thread>
 #include <unistd.h>
 
@@ -348,19 +349,56 @@ static inline void SetBaseIfUnspecified(const Config::Info<T>& info, const T& va
       dispatch_async(dispatch_get_main_queue(), finish);
   };
   task = [application beginBackgroundTaskWithName:@"Save resume state" expirationHandler:endTask];
+  auto cancelSnapshot = std::make_shared<std::atomic<bool>>(false);
+  dispatch_semaphore_t snapshotDone = dispatch_semaphore_create(0);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    [TVEmulationBridge saveResumeStateKeepingGameRunning];
+    [TVEmulationBridge saveResumeStateKeepingGameRunningWithSnapshotSignal:^{
+      dispatch_semaphore_signal(snapshotDone);
+    }
+                                                              shouldCancel:^BOOL {
+      return cancelSnapshot->load(std::memory_order_acquire) ? YES : NO;
+    }];
     s_resumeSaveInFlight.store(false, std::memory_order_release);
     endTask();
   });
+
+  // Wait briefly while still .inactive (foreground) so Metal GPU readback inside
+  // State::SaveAsWithResult completes before UIKit transitions to .background. If the CPU thread
+  // is blocked (e.g. an alert), cancel before GPU submission rather than risking a background kill.
+  if (dispatch_semaphore_wait(snapshotDone,
+                              dispatch_time(DISPATCH_TIME_NOW, (int64_t)(500 * NSEC_PER_MSEC))) != 0)
+  {
+    cancelSnapshot->store(true, std::memory_order_release);
+  }
 }
 
 - (void)applicationDidEnterBackground:(UIApplication*)application {
-  (void)application;
-  // Kill-safe PGO flush point. A long-running emulator force-killed by iOS while backgrounded
-  // never runs willTerminate/atexit, so background is the reliable place to persist counters.
-  // No-op on a non-instrumented (shipping) core.
-  ICubePGOFlush();
+  // Flush raw GC memory cards and any in-flight save-state writes under a short background task
+  // so iOS suspending or reclaiming the app never loses a recent in-game save (GCMemcardRaw's
+  // background flush timer only wakes every 15s).
+  __block UIBackgroundTaskIdentifier flushTask = UIBackgroundTaskInvalid;
+  void (^endFlushTask)(void) = ^{
+    void (^finish)(void) = ^{
+      if (flushTask == UIBackgroundTaskInvalid)
+        return;
+      [application endBackgroundTask:flushTask];
+      flushTask = UIBackgroundTaskInvalid;
+    };
+    if ([NSThread isMainThread])
+      finish();
+    else
+      dispatch_async(dispatch_get_main_queue(), finish);
+  };
+  flushTask = [application beginBackgroundTaskWithName:@"Flush unsaved game data"
+                                     expirationHandler:endFlushTask];
+  dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+    UICommon::FlushUnsavedData();
+    // Kill-safe PGO flush point. A long-running emulator force-killed by iOS while backgrounded
+    // never runs willTerminate/atexit, so background is the reliable place to persist counters.
+    // No-op on a non-instrumented (shipping) core.
+    ICubePGOFlush();
+    endFlushTask();
+  });
 }
 
 - (void)applicationWillTerminate:(UIApplication*)application {

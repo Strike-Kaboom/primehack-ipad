@@ -13,38 +13,50 @@
 #ifndef IPHONEOS
 #define IPHONEOS 1
 #endif
+#include <mutex>
+
 #include "AudioCommon/AVAudioEngineSoundStream.h"
 #include "AudioCommon/AudioCommon.h"
 #include "AudioCommon/CoreAudioSoundStream.h"
 #include "AudioCommon/IOSAudioInput.h"
 #include "AudioCommon/IOSAudioSession.h"
+#include "Core/Core.h"
 #include "Core/System.h"
 
-static inline AVAudioEngineSound* ActiveEngine()
+static inline AVAudioEngineSound* ActiveEngineLocked()
 {
-  return dynamic_cast<AVAudioEngineSound*>(Core::System::GetInstance().GetSoundStream());
+  auto& system = Core::System::GetInstance();
+  if (!Core::IsRunning(system))
+    return nullptr;
+  return dynamic_cast<AVAudioEngineSound*>(system.GetSoundStream());
 }
 
-static inline CoreAudioSound* ActiveCoreAudio()
+static inline CoreAudioSound* ActiveCoreAudioLocked()
 {
-  return dynamic_cast<CoreAudioSound*>(Core::System::GetInstance().GetSoundStream());
+  auto& system = Core::System::GetInstance();
+  if (!Core::IsRunning(system))
+    return nullptr;
+  return dynamic_cast<CoreAudioSound*>(system.GetSoundStream());
 }
 
 @implementation AudioFXBridge
 
 + (BOOL)isEngineActive
 {
-  return ActiveEngine() != nullptr;
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  return ActiveEngineLocked() != nullptr;
 }
 
 + (BOOL)isCoreAudioActive
 {
-  return ActiveCoreAudio() != nullptr;
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  return ActiveCoreAudioLocked() != nullptr;
 }
 
 + (NSString*)outputModeName
 {
-  if (AVAudioEngineSound* engine = ActiveEngine())
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  if (AVAudioEngineSound* engine = ActiveEngineLocked())
   {
     switch (engine->GetMode())
     {
@@ -56,7 +68,7 @@ static inline CoreAudioSound* ActiveCoreAudio()
       return @"discrete";
     }
   }
-  if (CoreAudioSound* core = ActiveCoreAudio())
+  if (CoreAudioSound* core = ActiveCoreAudioLocked())
     return core->IsSurroundOutput() ? @"discrete" : @"stereo";
   return @"";
 }
@@ -81,7 +93,8 @@ static inline CoreAudioSound* ActiveCoreAudio()
 
 + (NSArray<NSDictionary*>*)currentEffects
 {
-  AVAudioEngineSound* eng = ActiveEngine();
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  AVAudioEngineSound* eng = ActiveEngineLocked();
   if (!eng)
     return @[];
   NSMutableArray* arr = [NSMutableArray array];
@@ -119,7 +132,8 @@ static inline CoreAudioSound* ActiveCoreAudio()
 
 + (BOOL)addEffectWithName:(NSString*)name
 {
-  AVAudioEngineSound* eng = ActiveEngine();
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  AVAudioEngineSound* eng = ActiveEngineLocked();
   if (!eng)
     return NO;
   return eng->addEffectWithIdentifier(name.UTF8String) ? YES : NO;
@@ -127,33 +141,41 @@ static inline CoreAudioSound* ActiveCoreAudio()
 
 + (void)removeEffectAt:(NSUInteger)index
 {
-  if (AVAudioEngineSound* eng = ActiveEngine())
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  if (AVAudioEngineSound* eng = ActiveEngineLocked())
     eng->removeEffectAt(index);
 }
 
 + (void)moveEffectFrom:(NSUInteger)from to:(NSUInteger)to
 {
-  if (AVAudioEngineSound* eng = ActiveEngine())
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  if (AVAudioEngineSound* eng = ActiveEngineLocked())
     eng->moveEffect(from, to);
 }
 
 + (void)setEffectAt:(NSUInteger)index bypassed:(BOOL)bypassed
 {
-  if (AVAudioEngineSound* eng = ActiveEngine())
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  if (AVAudioEngineSound* eng = ActiveEngineLocked())
     eng->setEffectBypass(index, bypassed);
 }
 
 + (void)saveEffectChain
 {
-  if (AVAudioEngineSound* eng = ActiveEngine())
+  std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+  if (AVAudioEngineSound* eng = ActiveEngineLocked())
     eng->saveEffectChain();
 }
 
 + (void)requestEffectViewControllerAt:(NSUInteger)index
                            completion:(void (^)(UIViewController* _Nullable vc))completion
 {
-  AVAudioEngineSound* eng = ActiveEngine();
-  AVAudioUnit* u = eng ? eng->fxAt(index) : nil;
+  AVAudioUnit* u = nil;
+  {
+    std::lock_guard<std::recursive_mutex> lock(AudioCommon::GetSoundStreamMutex());
+    AVAudioEngineSound* eng = ActiveEngineLocked();
+    u = eng ? eng->fxAt(index) : nil;
+  }
   if (!u)
   {
     completion(nil);

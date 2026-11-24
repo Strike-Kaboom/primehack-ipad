@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <mutex>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -20,6 +21,7 @@ class System;
 
 namespace AudioCommon
 {
+std::recursive_mutex& GetSoundStreamMutex();
 void InitSoundStream(Core::System& system);
 void PostInitSoundStream(Core::System& system);
 void ShutdownSoundStream(Core::System& system);

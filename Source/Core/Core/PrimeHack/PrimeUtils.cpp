@@ -259,7 +259,7 @@ static void handle_wiimote_IR(Core::CPUThreadGuard const& guard, u32 x_address,
     half_height = stretched_halfh;
   }
 
-  int dx = GetHorizontalAxis(), dy = GetVerticalAxis();
+  const double dx = GetHorizontalAxis(), dy = GetVerticalAxis();
   float cursor_sensitivity_conv = prime::GetCursorSensitivity() / 10000.f;
   // Ironically name is backwards, the sensitivity technically scales up as the window gets larger
   // since we send normalized coordinates

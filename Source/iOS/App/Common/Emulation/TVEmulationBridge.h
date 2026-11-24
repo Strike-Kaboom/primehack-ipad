@@ -111,6 +111,11 @@ typedef NS_ENUM(NSInteger, TVDiscChangeResult) {
 /// the write failed (the previous state is kept).
 /// Takes the CPU lock and waits for the disk, so never call it on the main thread.
 + (BOOL)saveResumeStateKeepingGameRunning;
+/// Variant for applicationWillResignActive: signals `onSnapshotCaptured` as soon as the CPU/Metal
+/// snapshot has finished (before CPU-only LZ4 compression & disk write), and skips capturing if
+/// `shouldCancel` returns YES before State::SaveAsWithResult begins.
++ (BOOL)saveResumeStateKeepingGameRunningWithSnapshotSignal:(nullable void (^)(void))onSnapshotCaptured
+                                               shouldCancel:(nullable BOOL (^)(void))shouldCancel;
 /// Call once per boot, after the boot's resume decision was made and any state load it needs was
 /// requested. Until the core has worked through those requests, saveResumeStateKeepingGameRunning
 /// refuses: a save taken between boot and the resume load would replace the state about to be

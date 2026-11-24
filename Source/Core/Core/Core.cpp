@@ -113,7 +113,7 @@ static Common::HookableEvent<Core::State>& StateChangedEvent()
   return event;
 }
 
-static bool s_is_throttler_temp_disabled = false;
+static std::atomic<bool> s_is_throttler_temp_disabled{false};
 static bool s_frame_step = false;
 static std::atomic<bool> s_stop_frame_step;
 
@@ -148,12 +148,12 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
 
 bool GetIsThrottlerTempDisabled()
 {
-  return s_is_throttler_temp_disabled;
+  return s_is_throttler_temp_disabled.load(std::memory_order_relaxed);
 }
 
 void SetIsThrottlerTempDisabled(bool disable)
 {
-  s_is_throttler_temp_disabled = disable;
+  s_is_throttler_temp_disabled.store(disable, std::memory_order_relaxed);
 }
 
 void FrameUpdateOnCPUThread()
@@ -598,6 +598,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
 {
   NotifyStateChanged(State::Starting);
   Common::ScopeGuard flag_guard{[] {
+    s_is_throttler_temp_disabled.store(false, std::memory_order_relaxed);
     {
       std::lock_guard lock(s_core_mutex);
       s_state.store(State::Uninitialized);
@@ -613,6 +614,7 @@ static void EmuThread(Core::System& system, std::unique_ptr<BootParameters> boot
   // This will become the CPU thread.
   DeclareAsCPUThread();
 
+  s_is_throttler_temp_disabled.store(false, std::memory_order_relaxed);
   s_frame_step = false;
 
   // If settings have changed since the previous run, notify callbacks.

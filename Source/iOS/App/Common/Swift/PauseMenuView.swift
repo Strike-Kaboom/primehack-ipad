@@ -1021,6 +1021,7 @@ internal struct PauseMenuView: View {
   /// Same as the console's reset button. It does not reload the auto-resume state, so it is also the way out of a
   /// game that resumed into a bad save.
   private func resetGame() {
+    PauseArbiter.shared.userResume()
     TVEmulationBridge.resetSystem()
     onClose()
   }
@@ -1064,7 +1065,9 @@ internal struct PauseMenuView: View {
       quitRequestInFlight = false
       switch outcome {
       case .stopped:
-        NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"), object: nil)
+        NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"),
+                                        object: nil,
+                                        userInfo: ["alreadyStopping": true])
       case .failed(let failure):
         if session == TVEmulationBridge.currentSessionIdentifier() { quitSaveFailure = failure }
       }
@@ -1073,7 +1076,9 @@ internal struct PauseMenuView: View {
 
   private func quitWithoutSaving() {
     if TVEmulationBridge.stopWithoutSavingForUser(expectedSessionIdentifier: quitExpectedSessionIdentifier) {
-      NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"), object: nil)
+      NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"),
+                                      object: nil,
+                                      userInfo: ["alreadyStopping": true])
     }
   }
 

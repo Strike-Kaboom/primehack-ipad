@@ -329,7 +329,7 @@ void FpsControls::run_mod_mp1(Region region) {
 
   // Is beam/visor menu showing on screen
   LOOKUP_DYN(beamvisor_menu_state);
-  bool beamvisor_menu_enabled = read32(beamvisor_menu_state) == 1;
+  bool beamvisor_menu_enabled = beamvisor_menu_state != 0 && read32(beamvisor_menu_state) == 1;
 
   LOOKUP_DYN(orbit_state);
   LOOKUP_DYN(lockon_state);
@@ -409,9 +409,7 @@ void FpsControls::run_mod_mp1_gc(Region region) {
   const u32 crosshair_color_rgba = show_crosshair ? GetGCCrosshairColor() : 0x4b7ea331;
   set_code_group_state("show_crosshair", show_crosshair ? ModState::ENABLED : ModState::DISABLED);
   LOOKUP(crosshair_color);
-  if (show_crosshair) {
-    write32(crosshair_color_rgba, crosshair_color);
-  }
+  write32(crosshair_color_rgba, crosshair_color);
 
   LOOKUP_DYN(player);
   if (player == 0) {
@@ -471,7 +469,7 @@ void FpsControls::run_mod_mp2(Region region) {
 
   // Is beam/visor menu showing on screen
   LOOKUP_DYN(beamvisor_menu_state);
-  bool beamvisor_menu = read32(beamvisor_menu_state) == 1;
+  bool beamvisor_menu = beamvisor_menu_state != 0 && read32(beamvisor_menu_state) == 1;
 
   // Allows freelook in grapple, otherwise we are orbiting (locked on) to something
   LOOKUP_DYN(orbit_state);
@@ -572,7 +570,7 @@ void FpsControls::run_mod_mp2_gc(Region region) {
   set_code_group_state("show_crosshair", show_crosshair ? ModState::ENABLED : ModState::DISABLED);
   LOOKUP(tweakgui_offset);
   const u32 tweakgui_ptr = read32(Core::System::GetInstance().GetPPCState().gpr[13] + tweakgui_offset);
-  if (show_crosshair && mem_check(tweakgui_ptr)) {
+  if (mem_check(tweakgui_ptr)) {
     const u32 tweakgui_addr = read32(tweakgui_ptr);
     if (mem_check(tweakgui_addr)) {
       write32(crosshair_color_rgba, tweakgui_addr + 0x268);
@@ -769,7 +767,7 @@ void FpsControls::run_mod_mp3(Game active_game, Region active_region) {
   LOOKUP_DYN(beamvisor_menu_state);
   LOOKUP_DYN(lockon_type);
   LOOKUP(lockon_state);
-  const bool beamvisor_menu = read32(beamvisor_menu_state) == 3;
+  const bool beamvisor_menu = beamvisor_menu_state != 0 && read32(beamvisor_menu_state) == 3;
   if ((read32(lockon_type) == 0 && read8(lockon_state)) ||
       read32(lockon_type) == 1 || beamvisor_menu) {
     update_pitchyaw_locked();
@@ -821,7 +819,7 @@ void FpsControls::run_mod_mp3(Game active_game, Region active_region) {
   }
 
   LOOKUP_DYN(control_state);
-  if (read32(control_state) != 1) {
+  if (control_state == 0 || read32(control_state) != 1) {
     return;
   }
 

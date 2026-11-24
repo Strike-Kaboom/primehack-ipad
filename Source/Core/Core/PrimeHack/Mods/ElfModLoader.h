@@ -103,31 +103,31 @@ private:
   // +----------+ -> 0x82000000 = tr_table_base + 0x400 * 0x8
 
   struct CallgateData {
-    u32 state_free_idx;
-    u32 cl_free_idx;
-    u32 cg_free_idx;
-    u32 dp_free_idx;
-    u32 tr_free_idx;
+    u32 state_free_idx = 0;
+    u32 cl_free_idx = 0;
+    u32 cg_free_idx = 0;
+    u32 dp_free_idx = 0;
+    u32 tr_free_idx = 0;
 
     // Starting word of the callgate region. Should be equal to 0xea7f00d5
-    u32 sentinel_base;
+    u32 sentinel_base = 0;
     // Entrypoint of the dispatcher stub
-    u32 dispatcher_base;
+    u32 dispatcher_base = 0;
     // Entrypoint of the cleanup stub
-    u32 cleanup_base;
+    u32 cleanup_base = 0;
     // Nullsub for mods which don't define a mod_fini
-    u32 fini_nullsub_base;
+    u32 fini_nullsub_base = 0;
     // Start of the mod state table
-    u32 state_table_base;
+    u32 state_table_base = 0;
     // CLeanup table base
-    u32 cl_table_base;
+    u32 cl_table_base = 0;
     // CallGate table base
-    u32 cg_table_base;
+    u32 cg_table_base = 0;
     // DisPatch table base
-    u32 dp_table_base;
+    u32 dp_table_base = 0;
     // TRampoline table base
-    u32 tr_table_base;
-    bool valid;
+    u32 tr_table_base = 0;
+    bool valid = false;
 
     void reset() { valid = false; }
     void remap();

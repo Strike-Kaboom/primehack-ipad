@@ -102,8 +102,14 @@ static bool StateOperationAllowed(Core::System& system, const char* operation)
 static std::atomic<uint64_t> s_stateSessionIdentifier{1};
 static uint64_t CurrentStateSessionIdentifier() {
   static const auto hook = Core::AddOnStateChangedCallback([](Core::State state) {
-    if (state == Core::State::Starting || state == Core::State::Stopping || state == Core::State::Uninitialized)
+    if (state == Core::State::Starting || state == Core::State::Stopping || state == Core::State::Uninitialized) {
       s_stateSessionIdentifier.fetch_add(1);
+      if (state == Core::State::Stopping || state == Core::State::Uninitialized) {
+        g_isFastForwarding = false;
+        g_fastForwardOriginalSpeed = 1.0f;
+        Core::SetIsThrottlerTempDisabled(false);
+      }
+    }
   });
   (void)hook;
   return s_stateSessionIdentifier.load();
@@ -176,6 +182,9 @@ static bool IsHistoryPathForGame(NSString* path, NSString* gameID) {
 }
 
 + (void)stopWithoutSaving {
+  g_isFastForwarding = false;
+  g_fastForwardOriginalSpeed = 1.0f;
+  Core::SetIsThrottlerTempDisabled(false);
   [BootWatchdog clear];
   Host_Message(HostMessageID::WMUserStop);
 }
@@ -297,15 +306,22 @@ static void RunPauseRequestAsync(Core::State from, Core::State to) {
 }
 
 + (void)resetSystem {
-  auto& system = Core::System::GetInstance();
-  // A game can be booted but Paused (e.g. from the pause menu), not just Running.
-  // Guard on "no game booted at all" instead of "not currently Running", otherwise
-  // Reset System silently no-ops whenever it's invoked from the pause menu.
-  if (Core::IsUninitialized(system))
-    return;
-  system.GetProcessorInterface().ResetButton_Tap();
-  BumpPauseGenerationSync();
-  Core::SetState(system, Core::State::Running);
+  const uint64_t generation = s_pauseRequestGeneration.fetch_add(1) + 1;
+  DOLHostQueueRunAsync(^{
+    std::lock_guard<std::mutex> lock(s_pauseRequestMutex);
+    auto& system = Core::System::GetInstance();
+    // A game can be booted but Paused (e.g. from the pause menu), not just Running.
+    // Guard on "no game booted at all" instead of "not currently Running", otherwise
+    // Reset System silently no-ops whenever it's invoked from the pause menu.
+    if (!Core::IsUninitialized(system)) {
+      system.GetProcessorInterface().ResetButton_Tap();
+      if (generation == s_pauseRequestGeneration.load() &&
+          Core::GetState(system) == Core::State::Paused) {
+        Core::SetState(system, Core::State::Running);
+      }
+    }
+    SettlePauseGeneration(generation);
+  });
 }
 
 + (BOOL)isPaused {
@@ -517,21 +533,43 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
 }
 
 + (BOOL)saveResumeStateKeepingGameRunning {
+  return [self saveResumeStateKeepingGameRunningWithSnapshotSignal:nil shouldCancel:nil];
+}
+
++ (BOOL)saveResumeStateKeepingGameRunningWithSnapshotSignal:(nullable void (^)(void))onSnapshotCaptured
+                                               shouldCancel:(nullable BOOL (^)(void))shouldCancel {
+  auto signalOnce = [signaled = false, block = [onSnapshotCaptured copy]]() mutable {
+    if (!signaled) {
+      signaled = true;
+      if (block)
+        block();
+    }
+  };
   auto& system = Core::System::GetInstance();
   // Checked before the CPU lock too: with no game, backgrounding the library must cost nothing.
-  if (![[NSUserDefaults standardUserDefaults] boolForKey:kResumeWhereLeftOffDefaultsKey] || !Core::IsRunning(system))
+  if ((shouldCancel && shouldCancel()) ||
+      ![[NSUserDefaults standardUserDefaults] boolForKey:kResumeWhereLeftOffDefaultsKey] ||
+      !Core::IsRunning(system)) {
+    signalOnce();
     return NO;
+  }
   std::future<bool> completion;
   {
     const Core::CPUThreadGuard guard(system);
-    if (!Core::IsRunning(system) || s_resumeSettledSession.load() != CurrentStateSessionIdentifier())
+    if ((shouldCancel && shouldCancel()) || !Core::IsRunning(system) ||
+        s_resumeSettledSession.load() != CurrentStateSessionIdentifier()) {
+      signalOnce();
       return NO;
+    }
     NSString* autoPath = [self autoStateFilePath];
-    if (autoPath.length == 0)
+    if (autoPath.length == 0) {
+      signalOnce();
       return NO;
+    }
     completion = State::SaveAsWithResult(system, std::string(autoPath.fileSystemRepresentation));
-  } // The snapshot is captured; waiting for the disk never holds the CPU lock.
-  return completion.get();
+  } // The CPU/Metal snapshot is captured; waiting for LZ4 + disk never holds the CPU lock.
+  signalOnce();
+  return completion.valid() ? completion.get() : NO;
 }
 
 + (void)loadStateFromPath:(NSString*)path {
@@ -681,6 +719,8 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
 
 // Fast-forward (configurable speed multiplier)
 + (BOOL)toggleFastForward {
+  // Ensure the session state-change hook is installed so fast-forward always resets on stop.
+  (void)CurrentStateSessionIdentifier();
   if (!g_isFastForwarding) {
     // Store original speed and enable fast forward
     g_fastForwardOriginalSpeed = Config::Get(Config::MAIN_EMULATION_SPEED);
