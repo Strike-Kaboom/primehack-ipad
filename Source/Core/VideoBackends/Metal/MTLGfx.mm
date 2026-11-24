@@ -25,6 +25,7 @@
 #include "VideoCommon/Present.h"
 #include "VideoCommon/VideoBackendBase.h"
 
+#include <algorithm>
 #include <atomic>
 #include <fstream>
 

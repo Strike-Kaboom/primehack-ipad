@@ -42,7 +42,7 @@ final class ControllerFocusCoordinator: ObservableObject {
   ///
   /// Raw `GCController` handlers are invoked on GameController's own queue, not
   /// the main actor, so they cannot touch `activeScope` directly.
-  private static let activeScopeLock = OSAllocatedUnfairLock<UUID?>(initialState: nil)
+  private nonisolated static let activeScopeLock = OSAllocatedUnfairLock<UUID?>(initialState: nil)
 
   /// Main-actor-free scope check for raw controller handlers.
   nonisolated static func isActiveScope(_ id: UUID) -> Bool {

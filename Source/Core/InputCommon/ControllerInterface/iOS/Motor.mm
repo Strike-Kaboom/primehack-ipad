@@ -191,11 +191,13 @@ float RumbleStrength()
       if (!_on || !_player || !_started)
       {
         _on = false;
+        _appliedStrength = -1.0f;
         return;
       }
       NSError* error = nil;
       [_player stopAtTime:CHHapticTimeImmediate error:&error];
       _on = false;
+      _appliedStrength = -1.0f;
       return;
     }
 
@@ -212,6 +214,17 @@ float RumbleStrength()
       _started = true;
     }
 
+    if (!_on)
+    {
+      if (![_player startAtTime:CHHapticTimeImmediate error:&error])
+      {
+        _started = false;
+        _appliedStrength = -1.0f;
+        return;
+      }
+      _on = true;
+    }
+
     if (std::fabs(_appliedStrength - strength) > 0.01f)
     {
       CHHapticDynamicParameter* param = [[CHHapticDynamicParameter alloc]
@@ -220,15 +233,9 @@ float RumbleStrength()
                  relativeTime:0.0f];
       if ([_player sendParameters:@[ param ] atTime:CHHapticTimeImmediate error:&error])
         _appliedStrength = strength;
+      else
+        _appliedStrength = -1.0f;
     }
-
-    if (_on)
-      return;
-
-    if ([_player startAtTime:CHHapticTimeImmediate error:&error])
-      _on = true;
-    else
-      _started = false;
   }
 }
 @end
@@ -497,26 +504,6 @@ void Motor::State::ApplyOnQueue()
       needs_retry.store(false, std::memory_order_release);
     }
 
-    if (haptic_player && want_controller && std::fabs(applied_strength - want_strength) > 0.01f)
-    {
-      NSError* param_error = nil;
-      CHHapticDynamicParameter* intensity_control = [[CHHapticDynamicParameter alloc]
-          initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
-                        value:want_strength
-                 relativeTime:0.0f];
-      if ([haptic_player sendParameters:@[ intensity_control ]
-                                 atTime:CHHapticTimeImmediate
-                                  error:&param_error])
-      {
-        applied_strength = want_strength;
-      }
-      else
-      {
-        recreate_player = true;
-        MOTOR_ERROR_LOG("Motor failed to update rumble strength: {}", param_error);
-      }
-    }
-
     if (haptic_player && applied_controller_on != want_controller)
     {
       NSError* error = nil;
@@ -526,11 +513,14 @@ void Motor::State::ApplyOnQueue()
       if (result)
       {
         applied_controller_on = want_controller;
+        if (!want_controller)
+          applied_strength = -1.0f;
         needs_retry.store(false, std::memory_order_release);
       }
       else
       {
         recreate_player = true;
+        applied_strength = -1.0f;
         if (want_controller)
         {
           applied_controller_on.reset();
@@ -549,6 +539,29 @@ void Motor::State::ApplyOnQueue()
             applied_controller_on = false;
         }
         MOTOR_ERROR_LOG("Motor failed to start/stop haptics: {}", error);
+      }
+    }
+
+    if (haptic_player && applied_controller_on == true &&
+        std::fabs(applied_strength - want_strength) > 0.01f)
+    {
+      NSError* param_error = nil;
+      CHHapticDynamicParameter* intensity_control = [[CHHapticDynamicParameter alloc]
+          initWithParameterID:CHHapticDynamicParameterIDHapticIntensityControl
+                        value:want_strength
+                 relativeTime:0.0f];
+      if ([haptic_player sendParameters:@[ intensity_control ]
+                                 atTime:CHHapticTimeImmediate
+                                  error:&param_error])
+      {
+        applied_strength = want_strength;
+      }
+      else
+      {
+        recreate_player = true;
+        applied_strength = -1.0f;
+        needs_retry.store(true, std::memory_order_release);
+        MOTOR_ERROR_LOG("Motor failed to update rumble strength: {}", param_error);
       }
     }
 

@@ -841,7 +841,7 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
   const uint64_t generation = _acGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   Core::QueueHostJob([self, generation, gameIDCopy, seedCPU, seedVI, hasSeedCPU](Core::System& s) {
     if (generation != self->_acGeneration.load(std::memory_order_acquire)) return;
-    if (Core::GetState(s) != Core::State::Running) return;
+    if (!Core::IsRunning(s)) return;
 
     // Start BOTH levers at native (1.0), NOT the current Config value. The per-game seed below
     // overrides these if we've already converged for this title.
@@ -1459,7 +1459,7 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
     if (on) {
       [self startAdaptiveClockIfEnabled];
     } else {
-      _acGeneration.fetch_add(1, std::memory_order_acq_rel);
+      const uint64_t offGen = _acGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
       if (_adaptiveClockTimer) {
         dispatch_source_cancel(_adaptiveClockTimer);
         _adaptiveClockTimer = nil;
@@ -1470,7 +1470,8 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
       // Clear the four CurrentRun keys the controller sets (CPU + VI clock + their enables). The
       // controller writes only the CurrentRun layer (never Base/Dolphin.ini), so deleting these keys
       // restores whatever the user set manually (Base) or the 1.0 default — no override left stuck.
-      Core::QueueHostJob([self](Core::System&) {
+      Core::QueueHostJob([self, offGen](Core::System&) {
+        if (offGen != self->_acGeneration.load(std::memory_order_acquire)) return;
         self->_adaptiveGameID = nil;
         if (Config::GetLayer(Config::LayerType::CurrentRun)) {
           Config::DeleteKey(Config::LayerType::CurrentRun, Config::MAIN_OVERCLOCK);

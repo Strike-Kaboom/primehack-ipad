@@ -3710,7 +3710,8 @@ inline bool CI_MicroMemAccess(PowerPC::PowerPCState& ppc_state, const MicroOpPay
       return false;
     const bool single = m.rc != 0;
     const UGQR gqr(ppc_state.spr[SPR_GQR0 + m.rb]);
-    const EQuantizeType type = (kind == CIMemKind::PSQL) ? gqr.ld_type : gqr.st_type;
+    const EQuantizeType type =
+        (kind == CIMemKind::PSQL) ? gqr.ld_type.Value() : gqr.st_type.Value();
     const u32 offset = ea & CI_PAGE_OFFSET_MASK;
     if (type == QUANTIZE_FLOAT) [[likely]]
     {

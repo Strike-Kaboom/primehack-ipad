@@ -140,7 +140,8 @@ void MemoryCard::FlushNow()
     return;
   if (!m_dirty.TestAndClear())
     return;
-  WriteToDisk();
+  if (!WriteToDisk())
+    m_dirty.Set();
 }
 
 void MemoryCard::FlushThread()
