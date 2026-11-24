@@ -327,7 +327,7 @@ AbstractTexture* FramebufferManager::ResolveEFBColorTexture(const MathUtil::Rect
   clamped_region.ClampUL(0, 0, GetEFBWidth(), GetEFBHeight());
 
   // Try compute fast-path resolve for RGBA8 when enabled (iCube native-Metal moat).
-  if (Config::Get(Config::GFX_USE_COMPUTE_EFBXFB) &&
+  if (g_ActiveConfig.bUseComputeEFBXFB &&
       m_efb_color_texture->GetFormat() == AbstractTextureFormat::RGBA8 &&
       m_efb_resolve_color_texture->GetFormat() == AbstractTextureFormat::RGBA8)
   {
@@ -384,7 +384,7 @@ AbstractTexture* FramebufferManager::ResolveEFBDepthTexture(const MathUtil::Rect
   // TryComputeResolveDepth self-guards on a multisampled source and returns false otherwise.
   // (2512 moved the fallback path's FinishedRendering() after BeginUtilityDrawing(); the compute
   // path keeps its own call because it never enters utility drawing.)
-  if (Config::Get(Config::GFX_USE_COMPUTE_EFBXFB) &&
+  if (g_ActiveConfig.bUseComputeEFBXFB &&
       m_efb_depth_texture->GetFormat() == AbstractTextureFormat::D32F &&
       m_efb_depth_resolve_texture->GetFormat() == AbstractTextureFormat::D32F)
   {
@@ -419,7 +419,7 @@ bool FramebufferManager::ReinterpretPixelData(EFBReinterpretType convtype)
     return false;
 
   // Compute fast-path for simple RGBA8 blit (no scaling) when enabled (iCube native-Metal moat).
-  if (Config::Get(Config::GFX_USE_COMPUTE_EFBXFB) &&
+  if (g_ActiveConfig.bUseComputeEFBXFB &&
       m_efb_color_texture->GetFormat() == AbstractTextureFormat::RGBA8 &&
       m_efb_convert_color_texture->GetFormat() == AbstractTextureFormat::RGBA8)
   {

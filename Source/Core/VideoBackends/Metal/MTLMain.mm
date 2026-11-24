@@ -96,8 +96,8 @@ bool Metal::VideoBackend::Initialize(const WindowSystemInfo& wsi)
     MRCOwned<id<MTLDevice>> adapter = std::move(devs[selected_adapter_index]);
     Util::PopulateBackendInfoFeatures(g_Config, &g_backend_info, adapter);
 
-#if TARGET_OS_OSX
-// This should be available on all macOS 13.3+ systems – but when using OCLP drivers, some devices
+#if TARGET_OS_OSX || TARGET_OS_IOS || TARGET_OS_TV
+// This should be available on all macOS 13.3+ / iOS 16.4+ systems – but when using OCLP drivers, some devices
 // fail with "Unrecognized selector -[MTLIGAccelDevice setShouldMaximizeConcurrentCompilation:]"
 //
 // This concerns Intel Ivy Bridge, Haswell and Nvidia Kepler on macOS 13.3 or newer.

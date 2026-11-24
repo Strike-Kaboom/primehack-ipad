@@ -418,6 +418,7 @@ CustomAssetLibrary::LoadInfo DirectFilesystemAssetLibrary::LoadTexture(const Ass
 void DirectFilesystemAssetLibrary::SetAssetIDMapData(const AssetID& asset_id,
                                                      VideoCommon::Assets::AssetMap asset_path_map)
 {
+#ifndef IPHONEOS
   VideoCommon::Assets::AssetMap previous_asset_map;
   {
     std::lock_guard lk(m_asset_map_lock);
@@ -436,6 +437,7 @@ void DirectFilesystemAssetLibrary::SetAssetIDMapData(const AssetID& asset_id,
       m_path_to_asset_id[PathToString(path)] = asset_id;
     }
   }
+#endif
 
   {
     std::lock_guard lk(m_asset_map_lock);

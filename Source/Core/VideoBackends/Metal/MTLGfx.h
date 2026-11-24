@@ -114,9 +114,16 @@ private:
 
   // Cached compute pipelines for the EFB/XFB acceleration path (lazily created on first use).
   std::unique_ptr<AbstractShader> m_rgba8_blit_cs;
+  std::unique_ptr<AbstractShader> m_rgba8_resolve_ms_cs;
+  std::unique_ptr<AbstractShader> m_depth_resolve_ms_cs;
   std::unique_ptr<AbstractShader> m_rgba8_scale_cs;
   std::unique_ptr<AbstractShader> m_rgba8_down2x_cs;
   std::unique_ptr<AbstractShader> m_rgba8_gamma_cs;
+
+  // Offscreen post-processing scratch targets (MRC-owned so shutdown/resize never leaks).
+  MRCOwned<id<MTLTexture>> m_post_offscreen;
+  MRCOwned<id<MTLTexture>> m_post_src;
+  bool m_rendered_to_offscreen = false;
 
   void CheckForSurfaceChange();
   void CheckForSurfaceResize();

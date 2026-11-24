@@ -14,7 +14,11 @@ namespace VideoCommon
 {
 void CustomAssetLoader::Initialize()
 {
+#ifdef IPHONEOS
+  ResizeWorkerThreads(4);
+#else
   ResizeWorkerThreads(2);
+#endif
 }
 
 void CustomAssetLoader::Shutdown()

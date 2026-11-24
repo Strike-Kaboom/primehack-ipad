@@ -294,6 +294,8 @@ struct VideoConfig final
   // iCube (jitless): offload bulk vertex decode to a Metal compute kernel. Default off; CPU loader
   // path is used unchanged when off, and as a fallback for unsupported formats / live caches.
   bool bComputeVertexDecode = false;
+  // PrimeHack for iPad: cached GFX_USE_COMPUTE_EFBXFB so per-frame EFB/XFB paths avoid Config::Get.
+  bool bUseComputeEFBXFB = false;
 
   bool bEFBEmulateFormatChanges = false;
   bool bSkipEFBCopyToRam = false;

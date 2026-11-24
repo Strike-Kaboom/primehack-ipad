@@ -320,49 +320,55 @@ void Metal::StateTracker::BeginRenderPass(MTLLoadAction load_action)
 
 void Metal::StateTracker::BeginRenderPass(MTLRenderPassDescriptor* descriptor)
 {
-  EndRenderPass();
-  if (m_current_perf_query)
-    [descriptor setVisibilityResultBuffer:m_current_perf_query->buffer];
-  m_current_render_encoder =
-      MRCRetain([GetRenderCmdBuf() renderCommandEncoderWithDescriptor:descriptor]);
-  if (m_current_perf_query)
-    [descriptor setVisibilityResultBuffer:nil];
-  if (m_manual_buffer_upload)
-    [m_current_render_encoder waitForFence:m_fence beforeStages:MTLRenderStageVertex];
-  AbstractTexture* attachment = m_current_framebuffer->GetColorAttachment();
-  if (!attachment)
-    attachment = m_current_framebuffer->GetDepthAttachment();
-  static_assert(std::is_trivially_copyable<decltype(m_current)>::value,
-                "Make sure we can memset this");
-  memset(&m_current, 0, sizeof(m_current));
-  m_current.width = attachment->GetWidth();
-  m_current.height = attachment->GetHeight();
-  m_current.scissor_rect = MathUtil::Rectangle<int>(0, 0, m_current.width, m_current.height);
-  m_current.viewport = {
-      0.f, 0.f, static_cast<float>(m_current.width), static_cast<float>(m_current.height),
-      0.f, 1.f};
-  m_current.depth_stencil = DepthStencilSelector(false, CompareMode::Always);
-  m_current.depth_clip_mode = MTLDepthClipModeClip;
-  m_current.cull_mode = MTLCullModeNone;
-  m_current.perf_query_group = static_cast<PerfQueryGroup>(-1);
-  m_flags.NewEncoder();
-  m_dirty_samplers = (1 << MAX_SAMPLERS) - 1;
-  m_dirty_textures = (1 << MAX_TEXTURES) - 1;
-  CheckScissor();
-  CheckViewport();
-  ASSERT_MSG(VIDEO, m_current_render_encoder, "Failed to create render encoder!");
+  @autoreleasepool
+  {
+    EndRenderPass();
+    if (m_current_perf_query)
+      [descriptor setVisibilityResultBuffer:m_current_perf_query->buffer];
+    m_current_render_encoder =
+        MRCRetain([GetRenderCmdBuf() renderCommandEncoderWithDescriptor:descriptor]);
+    if (m_current_perf_query)
+      [descriptor setVisibilityResultBuffer:nil];
+    if (m_manual_buffer_upload)
+      [m_current_render_encoder waitForFence:m_fence beforeStages:MTLRenderStageVertex];
+    AbstractTexture* attachment = m_current_framebuffer->GetColorAttachment();
+    if (!attachment)
+      attachment = m_current_framebuffer->GetDepthAttachment();
+    static_assert(std::is_trivially_copyable<decltype(m_current)>::value,
+                  "Make sure we can memset this");
+    memset(&m_current, 0, sizeof(m_current));
+    m_current.width = attachment->GetWidth();
+    m_current.height = attachment->GetHeight();
+    m_current.scissor_rect = MathUtil::Rectangle<int>(0, 0, m_current.width, m_current.height);
+    m_current.viewport = {
+        0.f, 0.f, static_cast<float>(m_current.width), static_cast<float>(m_current.height),
+        0.f, 1.f};
+    m_current.depth_stencil = DepthStencilSelector(false, CompareMode::Always);
+    m_current.depth_clip_mode = MTLDepthClipModeClip;
+    m_current.cull_mode = MTLCullModeNone;
+    m_current.perf_query_group = static_cast<PerfQueryGroup>(-1);
+    m_flags.NewEncoder();
+    m_dirty_samplers = (1 << MAX_SAMPLERS) - 1;
+    m_dirty_textures = (1 << MAX_TEXTURES) - 1;
+    CheckScissor();
+    CheckViewport();
+    ASSERT_MSG(VIDEO, m_current_render_encoder, "Failed to create render encoder!");
+  }
 }
 
 void Metal::StateTracker::BeginComputePass()
 {
-  EndRenderPass();
-  m_current_compute_encoder = MRCRetain([GetRenderCmdBuf() computeCommandEncoder]);
-  [m_current_compute_encoder setLabel:@"Compute"];
-  if (m_manual_buffer_upload)
-    [m_current_compute_encoder waitForFence:m_fence];
-  m_flags.NewEncoder();
-  m_dirty_samplers = (1 << MAX_SAMPLERS) - 1;
-  m_dirty_textures = (1 << MAX_TEXTURES) - 1;
+  @autoreleasepool
+  {
+    EndRenderPass();
+    m_current_compute_encoder = MRCRetain([GetRenderCmdBuf() computeCommandEncoder]);
+    [m_current_compute_encoder setLabel:@"Compute"];
+    if (m_manual_buffer_upload)
+      [m_current_compute_encoder waitForFence:m_fence];
+    m_flags.NewEncoder();
+    m_dirty_samplers = (1 << MAX_SAMPLERS) - 1;
+    m_dirty_textures = (1 << MAX_TEXTURES) - 1;
+  }
 }
 
 void Metal::StateTracker::EndRenderPass()

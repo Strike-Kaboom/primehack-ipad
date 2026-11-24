@@ -17,6 +17,7 @@
 #include "Common/Logging/Log.h"              // iCube: ERROR_LOG_FMT for the texture-size guard
 #include "Common/StallSignpost.h"            // iCube: ICUBE_STALL_POINT
 #include "Core/Config/GraphicsSettings.h"    // iCube FastMath: GFX_HACK_FAST_MATH
+#include "Core/Core.h"                       // PrimeHack for iPad: fast-forward throttler check
 #include "Core/System.h"                     // iCube: GPU frame times -> PerformanceMetrics
 
 #include "VideoCommon/FramebufferManager.h"
@@ -59,35 +60,74 @@ std::atomic<u64> s_gpu_ns{0};
 std::atomic<u64> s_upscale_ns{0};
 u32 s_gpu_time_presents = 0;  // Presenting thread only.
 std::atomic<bool> s_shader_post_enabled{false};
+std::atomic<int> s_frame_cap{0};
 
-void RefreshShaderPostEnabled()
+void RefreshMetalUserDefaults()
 {
   @try
   {
-    s_shader_post_enabled.store(
-        [[NSUserDefaults standardUserDefaults] boolForKey:@"shader_enabled"],
-        std::memory_order_relaxed);
+    NSUserDefaults* defaults = [NSUserDefaults standardUserDefaults];
+    s_shader_post_enabled.store([defaults boolForKey:@"shader_enabled"], std::memory_order_relaxed);
+    s_frame_cap.store(static_cast<int>([defaults integerForKey:@"ui_frame_cap"]),
+                      std::memory_order_relaxed);
   }
   @catch (...)
   {
     s_shader_post_enabled.store(false, std::memory_order_relaxed);
+    s_frame_cap.store(0, std::memory_order_relaxed);
   }
 }
 
-bool IsShaderPostEnabled()
+void EnsureMetalDefaultsObserver()
 {
   static dispatch_once_t s_once;
   dispatch_once(&s_once, ^{
-    RefreshShaderPostEnabled();
+    RefreshMetalUserDefaults();
     [[NSNotificationCenter defaultCenter]
         addObserverForName:NSUserDefaultsDidChangeNotification
                     object:nil
                      queue:nil
                 usingBlock:^(NSNotification*) {
-                  RefreshShaderPostEnabled();
+                  RefreshMetalUserDefaults();
                 }];
   });
+}
+
+bool IsShaderPostEnabled()
+{
+  EnsureMetalDefaultsObserver();
   return s_shader_post_enabled.load(std::memory_order_relaxed);
+}
+
+int GetUserFrameCap()
+{
+  EnsureMetalDefaultsObserver();
+  return s_frame_cap.load(std::memory_order_relaxed);
+}
+
+id GetShaderPostProcessor()
+{
+  static id s_processor = nil;
+  static dispatch_once_t s_once;
+  dispatch_once(&s_once, ^{
+    Class shader_class = NSClassFromString(@"DOLShaderPostProcessor");
+    if (!shader_class)
+    {
+      NSString* module = [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"];
+      if (module && [module isKindOfClass:[NSString class]])
+      {
+        NSString* qualified =
+            [NSString stringWithFormat:@"%@.%@", module, @"DOLShaderPostProcessor"];
+        shader_class = NSClassFromString(qualified);
+      }
+    }
+    if (shader_class && [shader_class respondsToSelector:@selector(shared)])
+    {
+      s_processor = ((id (*)(id, SEL))[shader_class methodForSelector:@selector(shared)])(
+          shader_class, @selector(shared));
+    }
+  });
+  return s_processor;
 }
 
 void ReportGPUTimes()
@@ -346,7 +386,8 @@ std::unique_ptr<AbstractShader> Metal::Gfx::CreateShaderFromMSL(ShaderStage stag
     if (stage == ShaderStage::Compute)
     {
       MTLComputePipelineReflection* reflection = nullptr;
-      auto desc = [MTLComputePipelineDescriptor new];
+      MRCOwned<MTLComputePipelineDescriptor*> desc =
+          MRCTransfer([MTLComputePipelineDescriptor new]);
       [desc setComputeFunction:fn];
       [desc setLabel:[fn label]];
       MRCOwned<id<MTLComputePipelineState>> pipeline =
@@ -542,30 +583,21 @@ void Metal::Gfx::SetViewport(float x, float y, float width, float height, float 
 
 void Metal::Gfx::Draw(u32 base_vertex, u32 num_vertices)
 {
-  @autoreleasepool
-  {
-    g_state_tracker->Draw(base_vertex, num_vertices);
-  }
+  g_state_tracker->Draw(base_vertex, num_vertices);
 }
 
 void Metal::Gfx::DrawIndexed(u32 base_index, u32 num_indices, u32 base_vertex)
 {
-  @autoreleasepool
-  {
-    g_state_tracker->DrawIndexed(base_index, num_indices, base_vertex);
-  }
+  g_state_tracker->DrawIndexed(base_index, num_indices, base_vertex);
 }
 
 void Metal::Gfx::DispatchComputeShader(const AbstractShader* shader,  //
                                        u32 groupsize_x, u32 groupsize_y, u32 groupsize_z,
                                        u32 groups_x, u32 groups_y, u32 groups_z)
 {
-  @autoreleasepool
-  {
-    g_state_tracker->SetPipeline(static_cast<const ComputePipeline*>(shader));
-    g_state_tracker->DispatchComputeShader(groupsize_x, groupsize_y, groupsize_z,  //
-                                           groups_x, groups_y, groups_z);
-  }
+  g_state_tracker->SetPipeline(static_cast<const ComputePipeline*>(shader));
+  g_state_tracker->DispatchComputeShader(groupsize_x, groupsize_y, groupsize_z,  //
+                                         groups_x, groups_y, groups_z);
 }
 
 bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
@@ -576,11 +608,13 @@ bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
     CheckForSurfaceResize();
     CAMetalLayer* layer = m_layer;
     id<CAMetalDrawable> next = [layer nextDrawable];
-    if (!next && g_ActiveConfig.bAsyncPresent)
+    if (!next)
     {
-      // No drawable ready: skip this frame rather than stall the CPU thread.
-      // Instruments marker so present-side frame skips line up against CPU-thread stalls.
-      ICUBE_STALL_POINT("present.frameskip", 0);
+      // No drawable ready (async present skip, backgrounding, or 1s timeout): skip this frame
+      // rather than binding a nil texture to the render pass descriptor.
+      if (g_ActiveConfig.bAsyncPresent)
+        ICUBE_STALL_POINT("present.frameskip", 0);
+      m_rendered_to_offscreen = false;
       return false;
     }
     m_drawable = MRCRetain(next);
@@ -588,35 +622,45 @@ bool Metal::Gfx::BindBackbuffer(const ClearColor& clear_color)
     // target so the shader chain has a clean (non-drawable) texture to sample, then
     // composite into the drawable at present time (see PresentBackbuffer). Without this,
     // the chain would sample the live drawable it is about to write into, producing a
-    // broken/hazarded image. This is the invasive routing the 2509 rebase dropped.
+    // broken/hazarded image.
     const bool use_post = IsShaderPostEnabled();
     if (use_post)
     {
       id<MTLTexture> draw_tex = [m_drawable texture];
-      MTLTextureDescriptor* desc =
-          [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:draw_tex.pixelFormat
-                                                             width:draw_tex.width
-                                                            height:draw_tex.height
-                                                         mipmapped:NO];
-      desc.storageMode = MTLStorageModePrivate;
-#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140000
-      desc.usage =
-          MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | (MTLTextureUsage)(1 << 3);
-#else
-      desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
-#endif
-      static id<MTLTexture> s_offscreen = nil;
-      if (s_offscreen == nil || s_offscreen.width != draw_tex.width ||
-          s_offscreen.height != draw_tex.height || s_offscreen.pixelFormat != draw_tex.pixelFormat)
+      if (!m_post_offscreen || [m_post_offscreen width] != draw_tex.width ||
+          [m_post_offscreen height] != draw_tex.height ||
+          [m_post_offscreen pixelFormat] != draw_tex.pixelFormat)
       {
-        s_offscreen = [g_device newTextureWithDescriptor:desc];
-        [s_offscreen setLabel:@"Dolphin Offscreen Color for PostProcess"];
+        MTLTextureDescriptor* desc =
+            [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:draw_tex.pixelFormat
+                                                               width:draw_tex.width
+                                                              height:draw_tex.height
+                                                           mipmapped:NO];
+        desc.storageMode = MTLStorageModePrivate;
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140000
+        desc.usage =
+            MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead | (MTLTextureUsage)(1 << 3);
+#else
+        desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
+#endif
+        m_post_offscreen = MRCTransfer([g_device newTextureWithDescriptor:desc]);
+        [m_post_offscreen setLabel:@"Dolphin Offscreen Color for PostProcess"];
       }
-      m_backbuffer->UpdateBackbufferTexture(s_offscreen);
+      if (m_post_offscreen)
+      {
+        m_backbuffer->UpdateBackbufferTexture(m_post_offscreen);
+        m_rendered_to_offscreen = true;
+      }
+      else
+      {
+        m_backbuffer->UpdateBackbufferTexture(draw_tex);
+        m_rendered_to_offscreen = false;
+      }
     }
     else
     {
       m_backbuffer->UpdateBackbufferTexture([m_drawable texture]);
+      m_rendered_to_offscreen = false;
     }
     SetAndClearFramebuffer(m_backbuffer.get(), clear_color);
     return m_drawable != nullptr;
@@ -660,80 +704,74 @@ void Metal::Gfx::PresentBackbuffer()
         id<MTLTexture> source = [m_backbuffer->PassDesc() colorAttachments][0].texture;
         id<MTLTexture> dst = [m_drawable texture];
 
-        static id<MTLTexture> s_post_src = nil;
         if (source && cb)
         {
-          if (s_post_src == nil || s_post_src.width != source.width ||
-              s_post_src.height != source.height || s_post_src.pixelFormat != source.pixelFormat)
+          // m_post_offscreen already has ShaderRead usage and is distinct from dst; only blit to a
+          // scratch texture on the rare frame where shaders were toggled on between Bind and Present.
+          id<MTLTexture> post_input = source;
+          if (!m_rendered_to_offscreen || source == dst)
           {
-            MTLTextureDescriptor* desc =
-                [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
-                                                                   width:source.width
-                                                                  height:source.height
-                                                               mipmapped:NO];
-            desc.storageMode = MTLStorageModePrivate;
-#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140000
-            desc.usage = MTLTextureUsageShaderRead | (MTLTextureUsage)(1 << 3);
-#else
-            desc.usage = MTLTextureUsageShaderRead;
-#endif
-            s_post_src = [g_device newTextureWithDescriptor:desc];
-            [s_post_src setLabel:@"Dolphin Post Source Blit"];
-          }
-
-          id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
-          if (blit)
-          {
-            [blit copyFromTexture:source
-                      sourceSlice:0
-                      sourceLevel:0
-                     sourceOrigin:MTLOriginMake(0, 0, 0)
-                       sourceSize:MTLSizeMake(source.width, source.height, 1)
-                        toTexture:s_post_src
-                 destinationSlice:0
-                 destinationLevel:0
-                destinationOrigin:MTLOriginMake(0, 0, 0)];
-            [blit endEncoding];
-          }
-
-          Class shader_class = NSClassFromString(@"DOLShaderPostProcessor");
-          if (!shader_class)
-          {
-            NSString* module =
-                [[NSBundle mainBundle] objectForInfoDictionaryKey:@"CFBundleName"];
-            if (module && [module isKindOfClass:[NSString class]])
+            if (!m_post_src || [m_post_src width] != source.width ||
+                [m_post_src height] != source.height ||
+                [m_post_src pixelFormat] != source.pixelFormat)
             {
-              NSString* qualified =
-                  [NSString stringWithFormat:@"%@.%@", module, @"DOLShaderPostProcessor"];
-              shader_class = NSClassFromString(qualified);
+              MTLTextureDescriptor* desc =
+                  [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:source.pixelFormat
+                                                                     width:source.width
+                                                                    height:source.height
+                                                                 mipmapped:NO];
+              desc.storageMode = MTLStorageModePrivate;
+#if defined(__IPHONE_OS_VERSION_MAX_ALLOWED) && __IPHONE_OS_VERSION_MAX_ALLOWED >= 140000
+              desc.usage = MTLTextureUsageShaderRead | (MTLTextureUsage)(1 << 3);
+#else
+              desc.usage = MTLTextureUsageShaderRead;
+#endif
+              m_post_src = MRCTransfer([g_device newTextureWithDescriptor:desc]);
+              [m_post_src setLabel:@"Dolphin Post Source Blit"];
+            }
+            if (m_post_src)
+            {
+              id<MTLBlitCommandEncoder> blit = [cb blitCommandEncoder];
+              if (blit)
+              {
+                [blit copyFromTexture:source
+                          sourceSlice:0
+                          sourceLevel:0
+                         sourceOrigin:MTLOriginMake(0, 0, 0)
+                           sourceSize:MTLSizeMake(source.width, source.height, 1)
+                            toTexture:m_post_src
+                     destinationSlice:0
+                     destinationLevel:0
+                    destinationOrigin:MTLOriginMake(0, 0, 0)];
+                [blit endEncoding];
+              }
+              post_input = m_post_src;
             }
           }
 
-          if (shader_class && [shader_class respondsToSelector:@selector(shared)])
+          id mgr = GetShaderPostProcessor();
+          if (mgr)
           {
-            id mgr =
-                ((id (*)(id, SEL))[shader_class methodForSelector:@selector(shared)])(
-                    shader_class, @selector(shared));
-            if (mgr && [mgr respondsToSelector:@selector(configureWithDevice:)])
+            if ([mgr respondsToSelector:@selector(configureWithDevice:)])
               ((void (*)(id, SEL, id))[mgr methodForSelector:@selector(configureWithDevice:)])(
                   mgr, @selector(configureWithDevice:), g_device);
-            if (mgr && [mgr respondsToSelector:@selector(renderSource:commandBuffer:drawable:)])
+            if ([mgr respondsToSelector:@selector(renderSource:commandBuffer:drawable:)])
             {
               ((void (*)(id, SEL, id, id, id))[
                   mgr methodForSelector:@selector(renderSource:commandBuffer:drawable:)])(
-                  mgr, @selector(renderSource:commandBuffer:drawable:), s_post_src, cb, m_drawable);
+                  mgr, @selector(renderSource:commandBuffer:drawable:), post_input, cb, m_drawable);
             }
           }
-          else if (dst && s_post_src)
+          else if (dst && post_input && post_input != dst)
           {
             id<MTLBlitCommandEncoder> fallback_blit = [cb blitCommandEncoder];
             if (fallback_blit)
             {
-              [fallback_blit copyFromTexture:s_post_src
+              [fallback_blit copyFromTexture:post_input
                                  sourceSlice:0
                                  sourceLevel:0
                                 sourceOrigin:MTLOriginMake(0, 0, 0)
-                                  sourceSize:MTLSizeMake(s_post_src.width, s_post_src.height, 1)
+                                  sourceSize:MTLSizeMake(post_input.width, post_input.height, 1)
                                    toTexture:dst
                             destinationSlice:0
                             destinationLevel:0
@@ -743,13 +781,11 @@ void Metal::Gfx::PresentBackbuffer()
           }
         }
       }
-      else
+      else if (m_rendered_to_offscreen)
       {
         // Toggle-off race guard: BindBackbuffer rendered this frame into the offscreen
         // target (shaders were on at bind), but they were turned off before present.
-        // The drawable was never drawn into, so composite the offscreen image across now,
-        // otherwise the frame would present blank. When shaders were off at bind too, the
-        // drawable is the bound color attachment (source == dst) and this is a no-op.
+        // Composite the offscreen image across so the frame does not present blank.
         id<MTLCommandBuffer> cb = g_state_tracker->GetRenderCmdBuf();
         id<MTLTexture> source = [m_backbuffer->PassDesc() colorAttachments][0].texture;
         id<MTLTexture> dst = [m_drawable texture];
@@ -779,12 +815,35 @@ void Metal::Gfx::PresentBackbuffer()
       // It also seems to improve frame pacing, so enable it by default with vsync
       if (g_ActiveConfig.iUsePresentDrawable == TriState::On ||
           (g_ActiveConfig.iUsePresentDrawable == TriState::Auto && g_ActiveConfig.bVSyncActive))
-        [g_state_tracker->GetRenderCmdBuf() presentDrawable:m_drawable];
+      {
+        id<MTLCommandBuffer> present_cb = g_state_tracker->GetRenderCmdBuf();
+        const int frame_cap = GetUserFrameCap();
+        if (frame_cap > 0 && g_ActiveConfig.bVSyncActive && !Core::GetIsThrottlerTempDisabled())
+        {
+          if (@available(iOS 15.4, tvOS 15.4, macOS 13.0, *))
+          {
+            const CFTimeInterval min_duration =
+                std::max(0.001, (1.0 / static_cast<double>(frame_cap)) - 0.002);
+            [present_cb presentDrawable:m_drawable afterMinimumDuration:min_duration];
+          }
+          else
+          {
+            [present_cb presentDrawable:m_drawable];
+          }
+        }
+        else
+        {
+          [present_cb presentDrawable:m_drawable];
+        }
+      }
       else
+      {
         [g_state_tracker->GetRenderCmdBuf()
             addScheduledHandler:[drawable = std::move(m_drawable)](id) { [drawable present]; }];
+      }
       m_backbuffer->UpdateBackbufferTexture(nullptr);
       m_drawable = nullptr;
+      m_rendered_to_offscreen = false;
     }
     g_state_tracker->FlushEncoders();
     ReportGPUTimes();
@@ -861,6 +920,11 @@ bool Metal::Gfx::TryComputeBlitRGBA8(AbstractTexture* dst, const MathUtil::Recta
 {
   if (!dst || !src)
     return false;
+  if (src->GetType() != AbstractTextureType::Texture_2D ||
+      dst->GetType() != AbstractTextureType::Texture_2D)
+    return false;
+  if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
+    return false;
   if (dst_rc.GetWidth() != src_rc.GetWidth() || dst_rc.GetHeight() != src_rc.GetHeight())
     return false;
   @autoreleasepool
@@ -871,14 +935,6 @@ bool Metal::Gfx::TryComputeBlitRGBA8(AbstractTexture* dst, const MathUtil::Recta
     if (!src_tex || !dst_tex)
       return false;
 
-    // The kernels below bind plain, NON-array 2D textures (texture2d / texture2d_ms). EFB textures
-    // are 2D ARRAYS (FramebufferManager creates them as Texture_2DArray for layer/stereo support).
-    // Binding an array to a texture2d kernel argument is a hard Metal validation failure — and
-    // undefined behavior even without the validation layer (it happened to read layer 0 for
-    // non-stereo). Fall back to the stock, layer-aware raster path for any array (or otherwise
-    // non-2D) texture. The only callers — EFB resolve and EFB pixel-format reinterpret — are
-    // infrequent, so the fallback cost is negligible. (A future array-aware compute kernel could
-    // restore this path; it needs per-layer dispatch + stereo-correct indexing.)
     const bool src_ok =
         src_tex.textureType == MTLTextureType2D || src_tex.textureType == MTLTextureType2DMultisample;
     if (!src_ok || dst_tex.textureType != MTLTextureType2D)
@@ -887,8 +943,7 @@ bool Metal::Gfx::TryComputeBlitRGBA8(AbstractTexture* dst, const MathUtil::Recta
     // MSAA resolve path
     if (src_tex.sampleCount > 1)
     {
-      static std::unique_ptr<AbstractShader> s_resolve_ms_cs;
-      if (!s_resolve_ms_cs)
+      if (!m_rgba8_resolve_ms_cs)
       {
         static const char* msl_ms = R"(
           #include <metal_stdlib>
@@ -908,7 +963,7 @@ bool Metal::Gfx::TryComputeBlitRGBA8(AbstractTexture* dst, const MathUtil::Recta
         auto cs = CreateShaderFromMSL(ShaderStage::Compute, msl_ms, "", "resolve_rgba8_ms");
         if (!cs)
           return false;
-        s_resolve_ms_cs = std::move(cs);
+        m_rgba8_resolve_ms_cs = std::move(cs);
       }
       SetComputeImageTexture(0, const_cast<AbstractTexture*>(src), true, false);
       SetComputeImageTexture(1, dst, false, true);
@@ -917,7 +972,7 @@ bool Metal::Gfx::TryComputeBlitRGBA8(AbstractTexture* dst, const MathUtil::Recta
       const u32 tgx = 16, tgy = 16;
       const u32 gx = (w + tgx - 1) / tgx;
       const u32 gy = (h + tgy - 1) / tgy;
-      DispatchComputeShader(s_resolve_ms_cs.get(), tgx, tgy, 1, gx, gy, 1);
+      DispatchComputeShader(m_rgba8_resolve_ms_cs.get(), tgx, tgy, 1, gx, gy, 1);
       return true;
     }
 
@@ -961,6 +1016,11 @@ bool Metal::Gfx::TryComputeResolveDepth(AbstractTexture* dst,
 {
   if (!dst || !src)
     return false;
+  if (src->GetType() != AbstractTextureType::Texture_2D ||
+      dst->GetType() != AbstractTextureType::Texture_2D)
+    return false;
+  if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
+    return false;
   if (dst_rc.GetWidth() != src_rc.GetWidth() || dst_rc.GetHeight() != src_rc.GetHeight())
     return false;
   @autoreleasepool
@@ -969,11 +1029,11 @@ bool Metal::Gfx::TryComputeResolveDepth(AbstractTexture* dst,
     id<MTLTexture> dst_tex = static_cast<Texture*>(dst)->GetMTLTexture();
     if (!src_tex || !dst_tex)
       return false;
-    if (src_tex.sampleCount <= 1)
+    if (src_tex.textureType != MTLTextureType2DMultisample ||
+        dst_tex.textureType != MTLTextureType2D || src_tex.sampleCount <= 1)
       return false;
 
-    static std::unique_ptr<AbstractShader> s_depth_resolve_ms_cs;
-    if (!s_depth_resolve_ms_cs)
+    if (!m_depth_resolve_ms_cs)
     {
       static const char* msl = R"(
         #include <metal_stdlib>
@@ -993,7 +1053,7 @@ bool Metal::Gfx::TryComputeResolveDepth(AbstractTexture* dst,
       auto cs = CreateShaderFromMSL(ShaderStage::Compute, msl, "", "resolve_depth_ms");
       if (!cs)
         return false;
-      s_depth_resolve_ms_cs = std::move(cs);
+      m_depth_resolve_ms_cs = std::move(cs);
     }
     SetComputeImageTexture(0, const_cast<AbstractTexture*>(src), true, false);
     SetComputeImageTexture(1, dst, false, true);
@@ -1002,7 +1062,7 @@ bool Metal::Gfx::TryComputeResolveDepth(AbstractTexture* dst,
     const u32 tgx = 16, tgy = 16;
     const u32 gx = (w + tgx - 1) / tgx;
     const u32 gy = (h + tgy - 1) / tgy;
-    DispatchComputeShader(s_depth_resolve_ms_cs.get(), tgx, tgy, 1, gx, gy, 1);
+    DispatchComputeShader(m_depth_resolve_ms_cs.get(), tgx, tgy, 1, gx, gy, 1);
     return true;
   }
 }
@@ -1014,12 +1074,23 @@ bool Metal::Gfx::TryComputeScaleRGBA8(AbstractTexture* dst, const MathUtil::Rect
 {
   if (!dst || !src)
     return false;
+  if (src->GetType() != AbstractTextureType::Texture_2D ||
+      dst->GetType() != AbstractTextureType::Texture_2D)
+    return false;
+  if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
+    return false;
   if (scale_x != 2 || scale_y != 2)
     return false;
   if (dst_rc.GetWidth() * 2 != src_rc.GetWidth() || dst_rc.GetHeight() * 2 != src_rc.GetHeight())
     return false;
   @autoreleasepool
   {
+    id<MTLTexture> src_tex = static_cast<const Texture*>(src)->GetMTLTexture();
+    id<MTLTexture> dst_tex = static_cast<Texture*>(dst)->GetMTLTexture();
+    if (!src_tex || !dst_tex || src_tex.textureType != MTLTextureType2D ||
+        dst_tex.textureType != MTLTextureType2D)
+      return false;
+
     if (!m_rgba8_down2x_cs)
     {
       static const char* msl = R"(
@@ -1061,10 +1132,21 @@ bool Metal::Gfx::TryComputeGammaRGBA8(AbstractTexture* dst, const MathUtil::Rect
 {
   if (!dst || !src)
     return false;
+  if (src->GetType() != AbstractTextureType::Texture_2D ||
+      dst->GetType() != AbstractTextureType::Texture_2D)
+    return false;
+  if (src_rc.left != 0 || src_rc.top != 0 || dst_rc.left != 0 || dst_rc.top != 0)
+    return false;
   if (dst_rc.GetWidth() != src_rc.GetWidth() || dst_rc.GetHeight() != src_rc.GetHeight())
     return false;
   @autoreleasepool
   {
+    id<MTLTexture> src_tex = static_cast<const Texture*>(src)->GetMTLTexture();
+    id<MTLTexture> dst_tex = static_cast<Texture*>(dst)->GetMTLTexture();
+    if (!src_tex || !dst_tex || src_tex.textureType != MTLTextureType2D ||
+        dst_tex.textureType != MTLTextureType2D)
+      return false;
+
     if (!m_rgba8_gamma_cs)
     {
       static const char* msl = R"(

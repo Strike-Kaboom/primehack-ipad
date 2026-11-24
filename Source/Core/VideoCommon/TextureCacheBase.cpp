@@ -2916,7 +2916,7 @@ void TextureCacheBase::CopyEFBToCacheEntry(RcTcacheEntry& entry, bool is_depth_c
   src_texture->FinishedRendering();
 
   // Compute fast-path for XFB RGBA8 copies without scaling/gamma/clamp (iCube native-Metal moat).
-  if (Config::Get(Config::GFX_USE_COMPUTE_EFBXFB) && !is_depth_copy && !is_intensity &&
+  if (g_ActiveConfig.bUseComputeEFBXFB && !is_depth_copy && !is_intensity &&
       dst_format == EFBCopyFormat::XFB && !scale_by_half && !linear_filter && gamma == 1.0f &&
       !clamp_top && !clamp_bottom &&
       entry->texture->GetFormat() == AbstractTextureFormat::RGBA8 &&
@@ -2933,7 +2933,7 @@ void TextureCacheBase::CopyEFBToCacheEntry(RcTcacheEntry& entry, bool is_depth_c
     }
   }
   // Compute fast-path for gamma correction on RGBA8 when no scaling/clamp/filter.
-  if (Config::Get(Config::GFX_USE_COMPUTE_EFBXFB) && !is_depth_copy && !is_intensity &&
+  if (g_ActiveConfig.bUseComputeEFBXFB && !is_depth_copy && !is_intensity &&
       dst_format != EFBCopyFormat::XFB && !scale_by_half && !linear_filter && gamma != 1.0f &&
       !clamp_top && !clamp_bottom &&
       entry->texture->GetFormat() == AbstractTextureFormat::RGBA8 &&
@@ -2954,7 +2954,7 @@ void TextureCacheBase::CopyEFBToCacheEntry(RcTcacheEntry& entry, bool is_depth_c
   // Compute fast-path for copy filter + optional gamma on RGBA8 (no scaling).
   // TryComputeEFBFilterRGBA8 is declared but not implemented on the Metal backend (matches the
   // icube-testflight source); it returns false and falls through to the stock path below.
-  if (Config::Get(Config::GFX_USE_COMPUTE_EFBXFB) && !is_depth_copy && !is_intensity &&
+  if (g_ActiveConfig.bUseComputeEFBXFB && !is_depth_copy && !is_intensity &&
       dst_format != EFBCopyFormat::XFB && !scale_by_half &&
       entry->texture->GetFormat() == AbstractTextureFormat::RGBA8 &&
       src_texture->GetFormat() == AbstractTextureFormat::RGBA8)
@@ -2993,7 +2993,7 @@ void TextureCacheBase::CopyEFBToCacheEntry(RcTcacheEntry& entry, bool is_depth_c
   src_texture->FinishedRendering();
 
   // Compute fast-path for RGBA8 2x downscale when requested via scale_by_half and simple settings.
-  if (Config::Get(Config::GFX_USE_COMPUTE_EFBXFB) && !is_depth_copy && !is_intensity &&
+  if (g_ActiveConfig.bUseComputeEFBXFB && !is_depth_copy && !is_intensity &&
       dst_format != EFBCopyFormat::XFB && scale_by_half && !linear_filter && gamma == 1.0f &&
       !clamp_top && !clamp_bottom &&
       entry->texture->GetFormat() == AbstractTextureFormat::RGBA8 &&
