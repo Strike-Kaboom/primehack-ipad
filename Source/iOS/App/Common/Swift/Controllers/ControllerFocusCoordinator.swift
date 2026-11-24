@@ -56,16 +56,18 @@ final class ControllerFocusCoordinator: ObservableObject {
   func push(_ id: UUID) {
     stack.removeAll { $0 == id }
     stack.append(id)
-    activeScope = stack.last
-    Self.activeScopeLock.withLock { $0 = stack.last }
+    let top = stack.last
+    activeScope = top
+    Self.activeScopeLock.withLock { $0 = top }
   }
 
   /// Remove `id` wherever it sits, not just from the top, so a disappear that
   /// arrives after a newer surface already pushed still cleans up.
   func pop(_ id: UUID) {
     stack.removeAll { $0 == id }
-    activeScope = stack.last
-    Self.activeScopeLock.withLock { $0 = stack.last }
+    let top = stack.last
+    activeScope = top
+    Self.activeScopeLock.withLock { $0 = top }
   }
 
   /// True when `id` is the topmost (owning) scope.
