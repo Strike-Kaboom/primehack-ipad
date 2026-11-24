@@ -538,11 +538,12 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
 
 + (BOOL)saveResumeStateKeepingGameRunningWithSnapshotSignal:(nullable void (^)(void))onSnapshotCaptured
                                                shouldCancel:(nullable BOOL (^)(void))shouldCancel {
-  auto signalOnce = [signaled = false, block = [onSnapshotCaptured copy]]() mutable {
+  void (^copiedSignal)(void) = [onSnapshotCaptured copy];
+  auto signalOnce = [signaled = false, copiedSignal]() mutable {
     if (!signaled) {
       signaled = true;
-      if (block)
-        block();
+      if (copiedSignal)
+        copiedSignal();
     }
   };
   auto& system = Core::System::GetInstance();
