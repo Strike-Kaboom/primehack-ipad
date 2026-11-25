@@ -174,6 +174,18 @@ std::size_t HiresTexture::GetIndexedTextureCount()
   return s_indexed_texture_count.load(std::memory_order_relaxed);
 }
 
+HiresTexture::CacheStats HiresTexture::GetCacheStats()
+{
+  const auto stats = Core::System::GetInstance().GetCustomResourceManager().GetAssetCacheStats();
+  return CacheStats{
+      stats.ram_used,
+      stats.ram_cap,
+      stats.active_assets,
+      stats.pending_assets,
+      stats.evictions,
+  };
+}
+
 std::shared_ptr<HiresTexture> HiresTexture::Search(const TextureInfo& texture_info)
 {
   auto [base_filename, has_arb_mipmaps] = GetNameArbPair(texture_info);

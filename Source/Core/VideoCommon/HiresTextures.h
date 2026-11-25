@@ -4,6 +4,7 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <fmt/ranges.h>
 #include <memory>
 #include <set>
@@ -34,7 +35,16 @@ public:
   static void Update();
   static void Clear();
   static void Shutdown();
+  struct CacheStats
+  {
+    std::uint64_t ram_used = 0;
+    std::uint64_t ram_cap = 0;
+    std::uint64_t active_assets = 0;
+    std::uint64_t pending_assets = 0;
+    std::uint64_t evictions = 0;
+  };
   static std::size_t GetIndexedTextureCount();
+  static CacheStats GetCacheStats();
   static std::shared_ptr<HiresTexture> Search(const TextureInfo& texture_info);
 
   HiresTexture(bool has_arbitrary_mipmaps, std::string id);

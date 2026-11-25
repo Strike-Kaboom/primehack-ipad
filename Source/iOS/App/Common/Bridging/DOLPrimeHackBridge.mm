@@ -11,9 +11,7 @@
 #include "Core/Config/MainSettings.h"
 #include "Core/Config/iOSSettings.h"
 #include "Core/PrimeHack/HackManager.h"
-#include "Core/System.h"
 #include "VideoCommon/HiresTextures.h"
-#include "VideoCommon/Resources/CustomResourceManager.h"
 #import "AudioSessionManager.h"
 
 #define PH_BOOL(getter, setter, info)                                                              \
@@ -220,27 +218,27 @@ PH_BOOL(cabinDrcEnabled, setCabinDrcEnabled, MAIN_AUDIO_CABIN_DRC)
 
 + (uint64_t)hiresCacheRamUsedBytes
 {
-  return Core::System::GetInstance().GetCustomResourceManager().GetAssetCacheStats().ram_used;
+  return HiresTexture::GetCacheStats().ram_used;
 }
 
 + (uint64_t)hiresCacheRamCapBytes
 {
-  return Core::System::GetInstance().GetCustomResourceManager().GetAssetCacheStats().ram_cap;
+  return HiresTexture::GetCacheStats().ram_cap;
 }
 
 + (uint64_t)hiresCacheActiveCount
 {
-  return Core::System::GetInstance().GetCustomResourceManager().GetAssetCacheStats().active_assets;
+  return HiresTexture::GetCacheStats().active_assets;
 }
 
 + (uint64_t)hiresCachePendingCount
 {
-  return Core::System::GetInstance().GetCustomResourceManager().GetAssetCacheStats().pending_assets;
+  return HiresTexture::GetCacheStats().pending_assets;
 }
 
 + (uint64_t)hiresCacheEvictionCount
 {
-  return Core::System::GetInstance().GetCustomResourceManager().GetAssetCacheStats().evictions;
+  return HiresTexture::GetCacheStats().evictions;
 }
 
 @end
