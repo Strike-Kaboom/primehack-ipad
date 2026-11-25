@@ -509,7 +509,7 @@ internal struct PauseMenuView: View {
           focused = .back
         case .controllers:
           focused = .back
-        case .discs, .perfHUD, .audio, .audioEffect:
+        case .discs, .perfHUD, .audio, .audioEffect, .controlsCard:
           break
         }
       }
