@@ -183,17 +183,67 @@ final class ControllerManager: NSObject, ObservableObject {
     let qualifier: String
     let port: Int
     let isWii: Bool
+    var awaitingResumeInput: Bool = false
   }
 
   /// Non-nil while a disconnect-induced pause is active. The emulation screen
   /// observes this to show the reconnect banner and to gate the paused pill.
   @Published private(set) var disconnectPause: DisconnectPause?
+  private var reconnectWaitTimer: Timer?
+  private var reconnectAwaitingControllerID: ObjectIdentifier?
+  private var reconnectWaitingForRelease = true
+  private var reconnectSawPress = false
+
+  private func stopReconnectWaitTimer() {
+    reconnectWaitTimer?.invalidate()
+    reconnectWaitTimer = nil
+    reconnectAwaitingControllerID = nil
+    reconnectWaitingForRelease = true
+    reconnectSawPress = false
+  }
+
+  private func startReconnectWaitTimer(for controller: GCController) {
+    stopReconnectWaitTimer()
+    reconnectAwaitingControllerID = ObjectIdentifier(controller)
+    reconnectWaitingForRelease = true
+    reconnectSawPress = false
+    let t = Timer(timeInterval: 1.0 / 30.0, repeats: true) { [weak self, weak controller] _ in
+      guard let self else { return }
+      guard let pending = self.disconnectPause, pending.awaitingResumeInput else {
+        self.stopReconnectWaitTimer()
+        return
+      }
+      guard let pad = controller?.extendedGamepad else {
+        self.stopReconnectWaitTimer()
+        return
+      }
+      // Poll explicit digital buttons only (excludes analog sticks so drift cannot stall or
+      // prematurely resume, and excludes Menu/Home/Options).
+      let buttons: [GCControllerButtonInput] = [
+        pad.buttonA, pad.buttonB, pad.buttonX, pad.buttonY,
+        pad.leftShoulder, pad.rightShoulder,
+        pad.dpad.up, pad.dpad.down, pad.dpad.left, pad.dpad.right,
+      ]
+      let anyPressed = buttons.contains(where: { $0.isPressed })
+      if self.reconnectWaitingForRelease {
+        if !anyPressed { self.reconnectWaitingForRelease = false }
+      } else if !self.reconnectSawPress {
+        if anyPressed { self.reconnectSawPress = true }
+      } else if !anyPressed {
+        // Resume on button release so the confirming press never leaks as a jump/shot on frame 1.
+        self.clearDisconnectPause()
+      }
+    }
+    RunLoop.main.add(t, forMode: .common)
+    reconnectWaitTimer = t
+  }
 
   /// Clears the disconnect-pause state (dismisses the banner). Called by the
   /// emulation screen's poll when the game has resumed via any other path
   /// (pill tap, pause menu Resume, new game launch) so the banner can never get
   /// stuck over a running game.
   func clearDisconnectPause() {
+    stopReconnectWaitTimer()
     disconnectPause = nil
     MainActor.assumeIsolated { PauseArbiter.shared.release(reason: PauseArbiter.Reason.disconnect) }
   }
@@ -210,6 +260,7 @@ final class ControllerManager: NSObject, ObservableObject {
       assignTouchscreen(toGCPort: pending.port + 1)
     }
     overlayVisible = true
+    stopReconnectWaitTimer()
     disconnectPause = nil
     MainActor.assumeIsolated { PauseArbiter.shared.release(reason: PauseArbiter.Reason.disconnect) }
   }
@@ -316,8 +367,17 @@ final class ControllerManager: NSObject, ObservableObject {
               self.assignmentService.assign(qualifier: connectedQualifier, toPlayer: pending.port, system: pendingSystem)
             }
           }
-          self.disconnectPause = nil
-          MainActor.assumeIsolated { PauseArbiter.shared.release(reason: PauseArbiter.Reason.disconnect) }
+          if PrimeHackFlightOptions.pauseAfterSleep() {
+            // PrimeHack for iPad: keep paused until the player presses a button so gameplay
+            // never restarts unexpectedly under their thumbs right as the pad reconnects.
+            var updated = pending
+            updated.awaitingResumeInput = true
+            self.disconnectPause = updated
+            self.startReconnectWaitTimer(for: c)
+          } else {
+            self.disconnectPause = nil
+            MainActor.assumeIsolated { PauseArbiter.shared.release(reason: PauseArbiter.Reason.disconnect) }
+          }
           self.controllerConnectedSubject.send(c)
           if connectedQualifier != pending.qualifier {
             self.takePlayer1FromTouchscreen(for: c)
@@ -361,6 +421,13 @@ final class ControllerManager: NSObject, ObservableObject {
       // Auto-pause when an ASSIGNED PHYSICAL controller drops mid-game. A
       // touchscreen-only / unassigned disconnect does nothing. Capture the slot
       // before reconcile() can rewrite the bindings.
+      if var pending = self.disconnectPause, pending.awaitingResumeInput,
+         let dropped = c, !dropped.isMenuRemote,
+         self.reconnectAwaitingControllerID == ObjectIdentifier(dropped) {
+        self.stopReconnectWaitTimer()
+        pending.awaitingResumeInput = false
+        self.disconnectPause = pending
+      }
       if self.disconnectPause == nil,
          let dropped = c,
          !dropped.isMenuRemote,
@@ -435,6 +502,7 @@ final class ControllerManager: NSObject, ObservableObject {
   func stopObserving() {
     guard isObserving else { return }
     isObserving = false
+    stopReconnectWaitTimer()
     observers.forEach { NotificationCenter.default.removeObserver($0) }
     observers.removeAll()
     cancellables.removeAll()

@@ -146,6 +146,7 @@ static const double kPreferredSampleRate = 48000.0;
 - (void)applySessionCategoryWithMicActive:(BOOL)micActive {
   AVAudioSession* session = [AVAudioSession sharedInstance];
   NSError* error = nil;
+  const BOOL mixWithOthers = Config::Get(Config::MAIN_AUDIO_MIX_WITH_OTHERS);
 
 #if !TARGET_OS_TV
   if (micActive)
@@ -156,6 +157,10 @@ static const double kPreferredSampleRate = 48000.0;
     AVAudioSessionCategoryOptions options = AVAudioSessionCategoryOptionAllowBluetoothA2DP |
                                             AVAudioSessionCategoryOptionDefaultToSpeaker |
                                             AVAudioSessionCategoryOptionAllowAirPlay;
+    if (mixWithOthers)
+    {
+      options |= AVAudioSessionCategoryOptionMixWithOthers;
+    }
     if (![session setCategory:AVAudioSessionCategoryPlayAndRecord
                          mode:AVAudioSessionModeDefault
                       options:options
@@ -169,19 +174,43 @@ static const double kPreferredSampleRate = 48000.0;
   {
     AudioMuteSwitchMode mode = (AudioMuteSwitchMode)Config::Get(Config::MAIN_MUTE_SWITCH_MODE);
     NSString* category = AVAudioSessionCategoryPlayback;
+    AVAudioSessionCategoryOptions options =
+        mixWithOthers ? AVAudioSessionCategoryOptionMixWithOthers : 0;
 #if !TARGET_OS_TV
     if (mode == AudioMuteSwitchModeObey)
     {
-      category = AVAudioSessionCategorySoloAmbient;
+      // SoloAmbient forbids MixWithOthers; Ambient obeys the mute switch AND mixes with others.
+      category = mixWithOthers ? AVAudioSessionCategoryAmbient : AVAudioSessionCategorySoloAmbient;
+      if (mixWithOthers)
+        options = 0;
     }
 #else
     (void)mode;
 #endif
     // Playback categories route to Bluetooth and AirPlay on their own; the AllowBluetoothA2DP /
-    // AllowAirPlay options are PlayAndRecord-only and tvOS rejects them.
-    if (![session setCategory:category mode:AVAudioSessionModeMoviePlayback options:0 error:&error])
+    // AllowAirPlay options are PlayAndRecord-only and tvOS rejects them. Ambient/SoloAmbient and
+    // MixWithOthers require Default mode on iOS; fall back to Default on any failure.
+    const bool preferDefaultMode =
+        mixWithOthers || ![category isEqualToString:AVAudioSessionCategoryPlayback];
+    NSString* sessionMode =
+        preferDefaultMode ? AVAudioSessionModeDefault : AVAudioSessionModeMoviePlayback;
+    if (![session setCategory:category mode:sessionMode options:options error:&error])
     {
-      NSLog(@"[Audio] setCategory(%@) failed: %@", category, error);
+      if (![sessionMode isEqualToString:AVAudioSessionModeDefault])
+      {
+        error = nil;
+        if (![session setCategory:category
+                             mode:AVAudioSessionModeDefault
+                          options:options
+                            error:&error])
+        {
+          NSLog(@"[Audio] setCategory(%@, Default) failed: %@", category, error);
+        }
+      }
+      else
+      {
+        NSLog(@"[Audio] setCategory(%@) failed: %@", category, error);
+      }
     }
   }
 

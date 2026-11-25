@@ -331,7 +331,6 @@ static inline void SetBaseIfUnspecified(const Config::Info<T>& info, const T& va
     return;
   if (s_resumeSaveInFlight.exchange(true, std::memory_order_acq_rel))
     return;
-  s_resumeSavedSinceActive.store(true, std::memory_order_release);
 
   __block UIBackgroundTaskIdentifier task = UIBackgroundTaskInvalid;
   void (^endTask)(void) = ^{
@@ -352,12 +351,14 @@ static inline void SetBaseIfUnspecified(const Config::Info<T>& info, const T& va
   auto cancelSnapshot = std::make_shared<std::atomic<bool>>(false);
   dispatch_semaphore_t snapshotDone = dispatch_semaphore_create(0);
   dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-    [TVEmulationBridge saveResumeStateKeepingGameRunningWithSnapshotSignal:^{
+    const BOOL saved = [TVEmulationBridge saveResumeStateKeepingGameRunningWithSnapshotSignal:^{
       dispatch_semaphore_signal(snapshotDone);
     }
-                                                              shouldCancel:^BOOL {
+                                                                                 shouldCancel:^BOOL {
       return cancelSnapshot->load(std::memory_order_acquire) ? YES : NO;
     }];
+    if (saved)
+      s_resumeSavedSinceActive.store(true, std::memory_order_release);
     s_resumeSaveInFlight.store(false, std::memory_order_release);
     endTask();
   });

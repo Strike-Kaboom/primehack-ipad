@@ -194,6 +194,15 @@ final class PauseArbiter {
     pending = claim(reason)
   }
 
+  /// Like `claimPending`, but records the pending token without calling synchronous `core.pause()`.
+  /// Used from `didEnterBackgroundNotification` where `appWillResignActive` has already issued
+  /// `pauseAsync()`, preventing a main-thread wait on `s_core_mutex` during a lifecycle callback.
+  func claimPendingWithoutPausing(_ reason: String) {
+    if tokens.contains(where: { $0.reason == Reason.pauseMenu || $0.reason == Reason.pauseMenuRequest }) { return }
+    if let old = pending { release(old) }
+    pending = claim(reason, pausing: false)
+  }
+
   /// Hands the pending token to the caller exactly once; nil when there is none.
   func adoptPending() -> Token? {
     defer { pending = nil }

@@ -3,7 +3,11 @@
 
 import Foundation
 import GameController
+import QuartzCore
 import UIKit
+#if canImport(CoreHaptics)
+import CoreHaptics
+#endif
 
 /// PrimeHack for iPad: DualSense adaptive triggers and visor/morph-ball lightbar sync in the
 /// Metroid Prime games.
@@ -27,6 +31,8 @@ final class PrimeHackAdaptiveTriggers {
   static let lightbarDefaultsKey = "primehack_dualsense_lightbar"
   static let lightbarBrightnessDefaultsKey = "primehack_lightbar_brightness"
   static let rumbleStrengthDefaultsKey = "primehack_rumble_strength"
+  static let rumbleMinPulseMsDefaultsKey = "primehack_rumble_min_pulse_ms"
+  static let damageMissileCuesDefaultsKey = "primehack_damage_missile_cues"
   private static let settingsChangedNotification = Notification.Name("PrimeHackDualSenseSettingsChanged")
 
   nonisolated static func isEnabled(in defaults: UserDefaults = .standard) -> Bool {
@@ -80,6 +86,26 @@ final class PrimeHackAdaptiveTriggers {
     defaults.set(min(max(percent, 25), 100), forKey: rumbleStrengthDefaultsKey)
   }
 
+  /// 0 = Off, 40/50/60 ms minimum Bluetooth rumble pulse floor (default 50).
+  nonisolated static func rumbleMinPulseMs(in defaults: UserDefaults = .standard) -> Int {
+    guard let raw = defaults.object(forKey: rumbleMinPulseMsDefaultsKey) as? Int else { return 50 }
+    return min(max(raw, 0), 80)
+  }
+
+  nonisolated static func setRumbleMinPulseMs(_ ms: Int, in defaults: UserDefaults = .standard) {
+    defaults.set(min(max(ms, 0), 80), forKey: rumbleMinPulseMsDefaultsKey)
+  }
+
+  /// Damage thump & missile-empty DualSense haptic cues (default ON).
+  nonisolated static func isDamageMissileCuesEnabled(in defaults: UserDefaults = .standard) -> Bool {
+    (defaults.object(forKey: damageMissileCuesDefaultsKey) as? Bool) ?? true
+  }
+
+  nonisolated static func setDamageMissileCuesEnabled(_ enabled: Bool, in defaults: UserDefaults = .standard) {
+    defaults.set(enabled, forKey: damageMissileCuesDefaultsKey)
+    NotificationCenter.default.post(name: settingsChangedNotification, object: nil)
+  }
+
   private enum BeamFeel: Equatable {
     case power
     case heavy     // Ice / Dark
@@ -115,6 +141,11 @@ final class PrimeHackAdaptiveTriggers {
     var waitForRightRelease = false
     var lightTint: LightTint?
     var originalLightColor: GCColor?
+    var lastDamageCounter: UInt?
+    var wasMissilePressed = false
+    #if os(iOS) && canImport(CoreHaptics)
+    var cuePlayer: CueHapticPlayer?
+    #endif
   }
 
   private var states: [ObjectIdentifier: PadState] = [:]
@@ -143,8 +174,10 @@ final class PrimeHackAdaptiveTriggers {
         MainActor.assumeIsolated {
           let triggers = PrimeHackAdaptiveTriggers.shared
           // A disconnect and reconnect can occur between polls.
-          if let changedID {
-            triggers.states.removeValue(forKey: changedID)
+          if let changedID, let removed = triggers.states.removeValue(forKey: changedID) {
+            #if os(iOS) && canImport(CoreHaptics)
+            removed.cuePlayer?.stop()
+            #endif
           }
           triggers.refreshPlayer1Cache()
           triggers.refreshTimer()
@@ -198,7 +231,7 @@ final class PrimeHackAdaptiveTriggers {
   /// Runs the 30 Hz poll only while active, a Prime game is loaded, a DualSense is connected,
   /// and at least one DualSense feature (triggers or lightbar) is enabled.
   private func refreshTimer() {
-    let anyFeatureEnabled = Self.isEnabled() || Self.isLightbarEnabled()
+    let anyFeatureEnabled = Self.isEnabled() || Self.isLightbarEnabled() || Self.isDamageMissileCuesEnabled()
     guard UIApplication.shared.applicationState == .active,
           Self.isPrimeGameRunning(),
           anyFeatureEnabled,
@@ -319,7 +352,8 @@ final class PrimeHackAdaptiveTriggers {
   private func tick() {
     let triggersEnabled = Self.isEnabled()
     let lightbarEnabled = Self.isLightbarEnabled()
-    guard Self.isPrimeGameRunning(), (triggersEnabled || lightbarEnabled) else {
+    let cuesEnabled = Self.isDamageMissileCuesEnabled()
+    guard Self.isPrimeGameRunning(), (triggersEnabled || lightbarEnabled || cuesEnabled) else {
       switchAllOff()
       stopTimer()
       return
@@ -333,6 +367,8 @@ final class PrimeHackAdaptiveTriggers {
     let hasChargeBeam = PrimeHackBridge.hasChargeBeam()
     let inHypermode = inPlay && PrimeHackBridge.inHypermode()
     let lowHealth = inPlay && PrimeHackBridge.isLowHealth()
+    let missileEmpty = inPlay && !morphBall && PrimeHackBridge.isMissileEmpty()
+    let damageCounter = PrimeHackBridge.damageCounter()
     let visorKind = PrimeHackBridge.activeVisorKind()
     let beamKind = PrimeHackBridge.activeBeamKind()
     let triggerStrength = Self.triggerStrengthLevel()
@@ -366,12 +402,73 @@ final class PrimeHackAdaptiveTriggers {
                      strengthLevel: triggerStrength,
                      now: now)
       updateLightbar(controller, state: &state, tint: isPlayer1 ? lightTint : nil)
+      updateHapticCues(controller,
+                       pad: pad,
+                       state: &state,
+                       active: isPlayer1 && cuesEnabled && inPlay,
+                       damageCounter: damageCounter,
+                       missileEmpty: missileEmpty)
       states[id] = state
     }
+    #if os(iOS) && canImport(CoreHaptics)
+    for (id, st) in states where !seen.contains(id) {
+      st.cuePlayer?.stop()
+    }
+    #endif
     states = states.filter { seen.contains($0.key) }
     if seen.isEmpty {
       stopTimer()
     }
+  }
+
+  private func updateHapticCues(_ controller: GCController,
+                                pad: GCDualSenseGamepad,
+                                state: inout PadState,
+                                active: Bool,
+                                damageCounter: UInt,
+                                missileEmpty: Bool) {
+    guard active else {
+      state.lastDamageCounter = nil
+      state.wasMissilePressed = false
+      return
+    }
+    // Damage thump on monotonic damage counter change (seeded cleanly on first active tick).
+    if let prev = state.lastDamageCounter {
+      if damageCounter != prev {
+        state.lastDamageCounter = damageCounter
+        playCueTransient(on: controller, state: &state, baseIntensity: 0.85, sharpness: 0.25)
+      }
+    } else {
+      state.lastDamageCounter = damageCounter
+    }
+    // Missile-empty crisp dry click on rising edge of Triangle (buttonY) when out of missiles.
+    let missilePressed = pad.buttonY.isPressed
+    if missilePressed && !state.wasMissilePressed && missileEmpty {
+      playCueTransient(on: controller, state: &state, baseIntensity: 0.45, sharpness: 0.90)
+    }
+    state.wasMissilePressed = missilePressed
+  }
+
+  private func playCueTransient(on controller: GCController,
+                                state: inout PadState,
+                                baseIntensity: Float,
+                                sharpness: Float) {
+    #if os(iOS) && canImport(CoreHaptics)
+    guard controller.haptics != nil else { return }
+    let player: CueHapticPlayer
+    if let existing = state.cuePlayer {
+      player = existing
+    } else {
+      let created = CueHapticPlayer(controller: controller)
+      state.cuePlayer = created
+      player = created
+    }
+    let strengthScale = Float(Self.rumbleStrengthPercent()) / 100.0
+    let intensity = Self.clamp01(baseIntensity * strengthScale)
+    player.play(intensity: intensity, sharpness: sharpness)
+    #else
+    _ = (controller, baseIntensity, sharpness)
+    #endif
   }
 
   private func updateTriggers(_ pad: GCDualSenseGamepad,
@@ -533,6 +630,90 @@ final class PrimeHackAdaptiveTriggers {
         controller.light?.color = original
       }
     }
+    #if os(iOS) && canImport(CoreHaptics)
+    for st in states.values {
+      st.cuePlayer?.stop()
+    }
+    #endif
     states.removeAll()
   }
 }
+
+#if os(iOS) && canImport(CoreHaptics)
+/// Owns a controller's transient cue CHHapticEngine exclusively on a dedicated serial queue so
+/// hapticsd XPC startup and playback never block @MainActor during gameplay, with a 5 s backoff
+/// after any failure so an unavailable or interrupted engine is not retried on every hit.
+private final class CueHapticPlayer: @unchecked Sendable {
+  private static let queue = DispatchQueue(label: "com.primehack.cue-haptics", qos: .userInteractive)
+  private weak var controller: GCController?
+  private var engine: CHHapticEngine?
+  private var engineStarted = false
+  private var retryAfter: CFTimeInterval = 0
+  private var stopped = false
+
+  init(controller: GCController) {
+    self.controller = controller
+  }
+
+  func play(intensity: Float, sharpness: Float) {
+    Self.queue.async { [weak self] in
+      guard let self, !self.stopped else { return }
+      let now = CACurrentMediaTime()
+      guard now >= self.retryAfter else { return }
+      guard let haptics = self.controller?.haptics else { return }
+      let engine: CHHapticEngine
+      if let existing = self.engine {
+        engine = existing
+      } else if let created = haptics.createEngine(withLocality: .handles) ?? haptics.createEngine(withLocality: .default) {
+        created.playsHapticsOnly = true
+        created.stoppedHandler = { [weak self] _ in
+          Self.queue.async { self?.engineStarted = false }
+        }
+        created.resetHandler = { [weak self] in
+          Self.queue.async { self?.engineStarted = false }
+        }
+        self.engine = created
+        self.engineStarted = false
+        engine = created
+      } else {
+        self.retryAfter = now + 5.0
+        return
+      }
+      if !self.engineStarted {
+        do {
+          try engine.start()
+          self.engineStarted = true
+        } catch {
+          self.retryAfter = now + 5.0
+          return
+        }
+      }
+      let event = CHHapticEvent(
+        eventType: .hapticTransient,
+        parameters: [
+          CHHapticEventParameter(parameterID: .hapticIntensity, value: intensity),
+          CHHapticEventParameter(parameterID: .hapticSharpness, value: sharpness),
+        ],
+        relativeTime: 0
+      )
+      do {
+        let pattern = try CHHapticPattern(events: [event], parameters: [])
+        let player = try engine.makePlayer(with: pattern)
+        try player.start(atTime: CHHapticTimeImmediate)
+      } catch {
+        self.engineStarted = false
+        self.retryAfter = now + 5.0
+      }
+    }
+  }
+
+  func stop() {
+    Self.queue.async { [self] in
+      self.stopped = true
+      self.engineStarted = false
+      self.engine?.stop(completionHandler: nil)
+      self.engine = nil
+    }
+  }
+}
+#endif

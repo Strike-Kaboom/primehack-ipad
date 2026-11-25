@@ -17,6 +17,8 @@ import SwiftUI
 ///   no-op on this view's side — the caller may hook it for telemetry/haptics —
 ///   so tapping it does not change anything the banner already communicates.
 struct ControllerDisconnectBanner: View {
+  var isReconnectedAwaitingInput: Bool = false
+  var onResume: (() -> Void)? = nil
   var onUseTouchControls: (() -> Void)?
   var onWait: () -> Void = {}
 
@@ -24,38 +26,53 @@ struct ControllerDisconnectBanner: View {
     VStack {
       VStack(spacing: 12) {
         HStack(spacing: 10) {
-          Image(systemName: "gamecontroller.fill")
-            .foregroundStyle(.white)
-          Text("Controller disconnected")
+          Image(systemName: isReconnectedAwaitingInput ? "checkmark.circle.fill" : "gamecontroller.fill")
+            .foregroundStyle(isReconnectedAwaitingInput ? .green : .white)
+          Text(isReconnectedAwaitingInput
+               ? "Controller reconnected — press any button to resume"
+               : "Controller disconnected")
             .font(.subheadline.weight(.semibold))
             .foregroundStyle(.white)
             .fixedSize(horizontal: false, vertical: true)
         }
 
         HStack(spacing: 12) {
-          if let onUseTouchControls {
-            Button(action: onUseTouchControls) {
-              Text("Use Touch Controls")
+          if isReconnectedAwaitingInput, let onResume {
+            Button(action: onResume) {
+              Text("Resume")
                 .font(.footnote.weight(.semibold))
                 .foregroundStyle(.white)
+                .padding(.horizontal, 14)
+                .padding(.vertical, 6)
+            }
+            .background(Capsule(style: .continuous).fill(.green.opacity(0.35)))
+            .buttonStyle(.plain)
+            .focusable(true)
+          } else {
+            if let onUseTouchControls {
+              Button(action: onUseTouchControls) {
+                Text("Use Touch Controls")
+                  .font(.footnote.weight(.semibold))
+                  .foregroundStyle(.white)
+                  .padding(.horizontal, 12)
+                  .padding(.vertical, 6)
+              }
+              .background(Capsule(style: .continuous).fill(.white.opacity(0.22)))
+              .buttonStyle(.plain)
+              .focusable(true)
+            }
+
+            Button(action: onWait) {
+              Text("Wait for Controller")
+                .font(.footnote.weight(.semibold))
+                .foregroundStyle(.white.opacity(0.85))
                 .padding(.horizontal, 12)
                 .padding(.vertical, 6)
             }
-            .background(Capsule(style: .continuous).fill(.white.opacity(0.22)))
+            .background(Capsule(style: .continuous).fill(.white.opacity(0.1)))
             .buttonStyle(.plain)
             .focusable(true)
           }
-
-          Button(action: onWait) {
-            Text("Wait for Controller")
-              .font(.footnote.weight(.semibold))
-              .foregroundStyle(.white.opacity(0.85))
-              .padding(.horizontal, 12)
-              .padding(.vertical, 6)
-          }
-          .background(Capsule(style: .continuous).fill(.white.opacity(0.1)))
-          .buttonStyle(.plain)
-          .focusable(true)
         }
       }
       .padding(.horizontal, 18)

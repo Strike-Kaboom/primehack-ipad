@@ -46,7 +46,7 @@ internal struct PauseMenuView: View {
     case filmstrip
   }
   private enum Pane: Equatable {
-    case main, saves, cheats, controllers, discs, perfHUD
+    case main, saves, cheats, controllers, discs, perfHUD, controlsCard
     /// The Audio tile's grid (volume, mute, output, effects), and one effect's parameter page under it.
     case audio
     case audioEffect(AudioEffectPage)
@@ -110,6 +110,7 @@ internal struct PauseMenuView: View {
   /// Mirrors of the live Dolphin values behind the Upscaling and Audio tiles; the bridge is read on appear and
   /// written through the bindings, so the cycle tiles redraw without polling.
   @State private var internalResolution: Int = 1
+  @State private var isFlightPreset: Bool = false
   @State private var metalFXUpscale: Bool = false
   @State private var audioVolume: Int = 100
   /// Snapshot behind the Audio pane's backend, surround and effect tiles; read with the other live settings
@@ -179,6 +180,7 @@ internal struct PauseMenuView: View {
     performanceControls.refresh()
     if pane != .perfHUD { performanceControls.stopRefreshing() }
     internalResolution = performanceControls.state.resolutionScale
+    isFlightPreset = DOLConfigBridge.gfxEfbScaleBase() <= 2 && DOLConfigBridge.gfxEnhanceAnisotropySamples() <= 4
     metalFXUpscale = DOLConfigBridge.gfxMetalFXSpatialUpscale()
     audioVolume = TVEmulationBridge.audioVolumePercent()
     audioState = ConfigAudioSync.read()
@@ -375,6 +377,18 @@ internal struct PauseMenuView: View {
         effectPane(page)
       case .discs:
         DiscChangePicker(games: TVLibraryBridge.currentGames(), isWii: TVEmulationBridge.isCurrentSystemWii(), onBack: { pane = .main })
+      case .controlsCard:
+        VStack(spacing: 0) {
+          #if os(iOS)
+          paneBackHeader(title: L("Controls Card"), back: { pane = .main })
+          #endif
+          MenuScreen(model: PrimeHackControlsCardBuilder.make(isWii: TVEmulationBridge.isCurrentSystemWii()),
+                     style: .list,
+                     onBack: { pane = .main },
+                     tvHeader: ICubeLeafHeader(title: L("Controls Card"), subtitle: L("PrimeHack")),
+                     tvClaimsFocus: true)
+        }
+        .frame(maxWidth: 1000)
       #if os(tvOS)
       case .controllers:
         // Menu at the hub's root returns to the pause menu (`onBack`, through MenuScreen's own
@@ -959,7 +973,8 @@ internal struct PauseMenuView: View {
       nextEngine: nextEngine, quickSaveMode: quickSaveMode, isModded: ModdedBoot.isCurrentBootModded,
       onScreenController: onScreenController, onScreenControllerOptions: onScreenControllerOptions,
       canUndoLoadState: canUndoLoadState,
-      isPrimeGame: Self.isPrimeGameID(game.gameID))
+      isPrimeGame: Self.isPrimeGameID(game.gameID),
+      isFlightPreset: isFlightPreset)
     let quick = quickSaveActions
     let actions = PauseMenuActions(
       resume: { PauseArbiter.shared.userResume(); onClose() },
@@ -1019,6 +1034,32 @@ internal struct PauseMenuView: View {
       openPrimeHack: {
         settingsLink = SettingsDeepLink(leafID: "primehack", rowID: nil)
         showSettings = true
+      },
+      openControlsCard: {
+        tvLastFocusID = "primehack-controls-card"
+        pane = .controlsCard
+      },
+      toggleFlightQualityPreset: {
+        let currentlyFlight = DOLConfigBridge.gfxEfbScaleBase() <= 2 && DOLConfigBridge.gfxEnhanceAnisotropySamples() <= 4
+        #if os(iOS)
+        PrimeHackThermalStepDown.shared.clearSilently()
+        #endif
+        if currentlyFlight {
+          DOLConfigBridge.setGfxEfbScale(3)
+          DOLConfigBridge.setGfxEnhanceAnisotropySamples(16)
+          DOLConfigBridge.flushSettingsToDisk()
+          EmulationToast.post(L("Quality preset: 3× resolution, 16× AF"))
+        } else {
+          DOLConfigBridge.setGfxEfbScale(2)
+          DOLConfigBridge.setGfxEnhanceAnisotropySamples(4)
+          DOLConfigBridge.flushSettingsToDisk()
+          EmulationToast.post(L("Flight preset: 2× resolution, 4× AF"))
+        }
+        #if os(iOS)
+        PrimeHackThermalStepDown.shared.evaluate()
+        #endif
+        performanceControls.refresh()
+        refreshLiveSettings()
       })
     var model = PauseMenuModelBuilder.make(state: state, bindings: pauseMenuBindings, actions: actions)
     if performanceControls.state.scalingOverride != .none {
@@ -1159,6 +1200,7 @@ struct PauseMenuState {
   var onScreenControllerOptions: [OnScreenController] = []
   var canUndoLoadState: Bool = false
   var isPrimeGame: Bool = false
+  var isFlightPreset: Bool = false
 }
 
 /// Live bindings for the in-place tiles. Writing one applies immediately; the host rebuilds the model.
@@ -1204,6 +1246,8 @@ struct PauseMenuActions {
   var recenterPointer: () -> Void
   var openDiscPicker: () -> Void = {}
   var openPrimeHack: () -> Void = {}
+  var openControlsCard: () -> Void = {}
+  var toggleFlightQualityPreset: () -> Void = {}
 }
 
 /// Unified menu UX spec §5: Quick / Game / System. Shared by iOS and tvOS.
@@ -1382,11 +1426,25 @@ enum PauseMenuModelBuilder {
 
     var game: [MenuItem] = []
     if state.isPrimeGame {
-      game.append(
+      game.append(contentsOf: [
         MenuItem(id: "primehack", title: L("PrimeHack"), icon: "scope", tint: .cyan, role: .action(actions.openPrimeHack),
-                 description: L("Aim sensitivity, deadzone, DualSense triggers, lightbar, FOV and Metroid Prime extras."))
-      )
+                 description: L("Aim sensitivity, deadzone, DualSense triggers, lightbar, FOV and Metroid Prime extras.")),
+        MenuItem(id: "primehack-controls-card", title: L("Controls Card"), icon: "gamecontroller", tint: .teal,
+                 role: .action(actions.openControlsCard),
+                 description: L("DualSense button layout for Metroid Prime (beams, visors, Quick 180° & pitch reset).")),
+      ])
     }
+    game.append(
+      MenuItem(id: "flight-quality-preset",
+               title: state.isFlightPreset ? L("Preset: Flight") : L("Preset: Quality"),
+               icon: state.isFlightPreset ? "airplane" : "sparkles",
+               tint: state.isFlightPreset ? .teal : .indigo,
+               role: .action(actions.toggleFlightQualityPreset),
+               badge: state.isFlightPreset ? "2× / 4×" : "3× / 16×",
+               description: state.isFlightPreset
+                 ? L("Cooler battery play (2× + 4× AF). Tap to switch to Quality (3× + 16× AF).")
+                 : L("Sharp visuals (3× + 16× AF). Tap to switch to Flight (2× + 4× AF) for cooler battery play."))
+    )
     game.append(contentsOf: [
       MenuItem(id: "change-disc", title: L("Change Disc"), icon: "opticaldisc", role: .action(actions.openDiscPicker),
                description: L("Insert another local disc without restarting the game.")),

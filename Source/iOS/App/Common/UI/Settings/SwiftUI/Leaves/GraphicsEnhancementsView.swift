@@ -38,7 +38,15 @@ struct GraphicsEnhancementsView: View {
     // Decided against the snapshot as it was before this change.
     let effects = GraphicsEnhancementsState.sideEffects(of: change, in: state)
     switch change {
-    case .efbScale(let v): state.efbScale = v; DOLConfigBridge.setGfxEfbScale(v)
+    case .efbScale(let v):
+      state.efbScale = v
+      #if os(iOS)
+      PrimeHackThermalStepDown.shared.clearSilently()
+      #endif
+      DOLConfigBridge.setGfxEfbScale(v)
+      #if os(iOS)
+      PrimeHackThermalStepDown.shared.evaluate()
+      #endif
     case .metalFXSpatialUpscale(let v): state.metalFXSpatialUpscale = v; DOLConfigBridge.setGfxMetalFXSpatialUpscale(v)
     case .anisotropy(let v): state.anisotropy = v; DOLConfigBridge.setGfxEnhanceAnisotropySamples(v)
     case .msaa(let v): state.msaa = v; DOLConfigBridge.setGfxMsaa(v)

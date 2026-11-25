@@ -660,11 +660,14 @@ struct EmulationScreen: View {
 
       quickMenuAndRecordingOverlay
 
-      // Banner shown while a disconnect-induced pause is active (reconnect resumes).
+      // Banner shown while a disconnect-induced pause is active (reconnect waits for input / resumes).
       // No "Use Touch Controls" action on tvOS — there is no touchscreen overlay.
-      if controllerManager.disconnectPause != nil {
-        ControllerDisconnectBanner()
-          .zIndex(5)
+      if let dp = controllerManager.disconnectPause {
+        ControllerDisconnectBanner(
+          isReconnectedAwaitingInput: dp.awaitingResumeInput,
+          onResume: { controllerManager.clearDisconnectPause() }
+        )
+        .zIndex(5)
       }
 
       TVLivePerformanceOverlay(session: livePerformance)
@@ -784,7 +787,9 @@ struct EmulationScreen: View {
         checkNoControllerNotice()
         // If the game resumed via any path other than a controller reconnect
         // (pill tap, pause menu Resume, new game), clear a stale disconnect banner.
-        if controllerManager.disconnectPause != nil && !TVEmulationBridge.isPaused() {
+        // Keep the banner if PauseArbiter still holds `.disconnect` (e.g. deferred during boot).
+        if controllerManager.disconnectPause != nil && !TVEmulationBridge.isPaused() &&
+           !PauseArbiter.shared.holders.contains(PauseArbiter.Reason.disconnect) {
           controllerManager.clearDisconnectPause()
         }
         #if canImport(ActivityKit)
@@ -954,10 +959,12 @@ struct EmulationScreen: View {
 
     quickMenuAndRecordingOverlay
 
-    // Banner shown while a disconnect-induced pause is active (reconnect resumes).
-    if controllerManager.disconnectPause != nil {
-      // Controller only (PrimeHack for iPad): no "Use Touch Controls"; reconnecting the pad resumes.
+    // Banner shown while a disconnect-induced pause is active (reconnect waits for input / resumes).
+    if let dp = controllerManager.disconnectPause {
+      // Controller only (PrimeHack for iPad): no "Use Touch Controls"; reconnecting the pad waits for input.
       ControllerDisconnectBanner(
+        isReconnectedAwaitingInput: dp.awaitingResumeInput,
+        onResume: { controllerManager.clearDisconnectPause() },
         onUseTouchControls: ControllerManager.controllerOnly()
           ? nil : { controllerManager.useTouchControlsForDisconnectedSlot() }
       )
@@ -1133,7 +1140,7 @@ struct EmulationScreen: View {
   /// Pause rather than carry on through the iPad's speakers (Settings > PrimeHack > On a Flight).
   private func headphonesDisconnected() {
     guard PrimeHackFlightOptions.pauseOnHeadphonesOut(), TVEmulationBridge.isRunning(),
-          !TVEmulationBridge.isPaused(), !showPauseMenu, !showQuickMenu else { return }
+          PauseArbiter.shared.coreWouldRun, !showPauseMenu, !showQuickMenu else { return }
     PauseGestureTracker.shared.requestPauseMenu(reason: "headphones-disconnected")
   }
 
@@ -1219,7 +1226,9 @@ struct EmulationScreen: View {
     .onReceive(statusPollTimer) { _ in
       isPaused = TVEmulationBridge.isPaused()
       // Clear a stale disconnect banner if the game resumed via any other path.
-      if controllerManager.disconnectPause != nil && !TVEmulationBridge.isPaused() {
+      // Keep the banner if PauseArbiter still holds `.disconnect` (e.g. deferred during boot).
+      if controllerManager.disconnectPause != nil && !TVEmulationBridge.isPaused() &&
+         !PauseArbiter.shared.holders.contains(PauseArbiter.Reason.disconnect) {
         controllerManager.clearDisconnectPause()
       }
       idleSleepTick()
@@ -1321,7 +1330,33 @@ struct EmulationScreen: View {
         .claimsController()
     }
     .onReceive(NotificationCenter.default.publisher(for: UIApplication.didEnterBackgroundNotification)) { _ in
+      let hadQuickSavePicker = showQuickSavePicker
       showQuickSavePicker = false
+      // PrimeHack for iPad: land on the Pause Menu after sleep/backgrounding so the game never
+      // restarts unexpectedly under your thumbs when unlocking or switching back.
+      // Guard against every active sheet/alert so UIKit never drops the fullScreenCover and leaks
+      // the pending token, and use claimPendingWithoutPausing since appWillResignActive already
+      // issued pauseAsync().
+      if PrimeHackFlightOptions.pauseAfterSleep(),
+         TVEmulationBridge.isRunning(),
+         !quitRequestInFlight,
+         !showPauseMenu,
+         !isEditingLayout,
+         !hadQuickSavePicker,
+         !showControllerSettings,
+         !showShaderSheet,
+         !showShaderParams,
+         !showFXSheet,
+         !showExitConfirm,
+         !showSkyImporter,
+         !showSkyClearPicker,
+         quitSaveFailure == nil {
+        SaveStateService.capturePausePreview()
+        PauseArbiter.shared.claimPendingWithoutPausing(PauseArbiter.Reason.pauseMenuRequest)
+        showQuickMenu = false
+        showPerfOverlay = false
+        showPauseMenu = true
+      }
     }
     .sheet(isPresented: $showControllerSettings, onDismiss: controllerSettingsDismissed) {
       NavigationStack {
@@ -1371,6 +1406,7 @@ struct EmulationScreen: View {
 
   private func iosDidAppear() {
     ResumeCheckpoint.prepareLifecycleObservers()
+    PrimeHackThermalStepDown.shared.startIfNeeded()
     log.debug("[INPUT] iOS EmulationScreen onAppear. input_debug=\(UserDefaults.standard.bool(forKey: "input_debug"))")
     log.debug("[INPUT] iOS initial controllers count: \(GCController.controllers().count)")
     // PrimeHack for iPad: a sideloaded copy stops opening when its signature expires. Say so while
@@ -2183,3 +2219,82 @@ struct EmulationScreen: View {
     }
   }
 }
+
+/// PrimeHack for iPad: thermal resolution step-down. When the iPad reaches `.serious` or `.critical`
+/// thermal state during a game, lowers internal resolution by 1 step (e.g. 3× → 2×) on the
+/// CurrentRun layer ONLY (never mutating the user's saved Base resolution) and restores cleanly
+/// once the device cools back to `.nominal`/`.fair` or when emulation stops.
+#if os(iOS)
+@MainActor
+final class PrimeHackThermalStepDown {
+  static let shared = PrimeHackThermalStepDown()
+  private var started = false
+  private var steppedDownScale: Int?
+
+  func startIfNeeded() {
+    guard !started else {
+      evaluate()
+      return
+    }
+    started = true
+    let nc = NotificationCenter.default
+    nc.addObserver(forName: ProcessInfo.thermalStateDidChangeNotification, object: nil, queue: .main) { _ in
+      Task { @MainActor in PrimeHackThermalStepDown.shared.evaluate() }
+    }
+    nc.addObserver(forName: Notification.Name("DOLEmulationDidStartNotification"), object: nil, queue: .main) { _ in
+      Task { @MainActor in PrimeHackThermalStepDown.shared.evaluate() }
+    }
+    nc.addObserver(forName: Notification.Name("DOLEmulationDidEndNotification"), object: nil, queue: .main) { _ in
+      Task { @MainActor in PrimeHackThermalStepDown.shared.clearSilently() }
+    }
+    evaluate()
+  }
+
+  func clearSilently() {
+    guard steppedDownScale != nil else { return }
+    steppedDownScale = nil
+    DOLConfigBridge.clearCurrentRunGfxEfbScale()
+  }
+
+  func evaluate() {
+    guard PrimeHackFlightOptions.thermalResStepDown(), TVEmulationBridge.isRunning() else {
+      clearSilently()
+      return
+    }
+    let state = ProcessInfo.processInfo.thermalState
+    switch state {
+    case .serious, .critical:
+      guard steppedDownScale == nil else { return }
+      let effective = Int(DOLConfigBridge.gfxEfbScale())
+      let target: Int
+      if effective == 0 {
+        // Auto (0) renders at full native 13" panel resolution; step down to 2× for relief.
+        target = 2
+      } else if effective >= 2 {
+        target = max(1, effective - 1)
+      } else {
+        return
+      }
+      DOLConfigBridge.setCurrentRunGfxEfbScale(target)
+      steppedDownScale = target
+      EmulationToast.post(String(format: L("iPad is warm — lowered resolution to %d×"), target))
+    case .nominal:
+      // Restore only at `.nominal` (not `.fair`) so hovering at the `.fair`/`.serious` boundary
+      // never repeatedly tears down and rebuilds the EFB.
+      guard steppedDownScale != nil else { return }
+      let hadAutoOverride = (DOLConfigBridge.efbScaleOverride() == .auto)
+      steppedDownScale = nil
+      DOLConfigBridge.clearCurrentRunGfxEfbScale()
+      if hadAutoOverride {
+        let restored = Int(DOLConfigBridge.gfxEfbScale())
+        let label = restored == 0 ? L("Auto") : "\(restored)×"
+        EmulationToast.post(String(format: L("iPad cooled down — restored resolution to %@"), label))
+      }
+    case .fair:
+      break
+    @unknown default:
+      break
+    }
+  }
+}
+#endif

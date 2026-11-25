@@ -220,6 +220,16 @@ static void ICubeStoreDefaultISO(NSString* path)
 {
   return (NSInteger)Config::GetBase(Config::GFX_EFB_SCALE);
 }
++ (void)setCurrentRunGfxEfbScale:(NSInteger)scale
+{
+  if (Config::GetLayer(Config::LayerType::CurrentRun))
+    Config::SetCurrent(Config::GFX_EFB_SCALE, (int)scale);
+}
++ (void)clearCurrentRunGfxEfbScale
+{
+  if (Config::GetLayer(Config::LayerType::CurrentRun))
+    Config::DeleteKey(Config::LayerType::CurrentRun, Config::GFX_EFB_SCALE);
+}
 // Resolver step #3 badge: which layer, if not Base, holds the effective value of a perf key. Any
 // layer above Base wins over the user's own value: CurrentRun (adaptive clock and explicit runtime overrides),
 // and also a game's INI (GlobalGame / LocalGame), e.g. per-game Internal Resolution or the shipped
@@ -715,10 +725,11 @@ static bool HasCurrentRunLayer()
 }
 + (BOOL)audioMuteOnDisabledSpeedLimit { return Config::Get(Config::MAIN_AUDIO_MUTE_ON_DISABLED_SPEED_LIMIT); }
 + (void)setAudioMuteOnDisabledSpeedLimit:(BOOL)enabled { Config::SetBaseOrCurrent(Config::MAIN_AUDIO_MUTE_ON_DISABLED_SPEED_LIMIT, (bool)enabled); }
-+ (BOOL)audioMuteSwitchObey { return ((int)Config::Get(Config::MAIN_MUTE_SWITCH_MODE)) != 0; }
++ (BOOL)audioMuteSwitchObey { return ((int)Config::Get(Config::MAIN_MUTE_SWITCH_MODE)) == 0; }
 + (void)setAudioMuteSwitchObey:(BOOL)obey
 {
-  Config::SetBaseOrCurrent(Config::MAIN_MUTE_SWITCH_MODE, (int)(obey ? 1 : 0));
+  // AudioMuteSwitchMode: 0 = Obey (default), 1 = Ignore.
+  Config::SetBaseOrCurrent(Config::MAIN_MUTE_SWITCH_MODE, (int)(obey ? 0 : 1));
   // The category is what makes the switch matter; applying it here makes the toggle live.
   [[AudioSessionManager shared] setSessionCategory];
 }
@@ -1391,11 +1402,34 @@ static bool HasCurrentRunLayer()
   del(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
   del(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
   del(Config::PRIMEHACK_IOS_STICK_DEADZONE);
+  del(Config::PRIMEHACK_IOS_STICK_OUTER_DEADZONE);
+  del(Config::PRIMEHACK_IOS_SCAN_VISOR_SENSITIVITY);
+  del(Config::PRIMEHACK_IOS_TURN_ACCEL);
+  del(Config::PRIMEHACK_IOS_QUICK_180);
   del(Config::PRIMEHACK_IOS_AIM_CURVE);
   del(Config::PRIMEHACK_IOS_INVERT_X);
   del(Config::PRIMEHACK_IOS_INVERT_Y);
   del(Config::PRIMEHACK_IOS_LOCKON_FREE_AIM);
   del(Config::PRIMEHACK_IOS_GC_MP2_DUAL_CORE);
+  del(Config::PRIMEHACK_IOS_PROMOTION_PACING);
+  del(Config::PRIMEHACK_IOS_PER_GAME_AIM);
+  del(Config::PRIMEHACK_IOS_MP1_H_SENS);
+  del(Config::PRIMEHACK_IOS_MP1_V_SENS);
+  del(Config::PRIMEHACK_IOS_MP1_DEADZONE);
+  del(Config::PRIMEHACK_IOS_MP1_FOV);
+  del(Config::PRIMEHACK_IOS_MP2_H_SENS);
+  del(Config::PRIMEHACK_IOS_MP2_V_SENS);
+  del(Config::PRIMEHACK_IOS_MP2_DEADZONE);
+  del(Config::PRIMEHACK_IOS_MP2_FOV);
+  del(Config::PRIMEHACK_IOS_MP3_H_SENS);
+  del(Config::PRIMEHACK_IOS_MP3_V_SENS);
+  del(Config::PRIMEHACK_IOS_MP3_DEADZONE);
+  del(Config::PRIMEHACK_IOS_MP3_FOV);
+  del(Config::MAIN_AUDIO_CABIN_DRC);
+  del(Config::MAIN_AUDIO_MIX_WITH_OTHERS);
+  del(Config::GFX_CC_CORRECT_GAMMA);
+  del(Config::GFX_CC_GAME_GAMMA);
+  del(Config::GFX_CC_SDR_DISPLAY_GAMMA_SRGB);
   del(Config::LOCKCAMERA_IN_PUZZLES);
   del(Config::FOV_ENABLE);
   del(Config::FOV);
@@ -1626,8 +1660,12 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
     @"primehack_dualsense_lightbar",
     @"primehack_lightbar_brightness",
     @"primehack_rumble_strength",
+    @"primehack_rumble_min_pulse_ms",
+    @"primehack_damage_missile_cues",
     @"primehack_pause_on_headphones_out",
     @"primehack_idle_pause_minutes",
+    @"primehack_pause_after_sleep",
+    @"primehack_thermal_res_stepdown",
   ];
   for (NSString* k in gameplayKeys) {
     [d removeObjectForKey:k];
@@ -1654,6 +1692,8 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
   // RESET vs PRESERVE split.
   [DOLConfigBridge resetGameplayConfigKeys];
   [DOLConfigBridge resetGameplayUserDefaults];
+  // Re-apply audio session category since mute-switch and MixWithOthers keys were reset.
+  [[AudioSessionManager shared] setSessionCategory];
   // Persist Base layer to disk; defaults remain for the cleared keys.
   Config::Save();
 }

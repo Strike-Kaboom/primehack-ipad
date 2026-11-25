@@ -4,6 +4,7 @@
 #import "TVEmulationBridge.h"
 #import "AudioVolumeRuntime.h"
 
+#import <QuartzCore/QuartzCore.h>
 #import <UIKit/UIKit.h>
 
 #import "EmulationCoordinator.h"
@@ -121,6 +122,23 @@ static uint64_t CurrentStateSessionIdentifier() {
 // put the game back at its boot logos, and the next auto-save would then overwrite the resume state
 // with it. 0 matches no session.
 static std::atomic<uint64_t> s_userLoadSession{0};
+static std::atomic<double> s_userLoadTime{0.0};
+static constexpr double kUndoLoadMaxAgeSeconds = 600.0;
+
+static void RecordUserLoadSession(uint64_t session) {
+  s_userLoadTime.store(CACurrentMediaTime(), std::memory_order_relaxed);
+  s_userLoadSession.store(session, std::memory_order_release);
+}
+
+static bool IsUserLoadUndoValid() {
+  if (s_userLoadSession.load(std::memory_order_acquire) != CurrentStateSessionIdentifier())
+    return false;
+  const double loaded_at = s_userLoadTime.load(std::memory_order_relaxed);
+  if (loaded_at <= 0.0)
+    return false;
+  const double age = CACurrentMediaTime() - loaded_at;
+  return age >= 0.0 && age < kUndoLoadMaxAgeSeconds;
+}
 
 // Accept direct StateSaves children only. Resolve the parent to honor configured root symlinks,
 // but reject a file symlink so a selected state cannot redirect reads/writes outside that root.
@@ -287,7 +305,13 @@ static void RunPauseRequestAsync(Core::State from, Core::State to) {
   DOLHostQueueRunAsync(^{
     std::lock_guard<std::mutex> lock(s_pauseRequestMutex);
     auto& system = Core::System::GetInstance();
-    if (generation == s_pauseRequestGeneration.load() && Core::GetState(system) == from) {
+    // PrimeHack for iPad: while another thread holds CPUThreadGuard (e.g. a background resume
+    // save), Core::GetState temporarily reports Paused. For pause requests, check IsRunning() so
+    // SetState waits behind the guard on s_core_mutex instead of silently dropping the pause.
+    const bool eligible = (to == Core::State::Paused)
+        ? Core::IsRunning(system)
+        : (Core::GetState(system) == from);
+    if (generation == s_pauseRequestGeneration.load() && eligible) {
       Core::SetState(system, to);
     }
     SettlePauseGeneration(generation);
@@ -480,7 +504,7 @@ static void RunPauseRequestAsync(Core::State from, Core::State to) {
   Core::QueueHostJob([s](Core::System& system) {
     // Checked when the job runs, not when it is queued: the core may still be booting then.
     if (StateOperationAllowed(system, "slot load")) {
-      s_userLoadSession.store(CurrentStateSessionIdentifier());
+      RecordUserLoadSession(CurrentStateSessionIdentifier());
       State::Load(system, s);
     }
   });
@@ -588,8 +612,10 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
   std::string p(path.UTF8String);
   Core::QueueHostJob([p](Core::System& system) {
     // Checked when the job runs, not when it is queued: the core may still be booting then.
+    // Load synchronously under the CPU guard so markResumeSettledAfterRequestedLoads (queued next)
+    // never unlocks resume saves while LoadFromBuffer is still running on the CPU thread.
     if (StateOperationAllowed(system, "path load"))
-      State::LoadAs(system, p);
+      State::LoadAsAndWait(system, p);
   });
 }
 
@@ -613,7 +639,7 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
     if (![CheckedStateSavesPath(pathNow) isEqualToString:pathNow] ||
         ![TVEmulationBridge stateFileIsCompatibleAtPath:pathNow])
       return;
-    s_userLoadSession.store(session);
+    RecordUserLoadSession(session);
     State::LoadAs(system, filename);
   });
   return YES;
@@ -645,7 +671,7 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
               [TVEmulationBridge stateFileIsCompatibleAtPath:pathNow]) {
             loaded = State::LoadAsAndWait(system, filename);
             if (loaded) {
-              s_userLoadSession.store(session);
+              RecordUserLoadSession(session);
             }
           }
         }
@@ -657,17 +683,20 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
 }
 
 + (BOOL)canUndoLoadState {
-  // Only after a load the player asked for in this session (see s_userLoadSession).
+  // Only after a load the player asked for in this session, within the 10-minute expiry window.
   return Core::IsRunning(Core::System::GetInstance()) && State::HasUndoLoadState() &&
-         s_userLoadSession.load() == CurrentStateSessionIdentifier();
+         IsUserLoadUndoValid();
 }
 
 + (void)undoLoadState {
   if (![self canUndoLoadState])
     return;
   Core::QueueHostJob([](Core::System& system) {
+    if (!StateOperationAllowed(system, "undo load"))
+      return;
+    const Core::CPUThreadGuard guard(system);
     if (StateOperationAllowed(system, "undo load") && State::HasUndoLoadState() &&
-        s_userLoadSession.load() == CurrentStateSessionIdentifier())
+        IsUserLoadUndoValid())
       State::UndoLoadState(system);
   });
 }

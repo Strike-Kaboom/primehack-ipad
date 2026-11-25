@@ -57,6 +57,9 @@ typedef NS_ENUM(NSInteger, DOLConfigOverride) {
 + (void)removeTestGameLayer;
 // Maximum Internal Resolution supported by backend/device
 + (NSInteger)gfxEfbMaxScale;
+// PrimeHack for iPad: thermal step-down overrides EFB scale on CurrentRun only (never mutates Base).
++ (void)setCurrentRunGfxEfbScale:(NSInteger)scale;
++ (void)clearCurrentRunGfxEfbScale;
 // GPU Texture Decoding
 + (BOOL)gfxEnableGPUTextureDecoding;
 + (void)setGfxEnableGPUTextureDecoding:(BOOL)enabled;

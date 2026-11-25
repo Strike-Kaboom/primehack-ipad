@@ -160,7 +160,18 @@ final class PauseGestureTracker {
   /// - Parameter allPressed: true if L1, R1, L2, R2 are all currently pressed.
   func updateShoulderState(allPressed: Bool) {
     if TCManagerInterface.inputDebugEnabled { NSLog("updateShoulderState: %@", allPressed ? "Yes" : "No") }
+    if allPressed && Self.isPrimeHackActiveGame() {
+      // PrimeHack for iPad: L1 (visor), L2 (lock-on), and R2 (fire) are held constantly in combat;
+      // brushing R1 (map) would trigger accidental fast-forward. Allow `false` through so it can never latch.
+      return
+    }
     isAllShouldersHeld = allPressed
+  }
+
+  private static func isPrimeHackActiveGame() -> Bool {
+    guard TVEmulationBridge.isRunning(), PrimeHackBridge.enabledForCurrentRun() else { return false }
+    let id = TVEmulationBridge.currentGameID() as String
+    return ["GM8E", "GM8P", "G2ME", "G2MP", "R3ME", "R3MP", "RM3E", "RM3P"].contains { id.hasPrefix($0) }
   }
 
   /// Call when Menu or Start is pressed **as part of the shoulder chord**.

@@ -18,6 +18,8 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (BOOL)hasChargeBeam;
 + (BOOL)inHypermode;
 + (BOOL)isLowHealth;
++ (BOOL)isMissileEmpty;
++ (NSUInteger)damageCounter;
 + (NSInteger)activeVisorKind;
 + (NSInteger)activeBeamKind;
 
@@ -30,6 +32,14 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (void)setStickVerticalSensitivity:(NSInteger)value;
 + (NSInteger)stickDeadzone;
 + (void)setStickDeadzone:(NSInteger)value;
++ (NSInteger)stickOuterDeadzone;
++ (void)setStickOuterDeadzone:(NSInteger)value;
++ (NSInteger)scanVisorSensitivity;
++ (void)setScanVisorSensitivity:(NSInteger)value;
++ (NSInteger)turnAcceleration;
++ (void)setTurnAcceleration:(NSInteger)value;
++ (BOOL)quick180Turn;
++ (void)setQuick180Turn:(BOOL)value;
 + (NSInteger)aimCurve;
 + (void)setAimCurve:(NSInteger)value;
 + (BOOL)invertX;
@@ -40,6 +50,34 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (void)setLockOnFreeAim:(BOOL)value;
 + (BOOL)lockCameraInMotionPuzzles;
 + (void)setLockCameraInMotionPuzzles:(BOOL)value;
+
+// Per-Game Aim Profiles (Prime 1 / Prime 2 / Prime 3)
++ (BOOL)perGameAimEnabled;
++ (void)setPerGameAimEnabled:(BOOL)value;
++ (NSInteger)mp1HSens;
++ (void)setMp1HSens:(NSInteger)value;
++ (NSInteger)mp1VSens;
++ (void)setMp1VSens:(NSInteger)value;
++ (NSInteger)mp1Deadzone;
++ (void)setMp1Deadzone:(NSInteger)value;
++ (NSInteger)mp1Fov;
++ (void)setMp1Fov:(NSInteger)value;
++ (NSInteger)mp2HSens;
++ (void)setMp2HSens:(NSInteger)value;
++ (NSInteger)mp2VSens;
++ (void)setMp2VSens:(NSInteger)value;
++ (NSInteger)mp2Deadzone;
++ (void)setMp2Deadzone:(NSInteger)value;
++ (NSInteger)mp2Fov;
++ (void)setMp2Fov:(NSInteger)value;
++ (NSInteger)mp3HSens;
++ (void)setMp3HSens:(NSInteger)value;
++ (NSInteger)mp3VSens;
++ (void)setMp3VSens:(NSInteger)value;
++ (NSInteger)mp3Deadzone;
++ (void)setMp3Deadzone:(NSInteger)value;
++ (NSInteger)mp3Fov;
++ (void)setMp3Fov:(NSInteger)value;
 
 // Visuals
 + (BOOL)fovEnabled;
@@ -98,6 +136,26 @@ NS_SWIFT_NAME(PrimeHackBridge)
 /// G2M.ini's single core. Read once when a game boots.
 + (BOOL)gcPrime2DualCore;
 + (void)setGcPrime2DualCore:(BOOL)value;
+/// Opt-in: pace Metal presents on 120 Hz ProMotion to the game's refresh rate.
++ (BOOL)proMotionPacing;
++ (void)setProMotionPacing:(BOOL)value;
+
+// Flight Audio & Visuals
++ (BOOL)cabinDrcEnabled;
++ (void)setCabinDrcEnabled:(BOOL)value;
++ (BOOL)audioMixWithOthers;
++ (void)setAudioMixWithOthers:(BOOL)value;
+/// Dark-cabin gamma lift (0 = off, 5..40 = shadow lift % via Dolphin's ColorCorrection gamma).
++ (NSInteger)darkCabinGammaLift;
++ (void)setDarkCabinGammaLift:(NSInteger)value;
+
+// Live HD Texture Cache Stats (lock-free, safe from main thread)
++ (NSUInteger)hiresIndexedTextureCount;
++ (uint64_t)hiresCacheRamUsedBytes;
++ (uint64_t)hiresCacheRamCapBytes;
++ (uint64_t)hiresCacheActiveCount;
++ (uint64_t)hiresCachePendingCount;
++ (uint64_t)hiresCacheEvictionCount;
 
 @end
 

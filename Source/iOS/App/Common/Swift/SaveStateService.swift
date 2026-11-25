@@ -372,6 +372,14 @@ public enum SaveStateService {
       // A previous launch armed the watchdog around this exact step and nothing
       // ever cleared it - the state (or the auto-state) that step was about to
       // load never let the app come back up. Don't try it again automatically.
+      // PrimeHack for iPad: preserve the declined auto-state aside so a false-positive
+      // watchdog decline (e.g. kill within 3s of boot) never loses the player's resume file
+      // when the next pause or background save writes a fresh {GameID}.auto.
+      if let autoURL, FileManager.default.fileExists(atPath: autoURL.path) {
+        let declinedURL = autoURL.appendingPathExtension("declined")
+        try? FileManager.default.removeItem(at: declinedURL)
+        try? FileManager.default.moveItem(at: autoURL, to: declinedURL)
+      }
       BootWatchdog.clear()
       pendingBootStatePath = nil
       skipResumeOnce = false
