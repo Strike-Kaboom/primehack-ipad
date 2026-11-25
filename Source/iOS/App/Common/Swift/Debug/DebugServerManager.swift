@@ -45,10 +45,20 @@ enum KeepAwake {
   // Refcounted per reason so overlapping lifecycles (e.g. view recreation or nested callers)
   // never prematurely re-enable auto-lock while a reason is still held.
   private static var reasonCounts: [Reason: Int] = [:]
+  // PrimeHack for iPad: reasons that are held but do not count for now (idle sleep protection:
+  // nobody has touched the controller for a while, so Auto-Lock may take the screen). Guarded by
+  // `lock` like `reasonCounts`; the holds themselves stay balanced.
+  private static var suspendedReasons: Set<Reason> = []
 
   /// Keep the device awake for `reason` until the matching `release`.
   static func acquire(_ reason: Reason) {
-    update { $0[reason, default: 0] += 1 }
+    update { counts in
+      let previous = counts[reason, default: 0]
+      counts[reason] = previous + 1
+      if previous == 0 {
+        _ = suspendedReasons.remove(reason)
+      }
+    }
   }
 
   /// Drop `reason`; the device may sleep again once no reason remains.
@@ -57,8 +67,24 @@ enum KeepAwake {
       guard let current = counts[reason] else { return }
       if current <= 1 {
         counts.removeValue(forKey: reason)
+        // The next holder of this reason starts awake.
+        _ = suspendedReasons.remove(reason)
       } else {
         counts[reason] = current - 1
+      }
+    }
+  }
+
+  /// While suspended, a held `reason` stops keeping the device awake; its holds are untouched, and
+  /// the suspension ends with the reason's last `release`.
+  static func setSuspended(_ reason: Reason, _ suspended: Bool) {
+    update { counts in
+      if suspended {
+        if counts[reason] != nil {
+          _ = suspendedReasons.insert(reason)
+        }
+      } else {
+        _ = suspendedReasons.remove(reason)
       }
     }
   }
@@ -66,7 +92,7 @@ enum KeepAwake {
   private static func update(_ body: (inout [Reason: Int]) -> Void) {
     lock.lock()
     body(&reasonCounts)
-    let disabled = !reasonCounts.isEmpty
+    let disabled = reasonCounts.keys.contains { !suspendedReasons.contains($0) }
     let count = reasonCounts.values.reduce(0, +)
     lock.unlock()
 

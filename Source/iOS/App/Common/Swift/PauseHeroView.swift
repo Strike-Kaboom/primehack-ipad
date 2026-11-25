@@ -1,8 +1,12 @@
 // Copyright 2026 DolphiniOS Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+import Combine
 import GameController
 import SwiftUI
+#if canImport(UIKit)
+import UIKit
+#endif
 
 /// Snapshot of Player 1's wireless controller battery (e.g. DualSense), shown in the Pause Menu
 /// hero and monitored for low-battery toasts during gameplay.
@@ -40,6 +44,84 @@ struct ControllerBatterySnapshot: Equatable {
     return ControllerBatterySnapshot(percent: pct, isCharging: charging)
   }
 }
+
+#if os(iOS)
+/// PrimeHack for iPad: the device's own clock and battery for the pause hero. A game hides the
+/// status bar, so on a long flight the pause screen is the one place to check either.
+struct DeviceStatusSnapshot: Equatable {
+  let timeText: String
+  /// nil when the system reports no level (Simulator, a Mac without a battery).
+  let batteryPercent: Int?
+  let isCharging: Bool
+
+  var batterySymbolName: String {
+    if isCharging { return "battery.100.bolt" }
+    switch batteryPercent ?? 100 {
+    case 88...: return "battery.100"
+    case 63...: return "battery.75"
+    case 38...: return "battery.50"
+    case 13...: return "battery.25"
+    default: return "battery.0"
+    }
+  }
+
+  var batteryTint: Color {
+    if isCharging { return .green }
+    guard let percent = batteryPercent else { return ICubeDesign.color(.textPrimary) }
+    if percent <= 10 { return .red }
+    if percent <= 20 { return .orange }
+    return ICubeDesign.color(.textPrimary)
+  }
+
+  @MainActor static func read(now: Date = Date()) -> DeviceStatusSnapshot {
+    let device = UIDevice.current
+    // Off by default; without it the level reads -1. Left on: the pause menu reopens often.
+    if !device.isBatteryMonitoringEnabled { device.isBatteryMonitoringEnabled = true }
+    let level = device.batteryLevel
+    let state = device.batteryState
+    let percent: Int? = (state == .unknown || level < 0) ? nil : Int((min(max(level, 0), 1) * 100).rounded())
+    return DeviceStatusSnapshot(timeText: now.formatted(date: .omitted, time: .shortened),
+                                batteryPercent: percent,
+                                isCharging: state == .charging || state == .full)
+  }
+}
+
+/// The clock and iPad battery chips under the pause hero's game ID row. Owns its own snapshot and
+/// refresh timer, so the time keeps up while the pause menu stays open.
+struct PauseDeviceStatusRow: View {
+  @State private var status: DeviceStatusSnapshot?
+  private let refreshTimer = Timer.publish(every: 15.0, on: .main, in: .common).autoconnect()
+
+  var body: some View {
+    HStack(spacing: ICubeDesign.Spacing.xs.rawValue) {
+      if let status {
+        chip(tint: ICubeDesign.color(.textPrimary)) {
+          Image(systemName: "clock")
+          Text(status.timeText)
+        }
+        if let percent = status.batteryPercent {
+          chip(tint: status.batteryTint) {
+            Image(systemName: "ipad.landscape")
+            Image(systemName: status.batterySymbolName)
+            Text("\(percent)%")
+          }
+        }
+      }
+    }
+    .onAppear { status = DeviceStatusSnapshot.read() }
+    .onReceive(refreshTimer) { now in status = DeviceStatusSnapshot.read(now: now) }
+  }
+
+  private func chip<Content: View>(tint: Color, @ViewBuilder content: () -> Content) -> some View {
+    HStack(spacing: 3) { content() }
+      .icubeText(.tag)
+      .foregroundStyle(tint)
+      .padding(.horizontal, ICubeDesign.Spacing.xs.rawValue)
+      .padding(.vertical, ICubeDesign.Spacing.xxs.rawValue)
+      .background(Capsule().fill(ICubeDesign.color(.rowSurface)))
+  }
+}
+#endif
 
 /// The pause screen's game hero (iFly layout, iCube tokens): the cover, "PAUSED" in the platform accent, the title in
 /// the display face, the game ID and the running engine. tvOS and the iPad use the tall column beside the tiles; an
@@ -119,6 +201,9 @@ struct PauseHeroView: View {
           .background(Capsule().fill(ICubeDesign.color(.rowSurface)))
         }
       }
+      #if os(iOS)
+      PauseDeviceStatusRow()
+      #endif
     }
   }
 

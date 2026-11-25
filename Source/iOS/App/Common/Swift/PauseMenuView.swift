@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 import SwiftUI
+import os
 
 #if os(iOS)
 #endif
@@ -82,7 +83,10 @@ internal struct PauseMenuView: View {
   /// and on tvOS while the Siri Remote's motion is Wii Remote 1's pointer (`RemotePointerBinding`).
   @MainActor private static var showsRecenterPointer: Bool {
     guard TVEmulationBridge.isRunning(), TVEmulationBridge.isCurrentSystemWii() else { return false }
-    if PrimeHackBridge.enabledForCurrentRun() && ControllerManager.controllerOnly() { return false }
+    // Only in the Prime games: outside them `enabledForCurrentRun` falls back to the PrimeHack
+    // setting itself (on by default), which hid Recenter Pointer in every other Wii game too.
+    if PrimeHackBridge.enabledForCurrentRun() && ControllerManager.controllerOnly()
+        && isPrimeGameID(TVEmulationBridge.currentGameID()) { return false }
     #if os(iOS)
     return true
     #else
@@ -404,6 +408,10 @@ internal struct PauseMenuView: View {
       if pauseToken == nil {
         pauseToken = PauseArbiter.shared.adoptPending() ?? PauseArbiter.shared.claim(PauseArbiter.Reason.pauseMenu)
         openedAt = Date()
+        // PrimeHack for iPad: the game is paused, so refreshing the Resume Where I Left Off snapshot
+        // here costs no hitch, and a later crash or an iPadOS memory kill then loses minutes instead
+        // of everything since the app was last left.
+        ResumeCheckpoint.saveIfDue()
       }
       if openingSaveSession == nil { openingSaveSession = TVEmulationBridge.currentSessionIdentifier() }
       if startsInSaveBrowser && !initialSaveBrowserConsumed {
@@ -1440,6 +1448,67 @@ enum RecordingToggle {
         if on { try await manager.start() } else { _ = try await manager.stop() }
       } catch {
         EmulationToast.post(L("Recording failed"))
+      }
+    }
+  }
+}
+
+/// PrimeHack for iPad: refreshes the Resume Where I Left Off snapshot when the pause menu opens, at
+/// most once a minute. Until now that snapshot was only written when the app was left or the game
+/// was quit, so a crash (or iPadOS reclaiming memory) mid-session lost everything since then.
+/// The bridge call does nothing when the setting is off, no game is running, or the boot-time
+/// resume has not settled; it blocks until the file is written, so it runs off the main thread.
+@MainActor
+enum ResumeCheckpoint {
+  static let minimumInterval: TimeInterval = 60
+  private static var lastSession: UInt64 = 0
+  private static var lastSavedAt = Date.distantPast
+  private static var inFlight = false
+  private static var observersInstalled = false
+  private nonisolated static let resignLock = OSAllocatedUnfairLock(initialState: false)
+
+  nonisolated static var isAppResigning: Bool {
+    resignLock.withLock { $0 }
+  }
+
+  static func prepareLifecycleObservers() {
+    guard !observersInstalled else { return }
+    observersInstalled = true
+    #if os(iOS)
+    NotificationCenter.default.addObserver(
+      forName: UIApplication.willResignActiveNotification, object: nil, queue: .main) { _ in
+      resignLock.withLock { $0 = true }
+    }
+    NotificationCenter.default.addObserver(
+      forName: UIApplication.didEnterBackgroundNotification, object: nil, queue: .main) { _ in
+      resignLock.withLock { $0 = true }
+    }
+    NotificationCenter.default.addObserver(
+      forName: UIApplication.didBecomeActiveNotification, object: nil, queue: .main) { _ in
+      resignLock.withLock { $0 = false }
+    }
+    #endif
+  }
+
+  static func saveIfDue(now: Date = Date()) {
+    prepareLifecycleObservers()
+    let session = TVEmulationBridge.currentSessionIdentifier()
+    if session != lastSession {
+      lastSavedAt = .distantPast
+    }
+    guard TVEmulationBridge.isStateOperationAllowed(), !inFlight, !isAppResigning,
+          now.timeIntervalSince(lastSavedAt) >= minimumInterval else { return }
+    inFlight = true
+    DispatchQueue.global(qos: .userInitiated).async {
+      let saved = TVEmulationBridge.saveResumeStateKeepingGameRunning(
+        withSnapshotSignal: nil,
+        shouldCancel: { ResumeCheckpoint.isAppResigning })
+      Task { @MainActor in
+        inFlight = false
+        if saved {
+          lastSession = session
+          lastSavedAt = Date()
+        }
       }
     }
   }

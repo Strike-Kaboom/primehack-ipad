@@ -410,6 +410,15 @@ struct EmulationScreen: View {
   @State private var batteryPollTicks: Int = 29
   @State private var warnedBattery20: Bool = false
   @State private var warnedBattery10: Bool = false
+  /// PrimeHack for iPad: the "Resume Where I Left Off" snapshot was refreshed for this discharge.
+  @State private var savedForCriticalDeviceBattery: Bool = false
+  /// PrimeHack for iPad: the signature-expiry reminder is shown once per app launch, not per game.
+  @MainActor private static var signingReminderShown = false
+  /// PrimeHack for iPad: idle sleep protection (see `idleSleepTick`). When any controller last
+  /// reported input, the newest input timestamp seen, and whether the screen hold is suspended.
+  @State private var lastControllerInputAt = Date()
+  @State private var lastControllerEventStamp: TimeInterval = 0
+  @State private var idleKeepAwakeSuspended = false
 
   private static let topRevealStripHeight: CGFloat = 80
 
@@ -1100,8 +1109,74 @@ struct EmulationScreen: View {
     }
   }
 
-  private var iosInputCanvas: some View {
+  /// PrimeHack for iPad: the unattended-play protections, in a modifier chain of their own.
+  private var iosFlightCanvas: some View {
     iosLifecycleCanvas
+    // Headphones went away (AudioSessionManager posts this on the main queue).
+    .onReceive(NotificationCenter.default.publisher(for: Notification.Name("DOLHeadphonesDisconnectedNotification"))) { _ in
+      headphonesDisconnected()
+    }
+    // Back from the lock screen or another app: the idle clock starts again from now.
+    .onReceive(NotificationCenter.default.publisher(for: UIApplication.didBecomeActiveNotification)) { _ in
+      resetIdleSleepTimer()
+    }
+  }
+
+  private func resetIdleSleepTimer() {
+    lastControllerInputAt = Date()
+    if idleKeepAwakeSuspended {
+      idleKeepAwakeSuspended = false
+      KeepAwake.setSuspended(.emulation, false)
+    }
+  }
+
+  /// Pause rather than carry on through the iPad's speakers (Settings > PrimeHack > On a Flight).
+  private func headphonesDisconnected() {
+    guard PrimeHackFlightOptions.pauseOnHeadphonesOut(), TVEmulationBridge.isRunning(),
+          !TVEmulationBridge.isPaused(), !showPauseMenu, !showQuickMenu else { return }
+    PauseGestureTracker.shared.requestPauseMenu(reason: "headphones-disconnected")
+  }
+
+  /// PrimeHack for iPad: fell asleep mid-flight? A game holds the screen awake for as long as it is
+  /// open, paused or not, so a dozing player lands with a flat iPad. After the chosen minutes with
+  /// no controller input: pause (if still running) and stop holding the screen awake, so iPadOS
+  /// Auto-Lock takes over; locking also refreshes Resume Where I Left Off. Any input hands the
+  /// screen back. Controller Only mode only: touch play has no input to watch from here. Called
+  /// once a second.
+  private func idleSleepTick() {
+    let minutes = PrimeHackFlightOptions.idlePauseMinutes()
+    var active = minutes <= 0 || !ControllerManager.controllerOnly()
+    if !active {
+      for controller in GCController.controllers() {
+        guard let pad = controller.extendedGamepad else { continue }
+        // A new input event since the last look, or something held down without changing.
+        if pad.lastEventTimestamp > lastControllerEventStamp {
+          lastControllerEventStamp = pad.lastEventTimestamp
+          active = true
+        }
+        if pad.allButtons.contains(where: { $0.isPressed }) { active = true }
+      }
+    }
+    if active {
+      lastControllerInputAt = Date()
+      if idleKeepAwakeSuspended {
+        idleKeepAwakeSuspended = false
+        KeepAwake.setSuspended(.emulation, false)
+      }
+      return
+    }
+    guard Date().timeIntervalSince(lastControllerInputAt) >= Double(minutes) * 60 else { return }
+    if !idleKeepAwakeSuspended {
+      idleKeepAwakeSuspended = true
+      KeepAwake.setSuspended(.emulation, true)
+    }
+    if TVEmulationBridge.isRunning(), !TVEmulationBridge.isPaused(), !showPauseMenu, !showQuickMenu {
+      PauseGestureTracker.shared.requestPauseMenu(reason: "idle")
+    }
+  }
+
+  private var iosInputCanvas: some View {
+    iosFlightCanvas
     .onReceive(NotificationCenter.default.publisher(for: SkinLibrary.didChangeNotification)) { _ in
       // A skin was picked, imported or deleted (possibly the one on screen): rebuild the pads and the game placement.
       touchPadsRefreshToken = UUID()
@@ -1147,6 +1222,7 @@ struct EmulationScreen: View {
       if controllerManager.disconnectPause != nil && !TVEmulationBridge.isPaused() {
         controllerManager.clearDisconnectPause()
       }
+      idleSleepTick()
       batteryPollTicks += 1
       if batteryPollTicks >= 30 {
         batteryPollTicks = 0
@@ -1166,6 +1242,32 @@ struct EmulationScreen: View {
           warnedBattery20 = false
           warnedBattery10 = false
         }
+        // PrimeHack for iPad: when the iPad itself is about to die (a long flight, no charger),
+        // refresh the "Resume Where I Left Off" snapshot once at 5%, so a shutdown costs the last
+        // few minutes of play rather than everything since the app was last left. Checked with the
+        // controller battery, every 30 s; re-armed once it charges past 8%.
+        let device = DeviceStatusSnapshot.read()
+        if let level = device.batteryPercent, !device.isCharging {
+          if level > 8 {
+            savedForCriticalDeviceBattery = false
+          } else if level <= 5 && !savedForCriticalDeviceBattery &&
+                    TVEmulationBridge.isStateOperationAllowed() && !TVEmulationBridge.isPaused() {
+            savedForCriticalDeviceBattery = true
+            DispatchQueue.global(qos: .userInitiated).async {
+              // Blocks until the state is on disk; false when Resume Where I Left Off is off.
+              let saved = TVEmulationBridge.saveResumeStateKeepingGameRunning(
+                withSnapshotSignal: nil,
+                shouldCancel: { ResumeCheckpoint.isAppResigning })
+              DispatchQueue.main.async {
+                EmulationToast.post(String(format: saved
+                  ? L("iPad battery critical (%d%%). Your place was saved.")
+                  : L("iPad battery critical (%d%%). Save at a Save Station soon."), level))
+              }
+            }
+          }
+        } else {
+          savedForCriticalDeviceBattery = false
+        }
       }
     }
     .onChange(of: showPauseMenu) { _, visible in
@@ -1177,7 +1279,10 @@ struct EmulationScreen: View {
       // surface never resizes itself (updateUIViewController is empty), so without this
       // the game could come back small, bottom-left, or half off screen until the next
       // rotation.
-      if !visible { TVEmulationBridge.resizeSurfaceNow() }
+      if !visible {
+        resetIdleSleepTimer()
+        TVEmulationBridge.resizeSurfaceNow()
+      }
     }
     .onChange(of: showQuickMenu) { postOverlayVisibility() }
   }
@@ -1265,8 +1370,26 @@ struct EmulationScreen: View {
   }
 
   private func iosDidAppear() {
+    ResumeCheckpoint.prepareLifecycleObservers()
     log.debug("[INPUT] iOS EmulationScreen onAppear. input_debug=\(UserDefaults.standard.bool(forKey: "input_debug"))")
     log.debug("[INPUT] iOS initial controllers count: \(GCController.controllers().count)")
+    // PrimeHack for iPad: a sideloaded copy stops opening when its signature expires. Say so while
+    // there is still time to re-install it before a trip (Settings > PrimeHack shows the date).
+    if !Self.signingReminderShown, let signed = AppSigningExpiry.validity() {
+      let days = AppSigningExpiry.daysRemaining(signed)
+      if days <= AppSigningExpiry.warningDays(signed) {
+        Self.signingReminderShown = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + 4) {
+          let clamped = max(days, 0)
+          let msg = clamped == 0
+            ? L("PrimeHack's signature expires today. Re-install it before you travel.")
+            : clamped == 1
+              ? L("PrimeHack's signature expires in 1 day. Re-install it before you travel.")
+              : String(format: L("PrimeHack's signature expires in %d days. Re-install it before you travel."), clamped)
+          EmulationToast.post(msg)
+        }
+      }
+    }
     // Controller observation is started app-wide from MainDisplaySceneDelegate
     // (scene root) so hotplug auto-assign works in library/menus/in-game on both
     // iOS and tvOS. Do not start/stop it here.
@@ -1397,6 +1520,7 @@ struct EmulationScreen: View {
   }
 
   private func iosDidDisappear() {
+    resetIdleSleepTimer()
     performanceControls.stopRefreshing()
     if let token = endObserver { NotificationCenter.default.removeObserver(token)
       endObserver = nil

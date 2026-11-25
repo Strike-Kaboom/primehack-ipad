@@ -1395,6 +1395,7 @@ static bool HasCurrentRunLayer()
   del(Config::PRIMEHACK_IOS_INVERT_X);
   del(Config::PRIMEHACK_IOS_INVERT_Y);
   del(Config::PRIMEHACK_IOS_LOCKON_FREE_AIM);
+  del(Config::PRIMEHACK_IOS_GC_MP2_DUAL_CORE);
   del(Config::LOCKCAMERA_IN_PUZZLES);
   del(Config::FOV_ENABLE);
   del(Config::FOV);
@@ -1457,6 +1458,14 @@ static bool HasCurrentRunLayer()
   const bool fastmemAvailable = [FastmemManager shared].fastmemAvailable;
   Config::SetBase(Config::MAIN_FASTMEM, fastmemAvailable);
   Config::SetBase(Config::MAIN_FASTMEM_ARENA, fastmemAvailable);
+
+  // PrimeHack for iPad: the fork's sharper-graphics seed (DolphinCoreService,
+  // primehack_graphics_defaults_v1) runs once per install and its DPL2 Low seed once per launch, so
+  // a plain delete would leave 1x resolution and the compiled filtering for good, and High surround
+  // delay until the next launch. Reset to the fork's own defaults instead.
+  Config::SetBase(Config::GFX_EFB_SCALE, 3);
+  Config::SetBase(Config::GFX_ENHANCE_MAX_ANISOTROPY, AnisotropicFilteringMode::Force16x);
+  Config::SetBase(Config::MAIN_DPL2_QUALITY, AudioCommon::DPL2Quality::Low);
 
   // GFX_HACK_VI_SKIP_MODE compiles to TriState::Auto on Apple (GraphicsSettings.cpp). Reset should
   // land on Auto too — Auto is the bounded (4-skip cap) FALLBACK catch-up for the adaptive-clock-OFF
@@ -1617,10 +1626,16 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
     @"primehack_dualsense_lightbar",
     @"primehack_lightbar_brightness",
     @"primehack_rumble_strength",
+    @"primehack_pause_on_headphones_out",
+    @"primehack_idle_pause_minutes",
   ];
   for (NSString* k in gameplayKeys) {
     [d removeObjectForKey:k];
   }
+  // PrimeHack for iPad: the DualSense trigger / lightbar timer only re-evaluates on this
+  // notification; without it a mid-game reset that turns the features back on left it stopped.
+  [[NSNotificationCenter defaultCenter] postNotificationName:@"PrimeHackDualSenseSettingsChanged"
+                                                      object:nil];
   // Per-game learned adaptive-clock baselines: prefix-scan exactly like
   // EmulationCoordinator does when reading them back.
   NSDictionary<NSString*, id>* all = [d dictionaryRepresentation];
@@ -1678,7 +1693,7 @@ static NSString* BaseLayerKeyName(const Config::Location& location)
       safe_delete(Config::MAIN_GFX_BACKEND);
       safe_delete(Config::GFX_VSYNC);
       safe_delete(Config::GFX_EFB_SCALE);
-      Config::SetBase(Config::GFX_EFB_SCALE, 1);  // Native: match launch and global reset.
+      Config::SetBase(Config::GFX_EFB_SCALE, 3);  // PrimeHack for iPad: 3x, matching the global reset.
       safe_delete(Config::GFX_WIDESCREEN_HACK);
       safe_delete(Config::GFX_DISABLE_FOG);
       safe_delete(Config::GFX_ASYNC_PRESENT);

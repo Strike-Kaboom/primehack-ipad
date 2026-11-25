@@ -1,7 +1,90 @@
 // Copyright 2026 PrimeHack for iPad
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+import Foundation
 import SwiftUI
+
+/// PrimeHack for iPad: when this sideloaded copy stops opening. A sideloaded app carries its
+/// provisioning profile, and once that expires iPadOS refuses to launch the app until it is signed
+/// again, which needs a computer. Worth knowing before a long trip.
+enum AppSigningExpiry {
+  struct Validity: Equatable {
+    let created: Date?
+    let expires: Date
+  }
+
+  /// The embedded profile's dates, or nil when the build carries none (Simulator, a store build).
+  static func validity(bundle: Bundle = .main) -> Validity? {
+    guard let url = bundle.url(forResource: "embedded", withExtension: "mobileprovision"),
+          let data = try? Data(contentsOf: url),
+          // The profile is a CMS envelope around an XML property list: cut the list out by its markers.
+          let start = data.range(of: Data("<?xml".utf8)),
+          let end = data.range(of: Data("</plist>".utf8), in: start.lowerBound ..< data.endIndex),
+          let object = try? PropertyListSerialization.propertyList(
+            from: data.subdata(in: start.lowerBound ..< end.upperBound), options: [], format: nil),
+          let plist = object as? [String: Any],
+          let expires = plist["ExpirationDate"] as? Date
+    else { return nil }
+    return Validity(created: plist["CreationDate"] as? Date, expires: expires)
+  }
+
+  /// Whole days until `expires` (negative once past).
+  static func daysRemaining(_ validity: Validity, now: Date = Date()) -> Int {
+    Int((validity.expires.timeIntervalSince(now) / 86_400).rounded(.down))
+  }
+
+  /// Days of notice worth a reminder: two weeks for a yearly signature, two days for a weekly one.
+  static func warningDays(_ validity: Validity) -> Int {
+    guard let created = validity.created else { return 14 }
+    return validity.expires.timeIntervalSince(created) > 30 * 86_400 ? 14 : 2
+  }
+
+  /// The Settings caption, or nil when the build carries no profile.
+  static func caption(now: Date = Date()) -> String? {
+    guard let signed = AppSigningExpiry.validity() else { return nil }
+    let days = daysRemaining(signed, now: now)
+    let date = signed.expires.formatted(date: .abbreviated, time: .omitted)
+    let clamped = max(days, 0)
+    let remaining = clamped == 0
+      ? L("expires today")
+      : clamped == 1
+        ? L("1 day left")
+        : String(format: L("%d days left"), clamped)
+    if days <= warningDays(signed) {
+      return String(format: L("This copy of PrimeHack is signed until %@ (%@). Re-install it from your computer before then, and before any long trip: once the signature expires the app will not open."), date, remaining)
+    }
+    return String(format: L("This copy of PrimeHack is signed until %@ (%@). After that it has to be re-installed from your computer."), date, remaining)
+  }
+}
+
+/// PrimeHack for iPad: the two "playing unattended" protections (Settings > PrimeHack > On a Flight).
+/// Stored in UserDefaults like the other app-side PrimeHack options; both are in Reset All Settings.
+enum PrimeHackFlightOptions {
+  static let pauseOnHeadphonesOutKey = "primehack_pause_on_headphones_out"
+  static let idlePauseMinutesKey = "primehack_idle_pause_minutes"
+  /// Generous on purpose, so watching a long cutscene or credits roll is unlikely to trip it.
+  static let defaultIdlePauseMinutes = 15
+  /// 0 = Off.
+  static let idlePauseMinuteChoices = [0, 5, 10, 15, 30]
+
+  static func pauseOnHeadphonesOut(in defaults: UserDefaults = .standard) -> Bool {
+    defaults.object(forKey: pauseOnHeadphonesOutKey) as? Bool ?? true
+  }
+
+  static func setPauseOnHeadphonesOut(_ enabled: Bool, in defaults: UserDefaults = .standard) {
+    defaults.set(enabled, forKey: pauseOnHeadphonesOutKey)
+  }
+
+  /// Minutes without controller input before the game pauses and stops holding the screen awake.
+  static func idlePauseMinutes(in defaults: UserDefaults = .standard) -> Int {
+    let stored = defaults.object(forKey: idlePauseMinutesKey) as? Int ?? defaultIdlePauseMinutes
+    return idlePauseMinuteChoices.contains(stored) ? stored : defaultIdlePauseMinutes
+  }
+
+  static func setIdlePauseMinutes(_ minutes: Int, in defaults: UserDefaults = .standard) {
+    defaults.set(minutes, forKey: idlePauseMinutesKey)
+  }
+}
 
 /// Snapshot of PrimeHack's settings. Defaults match the core's Config defaults.
 struct PrimeHackSettingsState: Equatable {
@@ -47,6 +130,14 @@ struct PrimeHackSettingsState: Equatable {
   var invulnerability = false
   var noclip = false
 
+  var gcPrime2DualCore = false
+
+  var pauseOnHeadphonesOut = true
+  var idlePauseMinutes = PrimeHackFlightOptions.defaultIdlePauseMinutes
+
+  /// "Signed until …" for a sideloaded copy; nil when the build carries no provisioning profile.
+  var signingCaption: String? = nil
+
   static let sensitivityRange = 1.0 ... 100.0
   static let deadzoneRange = 0.0 ... 30.0
   static let rumbleStrengthRange = 25.0 ... 100.0
@@ -72,6 +163,13 @@ struct PrimeHackSettingsState: Equatable {
   static let armPositionModeOptions: [(String, Int)] = [
     (L("Auto"), 0),
     (L("Manual"), 1),
+  ]
+  static let idlePauseOptions: [(String, Int)] = [
+    (L("Off"), 0),
+    (L("5 minutes"), 5),
+    (L("10 minutes"), 10),
+    (L("15 minutes"), 15),
+    (L("30 minutes"), 30),
   ]
   static let gcCrosshairColorOptions: [(String, Int)] = [
     (L("Default (Blue)"), 0x4b7ea331),
@@ -124,6 +222,9 @@ enum PrimeHackSettingsChange: Equatable {
   case anyBeamDoors(Bool)
   case invulnerability(Bool)
   case noclip(Bool)
+  case gcPrime2DualCore(Bool)
+  case pauseOnHeadphonesOut(Bool)
+  case idlePauseMinutes(Int)
 }
 
 /// Pure: snapshot in, changes out.
@@ -300,15 +401,42 @@ enum PrimeHackSettingsModelBuilder {
                          defaultValue: false, set: { apply(.noclip($0)) }),
     ])
 
-    let credits = MenuSection(id: "primehack-credits", items: [
-      SettingsRow.caption("primehack-credit", L("PrimeHack by shiiion, SirMangler and contributors. Running on iCube, DolphiniOS and Dolphin. Built-in JIT uses StikJIT, idevice and portions of Madeira. GPLv3+.")),
+    #if os(iOS)
+    let flight = MenuSection(id: "primehack-flight", header: L("On a Flight"),
+                             footer: L("Both apply in every game. The pause menu also shows the time and the iPad's battery, and if the iPad's battery reaches 5% your place is saved once more (with Resume Where I Left Off on)."), items: [
+      SettingsRow.toggle("primehack-pause-headphones", L("Pause When Headphones Disconnect"), s.pauseOnHeadphonesOut,
+                         L("Pauses the game when AirPods or other headphones disconnect or are unplugged, instead of carrying on through the iPad's speakers."),
+                         defaultValue: true, set: { apply(.pauseOnHeadphonesOut($0)) }),
+      SettingsRow.picker("primehack-idle-pause", L("Pause When Idle"),
+                         PrimeHackSettingsState.idlePauseOptions, s.idlePauseMinutes,
+                         L("After this long with no controller input, pauses the game and lets the iPad dim and lock as usual, so falling asleep mid-game does not drain the battery. Needs Controller Only. Any button press carries on."),
+                         defaultValue: PrimeHackFlightOptions.defaultIdlePauseMinutes,
+                         set: { apply(.idlePauseMinutes($0)) }),
     ])
+    #endif
+
+    let performance = MenuSection(id: "primehack-performance", header: L("Performance"), items: [
+      SettingsRow.toggle("primehack-gc-mp2-dual-core", L("Dual Core for Prime 2 (GameCube)"), s.gcPrime2DualCore,
+                         L("Moves the graphics work of GameCube Metroid Prime 2 onto a second processor core, kept in step with the game, the way Trilogy's Prime 2 already runs. Can lift the frame rate in busy rooms. Experimental: if the game ever freezes, turn this off. Takes effect when a game starts."),
+                         defaultValue: false, set: { apply(.gcPrime2DualCore($0)) }),
+    ])
+
+    var creditItems: [MenuItem] = []
+    if let signing = s.signingCaption {
+      creditItems.append(SettingsRow.caption("primehack-signing", signing))
+    }
+    creditItems.append(SettingsRow.caption("primehack-credit", L("PrimeHack by shiiion, SirMangler and contributors. Running on iCube, DolphiniOS and Dolphin. Built-in JIT uses StikJIT, idevice and portions of Madeira. GPLv3+.")))
+    let credits = MenuSection(id: "primehack-credits", items: creditItems)
 
     var sections: [MenuSection] = []
     if let jitSection {
       sections.append(jitSection)
     }
-    sections.append(contentsOf: [controls, visuals, gameplay, cheats, credits])
+    #if os(iOS)
+    sections.append(contentsOf: [controls, visuals, gameplay, flight, performance, cheats, credits])
+    #else
+    sections.append(contentsOf: [controls, visuals, gameplay, performance, cheats, credits])
+    #endif
     return MenuModel(sections: sections)
   }
 }
@@ -466,6 +594,10 @@ struct PrimeHackSettingsView: View {
     s.anyBeamDoors = PrimeHackBridge.anyBeamDoors()
     s.invulnerability = PrimeHackBridge.invulnerability()
     s.noclip = PrimeHackBridge.noclip()
+    s.gcPrime2DualCore = PrimeHackBridge.gcPrime2DualCore()
+    s.pauseOnHeadphonesOut = PrimeHackFlightOptions.pauseOnHeadphonesOut()
+    s.idlePauseMinutes = PrimeHackFlightOptions.idlePauseMinutes()
+    s.signingCaption = AppSigningExpiry.caption()
     state = s
   }
 
@@ -510,6 +642,9 @@ struct PrimeHackSettingsView: View {
     case .anyBeamDoors(let v): state.anyBeamDoors = v; PrimeHackBridge.setAnyBeamDoors(v)
     case .invulnerability(let v): state.invulnerability = v; PrimeHackBridge.setInvulnerability(v)
     case .noclip(let v): state.noclip = v; PrimeHackBridge.setNoclip(v)
+    case .gcPrime2DualCore(let v): state.gcPrime2DualCore = v; PrimeHackBridge.setGcPrime2DualCore(v)
+    case .pauseOnHeadphonesOut(let v): state.pauseOnHeadphonesOut = v; PrimeHackFlightOptions.setPauseOnHeadphonesOut(v)
+    case .idlePauseMinutes(let v): state.idlePauseMinutes = v; PrimeHackFlightOptions.setIdlePauseMinutes(v)
     }
   }
 }

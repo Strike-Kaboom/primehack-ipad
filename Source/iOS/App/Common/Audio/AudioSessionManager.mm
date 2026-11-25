@@ -47,6 +47,41 @@ static const double kPreferredSampleRate = 48000.0;
                 NSNumber* reason = note.userInfo[AVAudioSessionRouteChangeReasonKey];
                 NSLog(@"[Audio] route changed (reason %@) -> %@", reason,
                       [AudioSessionManager describeRoute:[AVAudioSession sharedInstance].currentRoute]);
+                // PrimeHack for iPad: headphones went away (AirPods back in their case or switched to
+                // another device, a wired or USB-C set unplugged). Tell the game screen, which pauses
+                // rather than carry on through the iPad's speakers in a quiet cabin. Delivered on the
+                // main queue (this observer's queue).
+                if (reason.unsignedIntegerValue == AVAudioSessionRouteChangeReasonOldDeviceUnavailable) {
+                  auto isHeadphonePort = ^BOOL(AVAudioSessionPortDescription* output) {
+                    NSString* type = output.portType;
+                    return [type isEqualToString:AVAudioSessionPortHeadphones] ||
+                           [type isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
+                           [type isEqualToString:AVAudioSessionPortBluetoothLE] ||
+                           [type isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+                           [type isEqualToString:AVAudioSessionPortUSBAudio];
+                  };
+                  AVAudioSessionRouteDescription* previous =
+                      note.userInfo[AVAudioSessionRouteChangePreviousRouteKey];
+                  BOOL hadHeadphones = NO;
+                  for (AVAudioSessionPortDescription* output in previous.outputs) {
+                    if (isHeadphonePort(output)) {
+                      hadHeadphones = YES;
+                      break;
+                    }
+                  }
+                  BOOL stillHasHeadphones = NO;
+                  for (AVAudioSessionPortDescription* output in [AVAudioSession sharedInstance].currentRoute.outputs) {
+                    if (isHeadphonePort(output)) {
+                      stillHasHeadphones = YES;
+                      break;
+                    }
+                  }
+                  if (hadHeadphones && !stillHasHeadphones) {
+                    [[NSNotificationCenter defaultCenter]
+                        postNotificationName:@"DOLHeadphonesDisconnectedNotification"
+                                      object:nil];
+                  }
+                }
               }];
 }
 
