@@ -1501,7 +1501,7 @@ enum ResumeCheckpoint {
     inFlight = true
     DispatchQueue.global(qos: .userInitiated).async {
       let saved = TVEmulationBridge.saveResumeStateKeepingGameRunning(
-        withSnapshotSignal: nil,
+        snapshotSignal: nil,
         shouldCancel: { ResumeCheckpoint.isAppResigning })
       Task { @MainActor in
         inFlight = false

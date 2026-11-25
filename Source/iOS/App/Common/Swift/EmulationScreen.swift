@@ -1256,7 +1256,7 @@ struct EmulationScreen: View {
             DispatchQueue.global(qos: .userInitiated).async {
               // Blocks until the state is on disk; false when Resume Where I Left Off is off.
               let saved = TVEmulationBridge.saveResumeStateKeepingGameRunning(
-                withSnapshotSignal: nil,
+                snapshotSignal: nil,
                 shouldCancel: { ResumeCheckpoint.isAppResigning })
               DispatchQueue.main.async {
                 EmulationToast.post(String(format: saved
