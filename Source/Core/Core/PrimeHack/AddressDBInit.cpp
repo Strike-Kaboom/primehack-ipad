@@ -49,8 +49,14 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1, "beamvisor_menu_mode", "beamvisor_menu_base", {rp0, rp(0x334, 0x334)});
 
   addr_db.register_dynamic_address(Game::PRIME_1, "powerups_array", "powerups_array_base", {rp0, rp0});
-  addr_db.register_dynamic_address(Game::PRIME_1, "current_beam", "powerups_array", {mrp1(0x08)});
-  addr_db.register_dynamic_address(Game::PRIME_1, "health", "powerups_array", {mrp1(0x0c)});
+  // PrimeHack for iPad: Trilogy reaches CPlayerState through one pointer ([state_manager + 0x8b4],
+  // the same address as powerups_array_base) where the GameCube game goes through a separate
+  // ref-count block, and every field sits 4 bytes later than on GameCube (transitioning visor
+  // 0x18 -> 0x1c, power-up capacity 0x2c -> 0x30). So: beam 0x08 -> 0x0c, health 0x0c -> 0x10,
+  // Charge Beam capacity (item 10) 0x7c -> 0x80.
+  addr_db.register_dynamic_address(Game::PRIME_1, "current_beam", "powerups_array", {mrp1(0x0c)});
+  addr_db.register_dynamic_address(Game::PRIME_1, "health", "powerups_array", {mrp1(0x10)});
+  addr_db.register_dynamic_address(Game::PRIME_1, "charge_beam", "powerups_array", {mrp1(0x80)});
   addr_db.register_dynamic_address(Game::PRIME_1, "active_visor", "powerups_array", {mrp1(0x1c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1, "world_id", "world", {mrp1(0x14)});
@@ -81,6 +87,14 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "ball_state", "player", {rp(0x2f8, 0x308)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "orbit_state", "player", {rp(0x304, 0x314)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "firstperson_pitch", "player", {rp(0x3ec, 0x3fc)});
+  // PrimeHack for iPad: CStateManager::x8b8_playerState is an rc_ptr: [state_manager + 0x8b8] ->
+  // ref-count block -> CPlayerState (the route AllDoorAnyBeam's GameCube hook takes). Read-only,
+  // for the published beam / visor / energy state (DualSense triggers and lightbar).
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN, "player_state", "state_manager", {mrp1(0x8b8), rp0, rp0});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN, "current_beam", "player_state", {mrp1(0x08)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN, "health", "player_state", {mrp1(0x0c)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN, "active_visor", "player_state", {mrp1(0x18)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN, "charge_beam", "player_state", {mrp1(0x7c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "world_id", "world", {mrp1(0x8)});
 
@@ -110,6 +124,11 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "ball_state", "player", {mrp1(0x2f8)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "orbit_state", "player", {mrp1(0x304)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "firstperson_pitch", "player", {mrp1(0x3ec)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "player_state", "state_manager", {mrp1(0x8b8), rp0, rp0});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "current_beam", "player_state", {mrp1(0x08)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "health", "player_state", {mrp1(0x0c)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "active_visor", "player_state", {mrp1(0x18)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "charge_beam", "player_state", {mrp1(0x7c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "world_id", "world", {mrp1(0x8)});
 
@@ -139,6 +158,11 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "ball_state", "player", {mrp1(0x308)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "orbit_state", "player", {mrp1(0x314)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "firstperson_pitch", "player", {mrp1(0x3fc)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "player_state", "state_manager", {mrp1(0x8b8), rp0, rp0});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "current_beam", "player_state", {mrp1(0x08)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "health", "player_state", {mrp1(0x0c)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "active_visor", "player_state", {mrp1(0x18)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "charge_beam", "player_state", {mrp1(0x7c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "world_id", "world", {mrp1(0x8)});
 

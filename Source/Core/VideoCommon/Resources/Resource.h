@@ -61,6 +61,14 @@ public:
 protected:
   ResourceContext m_resource_context;
 
+  // PrimeHack for iPad: lets a resource whose asset was evicted start over, so its next Process()
+  // asks the asset cache for the data again instead of staying in DataAvailable with none.
+  void RestartProcessing()
+  {
+    m_data_processed = TaskComplete::No;
+    m_current_task = Task::ReloadData;
+  }
+
 private:
   void ProcessCurrentTask();
   void NotifyAssetChanged(bool has_error);

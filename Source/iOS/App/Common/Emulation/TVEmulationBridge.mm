@@ -115,6 +115,13 @@ static uint64_t CurrentStateSessionIdentifier() {
   return s_stateSessionIdentifier.load();
 }
 
+// PrimeHack for iPad: the state session in which the player last asked for a load (a slot, Quick
+// Load, the save browser). The boot-time "Resume Where I Left Off" load fills State's undo buffer
+// too, with the cold-boot state, and Undo Load must never offer to rewind to that: one press would
+// put the game back at its boot logos, and the next auto-save would then overwrite the resume state
+// with it. 0 matches no session.
+static std::atomic<uint64_t> s_userLoadSession{0};
+
 // Accept direct StateSaves children only. Resolve the parent to honor configured root symlinks,
 // but reject a file symlink so a selected state cannot redirect reads/writes outside that root.
 static NSString* CheckedStateSavesPath(NSString* path) {
@@ -472,8 +479,10 @@ static void RunPauseRequestAsync(Core::State from, Core::State to) {
   int s = (int)slot;
   Core::QueueHostJob([s](Core::System& system) {
     // Checked when the job runs, not when it is queued: the core may still be booting then.
-    if (StateOperationAllowed(system, "slot load"))
+    if (StateOperationAllowed(system, "slot load")) {
+      s_userLoadSession.store(CurrentStateSessionIdentifier());
       State::Load(system, s);
+    }
   });
 }
 
@@ -604,6 +613,7 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
     if (![CheckedStateSavesPath(pathNow) isEqualToString:pathNow] ||
         ![TVEmulationBridge stateFileIsCompatibleAtPath:pathNow])
       return;
+    s_userLoadSession.store(session);
     State::LoadAs(system, filename);
   });
   return YES;
@@ -632,8 +642,12 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
             SConfig::GetInstance().GetGameID() == expected) {
           NSString* pathNow = [NSString stringWithUTF8String:filename.c_str()];
           if ([CheckedStateSavesPath(pathNow) isEqualToString:pathNow] &&
-              [TVEmulationBridge stateFileIsCompatibleAtPath:pathNow])
+              [TVEmulationBridge stateFileIsCompatibleAtPath:pathNow]) {
             loaded = State::LoadAsAndWait(system, filename);
+            if (loaded) {
+              s_userLoadSession.store(session);
+            }
+          }
         }
       }
     }
@@ -643,14 +657,17 @@ static std::atomic<uint64_t> s_resumeSettledSession{0};
 }
 
 + (BOOL)canUndoLoadState {
-  return Core::IsRunning(Core::System::GetInstance()) && State::HasUndoLoadState();
+  // Only after a load the player asked for in this session (see s_userLoadSession).
+  return Core::IsRunning(Core::System::GetInstance()) && State::HasUndoLoadState() &&
+         s_userLoadSession.load() == CurrentStateSessionIdentifier();
 }
 
 + (void)undoLoadState {
   if (![self canUndoLoadState])
     return;
   Core::QueueHostJob([](Core::System& system) {
-    if (StateOperationAllowed(system, "undo load") && State::HasUndoLoadState())
+    if (StateOperationAllowed(system, "undo load") && State::HasUndoLoadState() &&
+        s_userLoadSession.load() == CurrentStateSessionIdentifier())
       State::UndoLoadState(system);
   });
 }

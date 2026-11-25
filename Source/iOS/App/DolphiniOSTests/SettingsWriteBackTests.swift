@@ -47,8 +47,8 @@ final class SettingsWriteBackTests: XCTestCase {
   func testGraphicsResetRestoresNativeResolution() {
     DOLConfigBridge.setGfxEfbScale(0) // Auto can multiply GPU work on high-density displays.
     DOLConfigBridge.resetPage(toDefaults: 1)
-    XCTAssertEqual(DOLConfigBridge.gfxEfbScaleBase(), 1,
-                   "Reset must restore the performance-safe Native default, not fit the display")
+    XCTAssertEqual(DOLConfigBridge.gfxEfbScaleBase(), 3,
+                   "Reset must restore PrimeHack's 3x resolution default, not fit the display")
   }
 
   func testResetAllRestoresBoundingBoxDefault() throws {

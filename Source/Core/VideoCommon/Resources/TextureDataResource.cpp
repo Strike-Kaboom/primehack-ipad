@@ -36,6 +36,18 @@ Resource::TaskComplete TextureDataResource::CollectPrimaryData()
   return Resource::TaskComplete::Yes;
 }
 
+void TextureDataResource::OnUnloadRequested()
+{
+  // PrimeHack for iPad: the asset cache dropped its copy to get back under its memory limit. This
+  // resource shares that buffer, so without dropping it here too the bytes were never freed: the
+  // cache's accounting fell while real memory only grew with every texture the session touched.
+  // Start over, so the texture is requested again the next time the game binds it (the original
+  // texture shows until it has loaded, as on first use).
+  m_current_texture_data.reset();
+  m_current_time = {};
+  RestartProcessing();
+}
+
 void TextureDataResource::MarkAsActive()
 {
   m_resource_context.asset_cache->MarkAssetActive(m_texture_asset);

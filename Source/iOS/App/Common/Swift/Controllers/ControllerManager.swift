@@ -327,7 +327,8 @@ final class ControllerManager: NSObject, ObservableObject {
           return
         }
         // Battery toast if available
-        if #available(iOS 14.0, tvOS 14.0, *), let battery = c.battery {
+        // `.unknown`: the pad has not reported yet, and its level then reads 0, a false "0%".
+        if #available(iOS 14.0, tvOS 14.0, *), let battery = c.battery, battery.batteryState != .unknown {
           let level = battery.batteryLevel
           var state = ""
           switch battery.batteryState { case .charging: state = L("Charging")

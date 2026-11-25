@@ -301,21 +301,30 @@ MTLRenderPassDescriptor* Metal::StateTracker::GetRenderPassDescriptor(Framebuffe
 
 void Metal::StateTracker::BeginClearRenderPass(MTLClearColor color, float depth)
 {
-  Framebuffer* framebuffer = m_current_framebuffer;
-  MTLRenderPassDescriptor* desc = GetRenderPassDescriptor(framebuffer, MTLLoadActionClear);
-  desc.colorAttachments[0].clearColor = color;
-  if (framebuffer->GetDepthFormat() != AbstractTextureFormat::Undefined)
-    desc.depthAttachment.clearDepth = depth;
-  for (size_t i = 0; i < framebuffer->NumAdditionalColorTextures(); i++)
-    desc.colorAttachments[i + 1].clearColor = color;
-  BeginRenderPass(desc);
+  // PrimeHack for iPad: the pass descriptor's attachment getters may hand back autoreleased
+  // objects. The draw paths that reach these two functions no longer open a pool of their own and
+  // the video thread has no outer one, so drain here rather than let them pile up for a session.
+  @autoreleasepool
+  {
+    Framebuffer* framebuffer = m_current_framebuffer;
+    MTLRenderPassDescriptor* desc = GetRenderPassDescriptor(framebuffer, MTLLoadActionClear);
+    desc.colorAttachments[0].clearColor = color;
+    if (framebuffer->GetDepthFormat() != AbstractTextureFormat::Undefined)
+      desc.depthAttachment.clearDepth = depth;
+    for (size_t i = 0; i < framebuffer->NumAdditionalColorTextures(); i++)
+      desc.colorAttachments[i + 1].clearColor = color;
+    BeginRenderPass(desc);
+  }
 }
 
 void Metal::StateTracker::BeginRenderPass(MTLLoadAction load_action)
 {
   if (m_current_render_encoder)
     return;
-  BeginRenderPass(GetRenderPassDescriptor(m_current_framebuffer, load_action));
+  @autoreleasepool
+  {
+    BeginRenderPass(GetRenderPassDescriptor(m_current_framebuffer, load_action));
+  }
 }
 
 void Metal::StateTracker::BeginRenderPass(MTLRenderPassDescriptor* descriptor)

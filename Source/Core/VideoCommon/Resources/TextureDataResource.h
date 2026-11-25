@@ -23,6 +23,7 @@ public:
 
 private:
   TaskComplete CollectPrimaryData() override;
+  void OnUnloadRequested() override;
 
   // Note: asset cache owns the asset, we access as a reference
   TextureAsset* m_texture_asset = nullptr;

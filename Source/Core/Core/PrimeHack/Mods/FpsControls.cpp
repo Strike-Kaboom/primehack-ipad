@@ -7,6 +7,7 @@
 #include "Core/PrimeHack/PrimeUtils.h"
 #include "Core/System.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace prime {
@@ -103,11 +104,14 @@ void FpsControls::run_mod(Game game, Region region) {
       auto check_low_health = [this, &low_health](u32 health_addr) {
         if (health_addr != 0) {
           const float hp = readf32(health_addr);
-          low_health = std::isfinite(hp) && hp > 0.0f && hp < 30.0f;
+          // std::isnormal rejects zero, NaN/Inf, and subnormals (small integers misread as floats)
+          // while preserving fractional near-death energy in (0, 1) from Phazon/lava/Dark Aether.
+          low_health = std::isnormal(hp) && hp > 0.0f && hp < 30.0f;
         }
       };
 
-      if (game == Game::PRIME_1) {
+      if (game == Game::PRIME_1 || game == Game::PRIME_1_GCN || game == Game::PRIME_1_GCN_R1 ||
+          game == Game::PRIME_1_GCN_R2) {
         LOOKUP_DYN(active_visor);
         if (active_visor != 0) {
           switch (read32(active_visor)) {
@@ -127,9 +131,10 @@ void FpsControls::run_mod(Game game, Region region) {
             default: beam = PublishedBeam::Power; break;
           }
         }
-        LOOKUP_DYN(powerups_array);
-        if (powerups_array != 0) {
-          has_charge_beam = read32(powerups_array + 0xa * 8 + 0x30) != 0;
+        // Charge Beam capacity (power-up 10); its own address per game, as the layouts differ.
+        LOOKUP_DYN(charge_beam);
+        if (charge_beam != 0) {
+          has_charge_beam = read32(charge_beam) != 0;
         }
         LOOKUP_DYN(health);
         check_low_health(health);
@@ -168,7 +173,8 @@ void FpsControls::run_mod(Game game, Region region) {
           LOOKUP_DYN(hypermode_state);
           if (hypermode_state != 0) {
             const u32 hm = read32(hypermode_state);
-            in_hypermode = (hm != 0 && hm != 4);
+            // 1..3 only (the same states as before): a stray word cannot latch the cue.
+            in_hypermode = (hm >= 1 && hm <= 3);
           }
           LOOKUP_DYN(health);
           check_low_health(health);
@@ -226,6 +232,15 @@ void FpsControls::calculate_pitchyaw_delta() {
   yaw = yaw_clamp(yaw);
 }
 
+void FpsControls::sync_view_from_game(float game_yaw, u32 pitch_addr) {
+  needs_view_sync = false;
+  if (std::isfinite(game_yaw)) {
+    yaw = game_yaw;
+  }
+  const float game_pitch = pitch_addr != 0 ? readf32(pitch_addr) : 0.f;
+  pitch = std::isfinite(game_pitch) ? std::clamp(game_pitch, -1.52f, 1.52f) : 0.f;
+}
+
 void FpsControls::update_pitchyaw_locked() {
   // Calculate the pitch based on the XF matrix to allow us to write out the pitch
   // even while locked onto a target, the pitch will be written to match the lock
@@ -260,6 +275,7 @@ void FpsControls::update_pitchyaw_locked() {
   yaw = atan2f(fwd.y, fwd.x);
   pitch = asinf(std::clamp(fwd.z, -1.f, 1.f));
   pitch = std::clamp(pitch, -1.52f, 1.52f);
+  needs_view_sync = false;
 }
 
 void FpsControls::calculate_pitch_to_target(float target_pitch) {
@@ -449,9 +465,14 @@ void FpsControls::run_mod_mp1(Region region) {
     yaw = atan2f(fwd.y, fwd.x);
     // Pitch is always 0 after returning from morph
     pitch = 0;
+    needs_view_sync = false;
     return;
   }
 
+  if (needs_view_sync) {
+    const vec3 view_fwd = cplayer_xf.fwd();
+    sync_view_from_game(atan2f(view_fwd.y, view_fwd.x), firstperson_pitch);
+  }
   calculate_pitchyaw_delta();
   writef32(pitch, firstperson_pitch);
   cplayer_xf.build_rotation(yaw);
@@ -493,9 +514,14 @@ void FpsControls::run_mod_mp1_gc(Region region) {
     yaw = atan2f(fwd.y, fwd.x);
     // Pitch is always 0 after returning from morph
     pitch = 0;
+    needs_view_sync = false;
     return;
   }
 
+  if (needs_view_sync) {
+    const vec3 view_fwd = cplayer_xf.fwd();
+    sync_view_from_game(atan2f(view_fwd.y, view_fwd.x), firstperson_pitch);
+  }
   calculate_pitchyaw_delta();
   writef32(pitch, firstperson_pitch);
   cplayer_xf.build_rotation(yaw);
@@ -589,9 +615,14 @@ void FpsControls::run_mod_mp2(Region region) {
     yaw = atan2f(fwd.y, fwd.x);
     // Pitch is always 0 after returning from morph
     pitch = 0;
+    needs_view_sync = false;
     return;
   }
 
+  if (needs_view_sync) {
+    const vec3 view_fwd = cplayer_xf.fwd();
+    sync_view_from_game(atan2f(view_fwd.y, view_fwd.x), firstperson_pitch);
+  }
   calculate_pitchyaw_delta();
   writef32(pitch, firstperson_pitch);
   cplayer_xf.build_rotation(yaw);
@@ -655,9 +686,14 @@ void FpsControls::run_mod_mp2_gc(Region region) {
     pitch = 0;
     // Prime 2 has a flicker for one frame after unmorphing
     writef32(pitch, firstperson_pitch);
+    needs_view_sync = false;
     return;
   }
 
+  if (needs_view_sync) {
+    const vec3 view_fwd = cplayer_xf.fwd();
+    sync_view_from_game(atan2f(view_fwd.y, view_fwd.x), firstperson_pitch);
+  }
   calculate_pitchyaw_delta();
   writef32(pitch, firstperson_pitch);
   cplayer_xf.build_rotation(yaw);
@@ -873,6 +909,7 @@ void FpsControls::run_mod_mp3(Game active_game, Region active_region) {
   if (read32(ball_state) != 0) {
     // Pitch is always 0 after returning from morph
     pitch = 0;
+    needs_view_sync = false;
     return;
   }
 
@@ -881,6 +918,10 @@ void FpsControls::run_mod_mp3(Game active_game, Region active_region) {
     return;
   }
 
+  // Yaw is re-read from the game every frame above; only the pitch needs adopting.
+  if (needs_view_sync) {
+    sync_view_from_game(yaw, firstperson_pitch);
+  }
   calculate_pitchyaw_delta();
   writef32(pitch, firstperson_pitch);
   cplayer_xf.build_rotation(yaw);
@@ -929,6 +970,7 @@ bool FpsControls::init_mod(Game game, Region region) {
   swap_alt_profiles(0, 0, 0);
   pitch = 0;
   yaw = 0;
+  needs_view_sync = true;
 
   switch (game) {
     case Game::PRIME_1:

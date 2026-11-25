@@ -258,6 +258,7 @@ struct Motor::State
     haptic_player = nil;
     applied_controller_on.reset();
     applied_strength = -1.0f;
+    last_sent_strength = 1.0f;
   }
 
   void ConsumeEngineLostOnQueue()
@@ -287,6 +288,11 @@ struct Motor::State
   bool applied_device_on = false;
   float applied_device_strength = -1.0f;
   float applied_strength = -1.0f;
+  // The intensity last sent to the current player with sendParameters: (1.0 = none sent: a new
+  // player plays the pattern's own full intensity). While it is 1.0 a restarted player is known to
+  // be at full strength whether or not CoreHaptics keeps dynamic parameters across a stop, so at
+  // the default Rumble Strength (100%) no parameter call is ever made.
+  float last_sent_strength = 1.0f;
   Clock::time_point next_start_attempt = Clock::time_point::min();
 };
 
@@ -444,10 +450,16 @@ bool Motor::State::StartEngineOnQueue()
   [player setLoopEnabled:true];
   [player setLoopEnd:0.0f];
 
+  // A player being replaced after a failed call may still be looping, and releasing it does not
+  // stop it: stop it first so the controller cannot be left rumbling with nothing to turn it off.
+  if (haptic_player)
+    [haptic_player stopAtTime:CHHapticTimeImmediate error:nil];
+
   haptic_player = player;
   recreate_player = false;
   applied_controller_on.reset();
-  applied_strength = -1.0f;
+  applied_strength = 1.0f;
+  last_sent_strength = 1.0f;
 
   return true;
 }
@@ -513,8 +525,10 @@ void Motor::State::ApplyOnQueue()
       if (result)
       {
         applied_controller_on = want_controller;
+        // After a stop the player's intensity is only known if nothing but full strength was ever
+        // sent to it (see last_sent_strength); otherwise send it again on the next start.
         if (!want_controller)
-          applied_strength = -1.0f;
+          applied_strength = std::fabs(last_sent_strength - 1.0f) <= 0.01f ? 1.0f : -1.0f;
         needs_retry.store(false, std::memory_order_release);
       }
       else
@@ -555,12 +569,15 @@ void Motor::State::ApplyOnQueue()
                                   error:&param_error])
       {
         applied_strength = want_strength;
+        last_sent_strength = want_strength;
       }
       else
       {
-        recreate_player = true;
-        applied_strength = -1.0f;
-        needs_retry.store(true, std::memory_order_release);
+        // PrimeHack for iPad: strength is cosmetic. Never rebuild the player or retry over it:
+        // rebuilding sits behind the one-second start cooldown, so every rumble pulse would be
+        // dropped or late. A dead engine reports itself through engine_lost and the start/stop
+        // calls above.
+        applied_strength = want_strength;
         MOTOR_ERROR_LOG("Motor failed to update rumble strength: {}", param_error);
       }
     }

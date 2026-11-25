@@ -37,6 +37,8 @@
 #include "Core/HW/Sram.h"
 #include "Core/NetPlayProto.h"
 
+#include "UICommon/UICommon.h"
+
 static const char* MC_HDR = "MC_SYSTEM_AREA";
 
 static std::string GenerateDefaultGCIFilename(const Memcard::DEntry& entry,
@@ -256,6 +258,14 @@ GCMemcardDirectory::GCMemcardDirectory(std::string directory, ExpansionInterface
   m_bat2 = m_bat1;
 
   m_flush_thread = std::thread(&GCMemcardDirectory::FlushThread, this);
+  // PrimeHack for iPad: GCI Folder is the default GameCube card (MAIN_SLOT_A), so this is the card
+  // Prime 1 and 2 save to. Its flush thread waits for a quiet second after the last block write,
+  // which iPadOS can cut short by suspending the app; flush at once when the app asks (as the raw
+  // card does), so a save made just before the Home button or sleep is on disk.
+  m_flush_unsaved_hook = UICommon::AddFlushUnsavedDataCallback([this] {
+    if (Config::Get(Config::SESSION_SAVE_DATA_WRITABLE))
+      FlushToFile();
+  });
 }
 
 void GCMemcardDirectory::FlushThread()
@@ -288,6 +298,8 @@ void GCMemcardDirectory::FlushThread()
 
 GCMemcardDirectory::~GCMemcardDirectory()
 {
+  // First, so the callback can never run against a card that is being torn down.
+  m_flush_unsaved_hook.reset();
   m_exiting.Set();
   m_flush_trigger.Set();
   m_flush_thread.join();
@@ -656,19 +668,26 @@ void GCMemcardDirectory::FlushToFile()
           }
           save.m_filename = default_save_name;
         }
-        File::IOFile gci(save.m_filename, "wb");
+        // PrimeHack for iPad: write a temporary file and rename it over the save, so a process
+        // killed mid-write (iPadOS reclaiming a suspended app) can never leave a truncated .gci
+        // where the previous good save was. A failed write keeps the save dirty for the next flush.
+        const std::string temp_filename = File::GetTempFilenameForAtomicWrite(save.m_filename);
+        File::IOFile gci(temp_filename, "wb");
         if (gci)
         {
           gci.WriteBytes(&save.m_gci_header, Memcard::DENTRY_SIZE);
           for (const Memcard::GCMBlock& block : save.m_save_data)
             gci.WriteBytes(block.m_block.data(), Memcard::BLOCK_SIZE);
 
-          if (gci.IsGood())
+          // Close() flushes stdio and reports any failed write above.
+          if (gci.Close() && File::Rename(temp_filename, save.m_filename))
           {
             Core::DisplayMessage("Wrote save contents to GCI Folder", 4000);
           }
           else
           {
+            File::Delete(temp_filename, File::IfAbsentBehavior::NoConsoleWarning);
+            save.m_dirty = true;
             Core::DisplayMessage(
                 fmt::format("Failed to write save contents to {}", save.m_filename), 10000);
             ERROR_LOG_FMT(EXPANSIONINTERFACE, "Failed to save data to {}", save.m_filename);
@@ -676,6 +695,7 @@ void GCMemcardDirectory::FlushToFile()
         }
         else
         {
+          save.m_dirty = true;
           Core::DisplayMessage(
               fmt::format("Failed to open file at {} for writing", save.m_filename), 10000);
           ERROR_LOG_FMT(EXPANSIONINTERFACE, "Failed to open file at {} for writing",

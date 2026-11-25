@@ -95,6 +95,13 @@ private:
   // Check if we were just in the stupid ridley fight from mp3
   bool was_in_ridley_fight = false;
   bool input_disabled() const;
+
+  // PrimeHack for iPad: init_mod zeroes pitch and yaw, and it runs again after every savestate
+  // load (State.cpp resets the mods): Resume Where I Left Off, Quick Load, Undo Load. Adopt the
+  // game's own view once before driving the camera, so a loaded state keeps the direction it was
+  // saved facing instead of snapping to yaw 0 with a level pitch.
+  bool needs_view_sync = true;
+  void sync_view_from_game(float game_yaw, u32 pitch_addr);
 };
 
 } // namespace prime

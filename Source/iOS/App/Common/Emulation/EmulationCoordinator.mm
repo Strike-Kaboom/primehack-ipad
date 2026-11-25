@@ -841,7 +841,9 @@ static NSString* const kGfxOverscanFullscreenKey = @"gfx_overscan_fullscreen";
   const uint64_t generation = _acGeneration.fetch_add(1, std::memory_order_acq_rel) + 1;
   Core::QueueHostJob([self, generation, gameIDCopy, seedCPU, seedVI, hasSeedCPU](Core::System& s) {
     if (generation != self->_acGeneration.load(std::memory_order_acquire)) return;
-    if (!Core::IsRunning(s)) return;
+    // Starting counts: the timer below is created either way, and the boot path will not call this
+    // again once it exists, so a toggle made while the game boots must still seed the state.
+    if (!Core::IsRunningOrStarting(s)) return;
 
     // Start BOTH levers at native (1.0), NOT the current Config value. The per-game seed below
     // overrides these if we've already converged for this title.

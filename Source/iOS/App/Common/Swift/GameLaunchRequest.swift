@@ -15,7 +15,10 @@ enum GameLaunchRequest {
     guard !gameID.isEmpty else { return }
     if TVEmulationBridge.isRunning() {
       TVEmulationBridge.stop()
-      NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"), object: nil)
+      // `alreadyStopping`: the stop above is in flight, so the emulation screen must not queue a
+      // second one (and a second auto-state save) while the core is still reported as running.
+      NotificationCenter.default.post(name: Notification.Name("DOLEmulationRequestExitToLibrary"), object: nil,
+                                      userInfo: ["alreadyStopping": true])
       waitForStop(deadline: Date().addingTimeInterval(stopTimeout)) { post(gameID) }
     } else {
       post(gameID)

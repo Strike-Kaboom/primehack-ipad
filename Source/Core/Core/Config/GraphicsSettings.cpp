@@ -69,7 +69,11 @@ const Info<int> GFX_TEXTURE_PNG_COMPRESSION_LEVEL{
 // iCube: custom textures, their prefetch and graphics mods default ON (upstream: off). Nothing changes
 // for a game with no pack or mod installed; prefetch is capped at half of RAM by CustomAssetCache.
 const Info<bool> GFX_HIRES_TEXTURES{{System::GFX, "Settings", "HiresTextures"}, true};
-const Info<bool> GFX_CACHE_HIRES_TEXTURES{{System::GFX, "Settings", "CacheHiresTextures"}, true};
+// PrimeHack for iPad: prefetch defaults OFF here. With a multi-gigabyte pack (the HD Prime packs are
+// about 9.4 GB) prefetch requests every texture at boot and loads gigabytes up to the cache's cap;
+// iCube's own settings screen warns it "can crash the game". With the default ON, Reset All
+// Settings silently re-enabled it. A stored choice (either way) is unaffected.
+const Info<bool> GFX_CACHE_HIRES_TEXTURES{{System::GFX, "Settings", "CacheHiresTextures"}, false};
 const Info<bool> GFX_DUMP_EFB_TARGET{{System::GFX, "Settings", "DumpEFBTarget"}, false};
 const Info<bool> GFX_DUMP_XFB_TARGET{{System::GFX, "Settings", "DumpXFBTarget"}, false};
 const Info<bool> GFX_DUMP_FRAMES_AS_IMAGES{{System::GFX, "Settings", "DumpFramesAsImages"}, false};

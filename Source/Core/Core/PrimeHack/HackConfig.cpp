@@ -433,7 +433,8 @@ std::tuple<double, double> ShapeIOSPrimeStick(double x, double y) {
   const int deadzone_pct = std::clamp(Config::Get(Config::PRIMEHACK_IOS_STICK_DEADZONE), 0, 30);
   const double dz = static_cast<double>(deadzone_pct) / 100.0;
   const double r = std::hypot(x, y);
-  if (r <= dz || r <= 1e-6)
+  // Reject NaN, +/-Inf, and values inside the deadzone so a bad reading cannot poison pitch.
+  if (!std::isfinite(r) || r <= dz || r <= 1e-6)
     return {0.0, 0.0};
 
   const double norm = std::min(1.0, (r - dz) / (1.0 - dz));

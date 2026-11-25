@@ -9,6 +9,7 @@
 #include <vector>
 
 #include "Common/Event.h"
+#include "Common/HookableEvent.h"
 #include "Core/HW/GCMemcard/GCIFile.h"
 #include "Core/HW/GCMemcard/GCMemcard.h"
 #include "Core/HW/GCMemcard/GCMemcardBase.h"
@@ -65,4 +66,5 @@ private:
   std::mutex m_write_mutex;
   Common::Flag m_exiting;
   std::thread m_flush_thread;
+  Common::EventHook m_flush_unsaved_hook;
 };
