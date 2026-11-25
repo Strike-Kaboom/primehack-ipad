@@ -99,6 +99,13 @@ bool CheckPitchRecentre()
   return gcpad->CheckPitchRecentre();
 }
 
+bool CheckQuickTurn()
+{
+  GCPad* gcpad = static_cast<GCPad*>(s_config.GetController(0));
+
+  return gcpad->CheckQuickTurn();
+}
+
 bool PrimeUseController()
 {
   GCPad* gcpad = static_cast<GCPad*>(s_config.GetController(0));

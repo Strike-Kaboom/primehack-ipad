@@ -37,6 +37,7 @@ void CustomAssetCache::Initialize()
     ERROR_LOG_FMT(VIDEO, "Not enough system memory for custom resources.");
 
   m_asset_loader.Initialize();
+  PublishStats();
 }
 
 void CustomAssetCache::Shutdown()
@@ -56,6 +57,28 @@ void CustomAssetCache::Reset()
   m_asset_id_to_handle.clear();
   m_dirty_assets.clear();
   m_ram_used = 0;
+  m_eviction_count = 0;
+  PublishStats();
+}
+
+void CustomAssetCache::PublishStats()
+{
+  m_stat_ram_used.store(m_ram_used, std::memory_order_relaxed);
+  m_stat_ram_cap.store(m_max_ram_available, std::memory_order_relaxed);
+  m_stat_active_assets.store(m_active_assets.Size(), std::memory_order_relaxed);
+  m_stat_pending_assets.store(m_pending_assets.Size(), std::memory_order_relaxed);
+  m_stat_evictions.store(m_eviction_count, std::memory_order_relaxed);
+}
+
+CustomAssetCache::Stats CustomAssetCache::GetStats() const
+{
+  Stats s;
+  s.ram_used = m_stat_ram_used.load(std::memory_order_relaxed);
+  s.ram_cap = m_stat_ram_cap.load(std::memory_order_relaxed);
+  s.active_assets = m_stat_active_assets.load(std::memory_order_relaxed);
+  s.pending_assets = m_stat_pending_assets.load(std::memory_order_relaxed);
+  s.evictions = m_stat_evictions.load(std::memory_order_relaxed);
+  return s;
 }
 
 void CustomAssetCache::MarkAssetDirty(const CustomAssetLibrary::AssetID& asset_id)
@@ -84,14 +107,15 @@ void CustomAssetCache::Update()
     RemoveAssetsUntilBelowMemoryLimit();
   }
 
-  if (m_pending_assets.IsEmpty())
+  if (m_pending_assets.IsEmpty() || m_ram_used > m_max_ram_available)
+  {
+    PublishStats();
     return;
-
-  if (m_ram_used > m_max_ram_available)
-    return;
+  }
 
   const u64 allowed_memory = m_max_ram_available - m_ram_used;
   m_asset_loader.ScheduleAssetsToLoad(m_pending_assets.Elements(), allowed_memory);
+  PublishStats();
 }
 
 void CustomAssetCache::ProcessDirtyAssets()
@@ -192,6 +216,7 @@ void CustomAssetCache::RemoveAssetsUntilBelowMemoryLimit()
     // Remove the asset's copy
     const std::size_t bytes_unloaded = asset_data.asset->Unload();
     m_ram_used -= bytes_unloaded;
+    ++m_eviction_count;
 
     asset_data.load_status = AssetData::LoadStatus::Unloaded;
     asset_data.load_request_time = {};

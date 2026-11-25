@@ -56,6 +56,9 @@ inline bool mem_check_any(u32 address) {
 
 void set_beam_owned(int index, bool owned);
 void set_visor_owned(int index, bool owned);
+// PrimeHack for iPad: re-seed active beam/visor scroll slots from live RAM after savestate loads.
+void set_current_beam_slot(int slot);
+void set_current_visor_slot(int slot);
 // PrimeHack for iPad: reset beam/visor slot bookkeeping on game change.
 void reset_beam_visor_state();
 void set_cursor_pos(float x, float y);

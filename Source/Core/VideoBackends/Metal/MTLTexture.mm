@@ -64,6 +64,8 @@ void Metal::Texture::Load(u32 level, u32 width, u32 height, u32 row_length,  //
     const u32 num_rows = Common::AlignUp(height, block_size) / block_size;
     const u32 source_pitch = CalculateStrideForFormat(m_config.format, row_length);
     const u32 upload_size = source_pitch * num_rows;
+    if (buffer_size < upload_size)
+      return;
     MRCOwned<id<MTLBuffer>> tmp_buffer;
     StateTracker::Map map;
     if (upload_size > STAGING_TEXTURE_UPLOAD_THRESHOLD)

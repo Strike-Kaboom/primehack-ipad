@@ -35,5 +35,8 @@ extern const Info<bool> MAIN_AUDIO_SPATIAL_HEAD_TRACKING;
 // AVAudioEngine backend: the persisted Audio Unit plug-in chain. Entries separated by ';', each
 // "type:sub:manu|bypass|base64(fullState)" (see AVAudioEngineSound::SerializeEffectChain).
 extern const Info<std::string> MAIN_AUDIO_AU_CHAIN;
+// PrimeHack for iPad: gentle dynamic-range compression for noisy cabins, and mixing with music/podcasts.
+extern const Info<bool> MAIN_AUDIO_CABIN_DRC;
+extern const Info<bool> MAIN_AUDIO_MIX_WITH_OTHERS;
 
 }  // namespace Config

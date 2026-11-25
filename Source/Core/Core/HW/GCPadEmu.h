@@ -69,6 +69,7 @@ public:
   void SetPrimeMode(bool controller);
 
   bool CheckPitchRecentre();
+  bool CheckQuickTurn();
   std::tuple<double, double> GetPrimeStickXY();
 
   std::tuple<double, double, bool, bool, bool> GetPrimeSettings();

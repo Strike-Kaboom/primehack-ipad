@@ -1614,6 +1614,7 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
       {
         custom_texture_data = nullptr;
         load_time = {};
+        hires_texture.reset();
       }
       skip_texture_dump = true;
     }
@@ -1638,6 +1639,8 @@ RcTcacheEntry TextureCacheBase::GetTexture(const int textureCacheSafetyColorSamp
       CreateTextureEntry(TextureCreationInfo{base_hash, full_hash, bytes_per_block, palette_size},
                          texture_info, textureCacheSafetyColorSampleSize, custom_texture_data.get(),
                          has_arbitrary_mipmaps, skip_texture_dump);
+  if (!entry)
+    return entry;
   entry->hires_texture = std::move(hires_texture);
   entry->last_load_time = load_time;
   entry->texture_info_name = std::move(texture_name);

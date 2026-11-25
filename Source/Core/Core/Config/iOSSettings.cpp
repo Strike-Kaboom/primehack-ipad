@@ -28,5 +28,7 @@ const Info<bool> MAIN_AUDIO_SPATIAL{{System::Main, "iOS", "AudioSpatial"}, true}
 const Info<bool> MAIN_AUDIO_SPATIAL_HEAD_TRACKING{{System::Main, "iOS", "AudioSpatialHeadTracking"},
                                                   true};
 const Info<std::string> MAIN_AUDIO_AU_CHAIN{{System::Main, "iOS", "AudioAUChain"}, ""};
+const Info<bool> MAIN_AUDIO_CABIN_DRC{{System::Main, "iOS", "AudioCabinDRC"}, false};
+const Info<bool> MAIN_AUDIO_MIX_WITH_OTHERS{{System::Main, "iOS", "AudioMixWithOthers"}, false};
 
 }  // namespace Config

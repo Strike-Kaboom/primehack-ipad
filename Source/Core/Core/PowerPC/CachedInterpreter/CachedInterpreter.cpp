@@ -6915,14 +6915,15 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
                     --mop.count;
                     goto end_pack_switch;
                   }
-                  // Fold consecutive ori RA, RA, uimm
+                  // Fold consecutive ori RA, RA, uimm (only valid when RA == RS so the second op
+                  // reads the first op's result rather than overwriting from an unchanged RS).
                   const u8 rt = next.inst.RA;
                   const u8 rs = next.inst.RS;
                   u32 combined = mu.imm & 0xFFFFu;
                   u32 jj = j + 1;
                   // (jj - i) bound: keep the consumed-original span within the validate reference array.
                   // GATED on the validate flag so the lean shipping fold is byte-identical to before.
-                  while (jj < code_block.m_num_instructions &&
+                  while (rt == rs && jj < code_block.m_num_instructions &&
                          (!s_microop_fusion_validate ||
                           (jj - i) < ExecuteMicroOpsValidateOperands::kMaxOps))
                   {
@@ -6952,14 +6953,14 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
                     --mop.count;
                     goto end_pack_switch;
                   }
-                  // Fold consecutive oris RA, RA, uimm
+                  // Fold consecutive oris RA, RA, uimm (requires RA == RS).
                   const u8 rt = next.inst.RA;
                   const u8 rs = next.inst.RS;
                   u32 combined = mu.imm & 0xFFFFu;
                   u32 jj = j + 1;
                   // (jj - i) bound: keep the consumed-original span within the validate reference array.
                   // GATED on the validate flag so the lean shipping fold is byte-identical to before.
-                  while (jj < code_block.m_num_instructions &&
+                  while (rt == rs && jj < code_block.m_num_instructions &&
                          (!s_microop_fusion_validate ||
                           (jj - i) < ExecuteMicroOpsValidateOperands::kMaxOps))
                   {
@@ -6989,14 +6990,14 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
                     --mop.count;
                     goto end_pack_switch;
                   }
-                  // Fold consecutive xori RA, RA, uimm
+                  // Fold consecutive xori RA, RA, uimm (requires RA == RS).
                   const u8 rt = next.inst.RA;
                   const u8 rs = next.inst.RS;
                   u32 combined = mu.imm & 0xFFFFu;
                   u32 jj = j + 1;
                   // (jj - i) bound: keep the consumed-original span within the validate reference array.
                   // GATED on the validate flag so the lean shipping fold is byte-identical to before.
-                  while (jj < code_block.m_num_instructions &&
+                  while (rt == rs && jj < code_block.m_num_instructions &&
                          (!s_microop_fusion_validate ||
                           (jj - i) < ExecuteMicroOpsValidateOperands::kMaxOps))
                   {
@@ -7026,14 +7027,14 @@ bool CachedInterpreter::DoJit(u32 em_address, JitBlock* b, u32 nextPC)
                     --mop.count;
                     goto end_pack_switch;
                   }
-                  // Fold consecutive xoris RA, RA, uimm
+                  // Fold consecutive xoris RA, RA, uimm (requires RA == RS).
                   const u8 rt = next.inst.RA;
                   const u8 rs = next.inst.RS;
                   u32 combined = mu.imm & 0xFFFFu;
                   u32 jj = j + 1;
                   // (jj - i) bound: keep the consumed-original span within the validate reference array.
                   // GATED on the validate flag so the lean shipping fold is byte-identical to before.
-                  while (jj < code_block.m_num_instructions &&
+                  while (rt == rs && jj < code_block.m_num_instructions &&
                          (!s_microop_fusion_validate ||
                           (jj - i) < ExecuteMicroOpsValidateOperands::kMaxOps))
                   {

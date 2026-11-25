@@ -48,8 +48,9 @@ bool sHardcoreEnabled = false;
 std::atomic<bool> sPrimeHackEnabledForRun{true};
 std::atomic<bool> sPrimeHackEnabledLatched{false};
 #endif
-// PrimeHack for iPad: see PublishPlayerState.
+// PrimeHack for iPad: see PublishPlayerState / RecordPlayerDamage.
 std::atomic<u32> sPublishedPlayerState{0};
+std::atomic<u32> sPublishedDamageCounter{0};
 bool sChangesStashed = false;
 
 // Dynalib tracking globals
@@ -544,6 +545,14 @@ void PublishPlayerState(u32 state) {
   sPublishedPlayerState.store(state, std::memory_order_relaxed);
 }
 
+u32 GetPublishedDamageCounter() {
+  return sPublishedDamageCounter.load(std::memory_order_relaxed);
+}
+
+void RecordPlayerDamage() {
+  sPublishedDamageCounter.fetch_add(1, std::memory_order_relaxed);
+}
+
 Region GetActiveRegion() {
   return sActiveRegion.load(std::memory_order_relaxed);
 }
@@ -575,6 +584,7 @@ void Shutdown(bool reset_run_latch) {
   if (reset_run_latch) {
     sPrimeHackEnabledLatched.store(false, std::memory_order_release);
     sPrimeHackEnabledForRun.store(true, std::memory_order_relaxed);
+    sPublishedDamageCounter.store(0, std::memory_order_relaxed);
   }
 #else
   (void)reset_run_latch;

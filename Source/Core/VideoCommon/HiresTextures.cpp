@@ -3,6 +3,7 @@
 
 #include "VideoCommon/HiresTextures.h"
 
+#include <atomic>
 #include <fmt/format.h>
 #include <memory>
 #include <string>
@@ -27,6 +28,7 @@ constexpr std::string_view s_format_prefix{"tex1_"};
 
 static std::unordered_map<std::string, std::shared_ptr<HiresTexture>> s_hires_texture_cache;
 static std::unordered_map<std::string, bool> s_hires_texture_id_to_arbmipmap;
+static std::atomic<std::size_t> s_indexed_texture_count{0};
 
 static auto s_file_library = std::make_shared<VideoCommon::DirectFilesystemAssetLibrary>();
 
@@ -155,6 +157,7 @@ void HiresTexture::Update()
     message = fmt::format("Found '{}' custom textures for '{}'",
                           s_hires_texture_id_to_arbmipmap.size(), game_id_display);
   }
+  s_indexed_texture_count.store(s_hires_texture_id_to_arbmipmap.size(), std::memory_order_relaxed);
   OSD::AddMessage(message, 10000);
 }
 
@@ -162,7 +165,13 @@ void HiresTexture::Clear()
 {
   s_hires_texture_cache.clear();
   s_hires_texture_id_to_arbmipmap.clear();
+  s_indexed_texture_count.store(0, std::memory_order_relaxed);
   s_file_library = std::make_shared<VideoCommon::DirectFilesystemAssetLibrary>();
+}
+
+std::size_t HiresTexture::GetIndexedTextureCount()
+{
+  return s_indexed_texture_count.load(std::memory_order_relaxed);
 }
 
 std::shared_ptr<HiresTexture> HiresTexture::Search(const TextureInfo& texture_info)

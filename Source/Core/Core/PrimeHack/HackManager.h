@@ -65,6 +65,7 @@ constexpr u32 kPlayerStateScanVisor = 1u << 2;
 constexpr u32 kPlayerStateHasChargeBeam = 1u << 3;
 constexpr u32 kPlayerStateHypermode = 1u << 4;
 constexpr u32 kPlayerStateLowHealth = 1u << 5;
+constexpr u32 kPlayerStateMissileEmpty = 1u << 6;
 constexpr u32 kPlayerStateVisorShift = 8u;
 constexpr u32 kPlayerStateVisorMask = 0x7u << kPlayerStateVisorShift;
 constexpr u32 kPlayerStateBeamShift = 12u;
@@ -92,6 +93,8 @@ enum class PublishedBeam : u32
 };
 u32 GetPublishedPlayerState();
 void PublishPlayerState(u32 state);
+u32 GetPublishedDamageCounter();
+void RecordPlayerDamage();
 bool IsPrimeHackEnabledForRun();
 void Shutdown(bool reset_run_latch = true);
 

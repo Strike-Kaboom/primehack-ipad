@@ -190,6 +190,8 @@ bool PurgeInvalidMipsFromTextureData(const CustomAssetLibrary::AssetID& asset_id
   for (std::size_t slice_index = 0; slice_index < data->m_slices.size(); slice_index++)
   {
     auto& slice = data->m_slices[slice_index];
+    if (slice.m_levels.empty())
+      return false;
     const auto& first_mip = slice.m_levels[0];
 
     // Verify that each mip level is the correct size (divide by 2 each time).

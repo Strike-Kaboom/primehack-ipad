@@ -86,6 +86,9 @@
 
 #include "InputCommon/ControlReference/ControlReference.h"
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
+#ifdef IPHONEOS
+#include "InputCommon/ControllerInterface/iOS/Motor.h"
+#endif
 #include "InputCommon/GCAdapter.h"
 
 #include "VideoCommon/AsyncRequests.h"
@@ -266,6 +269,9 @@ bool Init(Core::System& system, std::unique_ptr<BootParameters> boot, const Wind
 
 static void ResetRumble()
 {
+#ifdef IPHONEOS
+  ciface::iOS::FlushRumbleImmediate();
+#endif
   GCAdapter::ResetRumble();
   if (Pad::IsInitialized())
   {

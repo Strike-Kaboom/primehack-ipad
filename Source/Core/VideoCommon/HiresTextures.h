@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <cstddef>
 #include <fmt/ranges.h>
 #include <memory>
 #include <set>
@@ -33,6 +34,7 @@ public:
   static void Update();
   static void Clear();
   static void Shutdown();
+  static std::size_t GetIndexedTextureCount();
   static std::shared_ptr<HiresTexture> Search(const TextureInfo& texture_info);
 
   HiresTexture(bool has_arbitrary_mipmaps, std::string id);

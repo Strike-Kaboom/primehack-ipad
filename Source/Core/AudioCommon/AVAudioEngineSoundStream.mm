@@ -180,7 +180,16 @@ bool AVAudioEngineSound::buildGraphLocked(bool start_now)
   // PrimeHack for iPad: pass nil for Stereo/Spatial output so mainMixerNode adapts to hardware
   // sample-rate changes when AirPods or Bluetooth devices connect/disconnect mid-game.
   AVAudioFormat* output_format = (mode == Mode::Discrete51) ? m_chain_format : nil;
-  [m_engine connect:m_engine.mainMixerNode to:m_engine.outputNode format:output_format];
+  @try
+  {
+    [m_engine connect:m_engine.mainMixerNode to:m_engine.outputNode format:output_format];
+  }
+  @catch (NSException* e)
+  {
+    ERROR_LOG_FMT(AUDIO, "AVAudioEngine: output connect failed ({})", e.reason.UTF8String ?: "");
+    teardownGraphLocked();
+    return false;
+  }
 
   const int player_count = mode == Mode::Spatial ? kSurroundChannels : 1;
   switch (mode)
@@ -256,7 +265,17 @@ bool AVAudioEngineSound::buildGraphLocked(bool start_now)
     [m_engine attachNode:node];
     if (mode == Mode::Spatial)
     {
-      [m_engine connect:node to:m_environment format:m_player_format];
+      @try
+      {
+        [m_engine connect:node to:m_environment format:m_player_format];
+      }
+      @catch (NSException* e)
+      {
+        ERROR_LOG_FMT(AUDIO, "AVAudioEngine: spatial player connect failed ({})",
+                      e.reason.UTF8String ?: "");
+        teardownGraphLocked();
+        return false;
+      }
       node.position = kSpeakerPositions[i];
       // renderingAlgorithm is a per-source property: it must be set on the player nodes.
       node.renderingAlgorithm = algorithm;
@@ -505,8 +524,14 @@ void AVAudioEngineSound::registerObservers()
                                     std::lock_guard lock(guard->mutex);
                                     if (!guard->alive)
                                       return;
-                                    if (!self_ptr->m_engine || self_ptr->modeChangedLocked())
+                                    const bool stalled =
+                                        self_ptr->m_engine && !self_ptr->m_engine.running &&
+                                        self_ptr->m_should_run.load() && !self_ptr->m_interrupted;
+                                    if (!self_ptr->m_engine || self_ptr->modeChangedLocked() ||
+                                        stalled)
+                                    {
                                       self_ptr->rebuildLocked();
+                                    }
                                   }];
 
   // The engine stopped itself because the output format changed; start it again in place, falling

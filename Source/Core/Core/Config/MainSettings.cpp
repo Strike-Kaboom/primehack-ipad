@@ -288,6 +288,27 @@ const Info<int> PRIMEHACK_IOS_AIM_CURVE{{System::Main, "PrimeHack", "AimCurve"},
 const Info<bool> PRIMEHACK_IOS_LOCKON_FREE_AIM{{System::Main, "PrimeHack", "LockOnFreeAim"}, false};
 const Info<bool> PRIMEHACK_IOS_GC_MP2_DUAL_CORE{{System::Main, "PrimeHack", "GCPrime2DualCore"},
                                                 false};
+const Info<bool> PRIMEHACK_IOS_PROMOTION_PACING{{System::Main, "PrimeHack", "ProMotionPacing"},
+                                                false};
+const Info<int> PRIMEHACK_IOS_SCAN_VISOR_SENSITIVITY{
+    {System::Main, "PrimeHack", "ScanVisorSensitivity"}, 100};
+const Info<int> PRIMEHACK_IOS_STICK_OUTER_DEADZONE{
+    {System::Main, "PrimeHack", "StickOuterDeadzone"}, 0};
+const Info<int> PRIMEHACK_IOS_TURN_ACCEL{{System::Main, "PrimeHack", "TurnAcceleration"}, 0};
+const Info<bool> PRIMEHACK_IOS_QUICK_180{{System::Main, "PrimeHack", "Quick180Turn"}, true};
+const Info<bool> PRIMEHACK_IOS_PER_GAME_AIM{{System::Main, "PrimeHack", "PerGameAim"}, false};
+const Info<int> PRIMEHACK_IOS_MP1_H_SENS{{System::Main, "PrimeHack", "MP1HSens"}, 45};
+const Info<int> PRIMEHACK_IOS_MP1_V_SENS{{System::Main, "PrimeHack", "MP1VSens"}, 35};
+const Info<int> PRIMEHACK_IOS_MP1_DEADZONE{{System::Main, "PrimeHack", "MP1Deadzone"}, 10};
+const Info<int> PRIMEHACK_IOS_MP1_FOV{{System::Main, "PrimeHack", "MP1FOV"}, 75};
+const Info<int> PRIMEHACK_IOS_MP2_H_SENS{{System::Main, "PrimeHack", "MP2HSens"}, 45};
+const Info<int> PRIMEHACK_IOS_MP2_V_SENS{{System::Main, "PrimeHack", "MP2VSens"}, 35};
+const Info<int> PRIMEHACK_IOS_MP2_DEADZONE{{System::Main, "PrimeHack", "MP2Deadzone"}, 10};
+const Info<int> PRIMEHACK_IOS_MP2_FOV{{System::Main, "PrimeHack", "MP2FOV"}, 75};
+const Info<int> PRIMEHACK_IOS_MP3_H_SENS{{System::Main, "PrimeHack", "MP3HSens"}, 45};
+const Info<int> PRIMEHACK_IOS_MP3_V_SENS{{System::Main, "PrimeHack", "MP3VSens"}, 35};
+const Info<int> PRIMEHACK_IOS_MP3_DEADZONE{{System::Main, "PrimeHack", "MP3Deadzone"}, 10};
+const Info<int> PRIMEHACK_IOS_MP3_FOV{{System::Main, "PrimeHack", "MP3FOV"}, 75};
 
 GPUDeterminismMode GetGPUDeterminismMode()
 {

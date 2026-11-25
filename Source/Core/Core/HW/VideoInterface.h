@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 #include <memory>
 
 #include "Common/CommonTypes.h"
@@ -461,7 +462,7 @@ private:
   // 0xcc002076 - 0xcc00207f is full of 0x00FF: unknown
   // 0xcc002080 - 0xcc002100 even more unknown
 
-  double m_target_refresh_rate = 0;
+  std::atomic<double> m_target_refresh_rate{0.0};
   u32 m_target_refresh_rate_numerator = 0;
   u32 m_target_refresh_rate_denominator = 1;
 

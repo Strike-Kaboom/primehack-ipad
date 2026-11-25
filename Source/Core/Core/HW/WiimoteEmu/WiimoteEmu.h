@@ -197,6 +197,7 @@ public:
 
   std::tuple<double, double> GetPrimeStickXY();
   bool CheckPitchRecentre();
+  bool CheckQuickTurn();
 
   std::tuple <double, double, bool, bool, bool, bool, bool> GetPrimeSettings();
 

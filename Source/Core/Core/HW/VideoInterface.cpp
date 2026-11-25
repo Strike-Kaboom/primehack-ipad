@@ -188,7 +188,9 @@ void VideoInterfaceManager::DoState(PointerWrap& p)
   p.Do(m_dtv_status);
   p.Do(m_fb_width);
   p.Do(m_border_hblank);
-  p.Do(m_target_refresh_rate);
+  double target_refresh_rate = m_target_refresh_rate.load(std::memory_order_relaxed);
+  p.Do(target_refresh_rate);
+  m_target_refresh_rate.store(target_refresh_rate, std::memory_order_relaxed);
   p.Do(m_target_refresh_rate_numerator);
   p.Do(m_target_refresh_rate_denominator);
   p.Do(m_ticks_last_line_start);
@@ -868,13 +870,14 @@ void VideoInterfaceManager::UpdateRefreshRate()
 {
   m_target_refresh_rate_numerator = m_system.GetSystemTimers().GetTicksPerSecond() * 2;
   m_target_refresh_rate_denominator = GetTicksPerEvenField() + GetTicksPerOddField();
-  m_target_refresh_rate =
-      static_cast<double>(m_target_refresh_rate_numerator) / m_target_refresh_rate_denominator;
+  m_target_refresh_rate.store(
+      static_cast<double>(m_target_refresh_rate_numerator) / m_target_refresh_rate_denominator,
+      std::memory_order_relaxed);
 }
 
 double VideoInterfaceManager::GetTargetRefreshRate() const
 {
-  return m_target_refresh_rate;
+  return m_target_refresh_rate.load(std::memory_order_relaxed);
 }
 
 u32 VideoInterfaceManager::GetTargetRefreshRateNumerator() const

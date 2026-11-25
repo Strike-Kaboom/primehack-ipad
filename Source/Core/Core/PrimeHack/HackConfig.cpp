@@ -427,23 +427,81 @@ bool HandleReticleLockOn() {
 }
 
 #ifdef IPHONEOS
+namespace {
+int ActivePrimeProfileIndex(Game game) {
+  switch (game) {
+    case Game::PRIME_1:
+    case Game::PRIME_1_GCN:
+    case Game::PRIME_1_GCN_R1:
+    case Game::PRIME_1_GCN_R2:
+      return 1;
+    case Game::PRIME_2:
+    case Game::PRIME_2_GCN:
+      return 2;
+    case Game::PRIME_3:
+    case Game::PRIME_3_STANDALONE:
+      return 3;
+    default:
+      return 0;
+  }
+}
+}  // namespace
+
 std::tuple<double, double> ShapeIOSPrimeStick(double x, double y) {
-  const double horizontal = Config::Get(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
-  const double vertical = Config::Get(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
-  const int deadzone_pct = std::clamp(Config::Get(Config::PRIMEHACK_IOS_STICK_DEADZONE), 0, 30);
-  const double dz = static_cast<double>(deadzone_pct) / 100.0;
+  int h_sens = Config::Get(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
+  int v_sens = Config::Get(Config::PRIMEHACK_IOS_STICK_VERTICAL_SENSITIVITY);
+  int deadzone_pct = Config::Get(Config::PRIMEHACK_IOS_STICK_DEADZONE);
+  if (Config::Get(Config::PRIMEHACK_IOS_PER_GAME_AIM)) {
+    switch (ActivePrimeProfileIndex(GetActiveGame())) {
+      case 1:
+        h_sens = Config::Get(Config::PRIMEHACK_IOS_MP1_H_SENS);
+        v_sens = Config::Get(Config::PRIMEHACK_IOS_MP1_V_SENS);
+        deadzone_pct = Config::Get(Config::PRIMEHACK_IOS_MP1_DEADZONE);
+        break;
+      case 2:
+        h_sens = Config::Get(Config::PRIMEHACK_IOS_MP2_H_SENS);
+        v_sens = Config::Get(Config::PRIMEHACK_IOS_MP2_V_SENS);
+        deadzone_pct = Config::Get(Config::PRIMEHACK_IOS_MP2_DEADZONE);
+        break;
+      case 3:
+        h_sens = Config::Get(Config::PRIMEHACK_IOS_MP3_H_SENS);
+        v_sens = Config::Get(Config::PRIMEHACK_IOS_MP3_V_SENS);
+        deadzone_pct = Config::Get(Config::PRIMEHACK_IOS_MP3_DEADZONE);
+        break;
+      default:
+        break;
+    }
+  }
+  double horizontal = static_cast<double>(std::clamp(h_sens, 1, 100));
+  double vertical = static_cast<double>(std::clamp(v_sens, 1, 100));
+  const double dz = static_cast<double>(std::clamp(deadzone_pct, 0, 30)) / 100.0;
+  const double outer_dz =
+      static_cast<double>(std::clamp(Config::Get(Config::PRIMEHACK_IOS_STICK_OUTER_DEADZONE), 0, 20)) /
+      100.0;
   const double r = std::hypot(x, y);
   // Reject NaN, +/-Inf, and values inside the deadzone so a bad reading cannot poison pitch.
   if (!std::isfinite(r) || r <= dz || r <= 1e-6)
     return {0.0, 0.0};
 
-  const double norm = std::min(1.0, (r - dz) / (1.0 - dz));
+  const double span = std::max(0.05, 1.0 - dz - outer_dz);
+  const double norm = std::min(1.0, (r - dz) / span);
   const int curve = Config::Get(Config::PRIMEHACK_IOS_AIM_CURVE);
   double shaped = norm;
   if (curve == 1)
     shaped = std::pow(norm, 1.6);
   else if (curve == 2)
     shaped = std::pow(norm, 2.2);
+
+  // Finer aim while actively scanning in first-person (Scan Visor sensitivity scale).
+  const u32 pstate = GetPublishedPlayerState();
+  if ((pstate & kPlayerStateInControl) != 0 && (pstate & kPlayerStateScanVisor) != 0 &&
+      (pstate & kPlayerStateMorphBall) == 0) {
+    const double scan_scale =
+        static_cast<double>(std::clamp(Config::Get(Config::PRIMEHACK_IOS_SCAN_VISOR_SENSITIVITY), 25, 100)) /
+        100.0;
+    horizontal *= scan_scale;
+    vertical *= scan_scale;
+  }
 
   const double scale = shaped / r;
   return {x * scale * horizontal, y * scale * -vertical};
@@ -473,7 +531,17 @@ void SetCursorSensitivity(float sens) {
 // Restore default FOV based on config
 float GetFov(Game game) {
   if (Config::Get(Config::FOV_ENABLE)) {
-    return Config::Get(Config::FOV);
+#ifdef IPHONEOS
+    if (Config::Get(Config::PRIMEHACK_IOS_PER_GAME_AIM)) {
+      switch (ActivePrimeProfileIndex(game)) {
+        case 1: return static_cast<float>(std::clamp(Config::Get(Config::PRIMEHACK_IOS_MP1_FOV), 1, 170));
+        case 2: return static_cast<float>(std::clamp(Config::Get(Config::PRIMEHACK_IOS_MP2_FOV), 1, 170));
+        case 3: return static_cast<float>(std::clamp(Config::Get(Config::PRIMEHACK_IOS_MP3_FOV), 1, 170));
+        default: break;
+      }
+    }
+#endif
+    return static_cast<float>(std::clamp(Config::Get(Config::FOV), 1, 170));
   } else {
     switch (game) {
       case Game::PRIME_1:
@@ -527,6 +595,23 @@ bool CheckPitchRecentre() {
       return Pad::CheckPitchRecentre();
     } else {
       return Wiimote::CheckPitchRecentre();
+    }
+  }
+
+  return false;
+}
+
+bool CheckQuickTurn() {
+#ifdef IPHONEOS
+  if (!Config::Get(Config::PRIMEHACK_IOS_QUICK_180)) {
+    return false;
+  }
+#endif
+  if (ControllerMode()) {
+    if (GetActiveGame() >= Game::PRIME_1_GCN) {
+      return Pad::CheckQuickTurn();
+    } else {
+      return Wiimote::CheckQuickTurn();
     }
   }
 

@@ -310,6 +310,8 @@ static bool ParseDDSHeader(File::IOFile& file, DDSLoadInfo* info)
       if (!file.ReadBytes(&dxt10_header, sizeof(dxt10_header)))
         return false;
 
+      if (dxt10_header.arraySize == 0)
+        return false;
       info->array_size = dxt10_header.arraySize;
       header_size += sizeof(dxt10_header);
       dxt10_format = dxt10_header.dxgiFormat;
@@ -442,7 +444,7 @@ static bool ParseDDSHeader(File::IOFile& file, DDSLoadInfo* info)
     info->first_mip_row_length =
         std::max(header.dwPitchOrLinearSize / info->bytes_per_block, 1u) * info->block_size;
     info->first_mip_size = static_cast<size_t>(info->first_mip_row_length / info->block_size) *
-                           info->block_size * blocks_high;
+                           info->bytes_per_block * blocks_high;
   }
   else
   {

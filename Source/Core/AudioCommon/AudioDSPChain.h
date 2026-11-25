@@ -46,6 +46,9 @@ public:
     float eq_low_db = 0.0f;
     float eq_mid_db = 0.0f;
     float eq_high_db = 0.0f;
+    /// PrimeHack for iPad: gentle dynamic-range compression for noisy flight cabins (lifts quiet
+    /// ambience without clipping loud explosions). Works on both CoreAudio and AVAudioEngine.
+    bool cabin_drc_enabled = false;
     /// Linear master gain, 1.0 = unity.
     float gain = 1.0f;
 
@@ -94,6 +97,8 @@ private:
     Parameters params;
     std::array<BiquadCoefficients, 3> eq;
     std::size_t delay_frames = 0;
+    float drc_attack = 0.0026f;
+    float drc_release = 0.00017f;
     bool active = false;
   };
 
@@ -122,6 +127,7 @@ private:
   std::array<std::array<BiquadState, kMaxChannels>, 3> m_eq_state{};
   std::array<float, kMaxChannels> m_crush_hold{};
   int m_crush_counter = 0;
+  float m_drc_env = 0.0f;
   std::vector<float> m_scratch;
 };
 }  // namespace AudioCommon

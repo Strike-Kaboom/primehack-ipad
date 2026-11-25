@@ -36,6 +36,8 @@ dispatch_queue_t HapticsQueue()
 }
 
 std::atomic<float> s_rumble_strength{1.0f};
+std::atomic<int> s_rumble_min_pulse_ms{50};
+std::atomic<uint64_t> s_immediate_stop_epoch{0};
 #if !TARGET_OS_TV
 std::atomic<int> s_rumble_destination{1};
 #endif
@@ -50,6 +52,9 @@ void RefreshRumbleSettings()
   NSNumber* pct = [defaults objectForKey:@"primehack_rumble_strength"];
   const int clamped_pct = pct ? std::clamp(pct.intValue, 25, 100) : 100;
   s_rumble_strength.store(static_cast<float>(clamped_pct) / 100.0f, std::memory_order_relaxed);
+  NSNumber* min_ms = [defaults objectForKey:@"primehack_rumble_min_pulse_ms"];
+  const int clamped_ms = min_ms ? std::clamp(min_ms.intValue, 0, 80) : 50;
+  s_rumble_min_pulse_ms.store(clamped_ms, std::memory_order_relaxed);
 }
 
 void EnsureRumbleDefaultsObserver()
@@ -84,6 +89,12 @@ float RumbleStrength()
 {
   EnsureRumbleDefaultsObserver();
   return s_rumble_strength.load(std::memory_order_relaxed);
+}
+
+int RumbleMinPulseMs()
+{
+  EnsureRumbleDefaultsObserver();
+  return s_rumble_min_pulse_ms.load(std::memory_order_relaxed);
 }
 }  // namespace
 
@@ -243,15 +254,25 @@ float RumbleStrength()
 
 namespace ciface::iOS
 {
+void FlushRumbleImmediate()
+{
+  s_immediate_stop_epoch.fetch_add(1, std::memory_order_acq_rel);
+}
+
 struct Motor::State
 {
   using Clock = std::chrono::steady_clock;
 
-  explicit State(CHHapticEngine* engine) : haptic_engine(engine) {}
+  explicit State(CHHapticEngine* engine)
+      : observed_stop_epoch(s_immediate_stop_epoch.load(std::memory_order_acquire)),
+        haptic_engine(engine),
+        queue_stop_epoch(observed_stop_epoch)
+  {
+  }
 
   // Must only be called on HapticsQueue(). Never holds `lock` across CoreHaptics calls.
   bool StartEngineOnQueue();
-  void ApplyOnQueue();
+  void ApplyOnQueue(const std::weak_ptr<State>& weak_self);
 
   void InvalidatePlayerOnQueue()
   {
@@ -274,6 +295,8 @@ struct Motor::State
   float desired_strength = 1.0f;
   bool update_scheduled = false;
   bool destroyed = false;
+  bool force_immediate_stop = false;
+  uint64_t observed_stop_epoch = 0;
 
   // Lock-free flags: `engine_lost` is written by CoreHaptics callbacks; `needs_retry` is written
   // by HapticsQueue() so SetState can re-trigger recovery after a cooldown expires.
@@ -293,6 +316,9 @@ struct Motor::State
   // be at full strength whether or not CoreHaptics keeps dynamic parameters across a stop, so at
   // the default Rumble Strength (100%) no parameter call is ever made.
   float last_sent_strength = 1.0f;
+  Clock::time_point pulse_start_time = Clock::time_point::min();
+  uint64_t pending_stop_token = 0;
+  uint64_t queue_stop_epoch = 0;
   Clock::time_point next_start_attempt = Clock::time_point::min();
 };
 
@@ -464,13 +490,14 @@ bool Motor::State::StartEngineOnQueue()
   return true;
 }
 
-void Motor::State::ApplyOnQueue()
+void Motor::State::ApplyOnQueue(const std::weak_ptr<State>& weak_self)
 {
   for (int pass = 0; pass < 2; ++pass)
   {
     bool want_controller = false;
     bool want_device = false;
     float want_strength = 1.0f;
+    bool immediate_stop = false;
     {
       std::lock_guard<std::mutex> guard(lock);
       if (pass == 0)
@@ -480,6 +507,14 @@ void Motor::State::ApplyOnQueue()
       want_controller = desired_controller_on;
       want_device = desired_device_on;
       want_strength = desired_strength;
+      immediate_stop = force_immediate_stop;
+      force_immediate_stop = false;
+    }
+    const uint64_t global_epoch = s_immediate_stop_epoch.load(std::memory_order_acquire);
+    if (global_epoch != queue_stop_epoch)
+    {
+      queue_stop_epoch = global_epoch;
+      immediate_stop = true;
     }
 
 #if !TARGET_OS_TV
@@ -497,6 +532,8 @@ void Motor::State::ApplyOnQueue()
 
     if (want_controller)
     {
+      // Cancel any pending minimum-pulse stop so continuous rumble stays seamless.
+      ++pending_stop_token;
       if (!StartEngineOnQueue())
       {
         needs_retry.store(true, std::memory_order_release);
@@ -516,6 +553,37 @@ void Motor::State::ApplyOnQueue()
       needs_retry.store(false, std::memory_order_release);
     }
 
+    // PrimeHack for iPad: Bluetooth haptics swallow very short (1-frame) GameCube rumble pulses.
+    // Hold controller rumble for at least `min_pulse_ms` unless an explicit immediate stop
+    // (pause/stop/quit via FlushRumbleImmediate) requested cutting it right away.
+    if (!want_controller && !immediate_stop && haptic_player && applied_controller_on == true)
+    {
+      const int min_ms = RumbleMinPulseMs();
+      if (min_ms > 0 && pulse_start_time != Clock::time_point::min())
+      {
+        const auto elapsed = Clock::now() - pulse_start_time;
+        const auto target = std::chrono::milliseconds(min_ms);
+        if (elapsed < target)
+        {
+          const auto remaining_ns =
+              std::chrono::duration_cast<std::chrono::nanoseconds>(target - elapsed).count();
+          const uint64_t token = ++pending_stop_token;
+          const std::weak_ptr<State> weak_state = weak_self;
+          dispatch_after(dispatch_time(DISPATCH_TIME_NOW, remaining_ns), HapticsQueue(), ^{
+            @autoreleasepool
+            {
+              if (const auto s = weak_state.lock())
+              {
+                if (s->pending_stop_token == token)
+                  s->ApplyOnQueue(weak_state);
+              }
+            }
+          });
+          return;
+        }
+      }
+    }
+
     if (haptic_player && applied_controller_on != want_controller)
     {
       NSError* error = nil;
@@ -525,10 +593,17 @@ void Motor::State::ApplyOnQueue()
       if (result)
       {
         applied_controller_on = want_controller;
-        // After a stop the player's intensity is only known if nothing but full strength was ever
-        // sent to it (see last_sent_strength); otherwise send it again on the next start.
-        if (!want_controller)
+        if (want_controller)
+        {
+          pulse_start_time = Clock::now();
+        }
+        else
+        {
+          pulse_start_time = Clock::time_point::min();
+          // After a stop the player's intensity is only known if nothing but full strength was ever
+          // sent to it (see last_sent_strength); otherwise send it again on the next start.
           applied_strength = std::fabs(last_sent_strength - 1.0f) <= 0.01f ? 1.0f : -1.0f;
+        }
         needs_retry.store(false, std::memory_order_release);
       }
       else
@@ -615,12 +690,15 @@ void Motor::SetState(ControlState state)
   const bool want_controller = on && destination != 0;
 
   bool should_dispatch = false;
+  const uint64_t epoch = s_immediate_stop_epoch.load(std::memory_order_acquire);
   {
     std::lock_guard<std::mutex> guard(m_state->lock);
     if (m_state->destroyed)
       return;
 
+    const bool stop_epoch_changed = (!want_controller && epoch != m_state->observed_stop_epoch);
     const bool unchanged =
+        !stop_epoch_changed &&
         (m_state->desired_controller_on == want_controller) &&
         (m_state->desired_device_on == want_device) &&
         (!(want_controller || want_device) ||
@@ -630,6 +708,16 @@ void Motor::SetState(ControlState state)
     if (unchanged)
       return;
 
+    if (stop_epoch_changed)
+    {
+      m_state->observed_stop_epoch = epoch;
+      m_state->force_immediate_stop = true;
+    }
+    else if (want_controller)
+    {
+      m_state->observed_stop_epoch = epoch;
+      m_state->force_immediate_stop = false;
+    }
     m_state->desired_controller_on = want_controller;
     m_state->desired_device_on = want_device;
     m_state->desired_strength = strength;
@@ -648,7 +736,7 @@ void Motor::SetState(ControlState state)
     @autoreleasepool
     {
       if (const auto s = weak_state.lock())
-        s->ApplyOnQueue();
+        s->ApplyOnQueue(weak_state);
     }
   });
 }

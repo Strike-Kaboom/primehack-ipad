@@ -36,6 +36,7 @@ void ChangeUIPrimeHack(int number, bool useMetroidUI);
 
 bool CheckSpringBall();
 bool CheckPitchRecentre();
+bool CheckQuickTurn();
 bool PrimeUseController();
 
 void PrimeSetMode(bool controller);

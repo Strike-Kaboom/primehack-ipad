@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <list>
 #include <map>
 #include <memory>
@@ -26,6 +27,16 @@ namespace VideoCommon
 class CustomAssetCache
 {
 public:
+  struct Stats
+  {
+    u64 ram_used = 0;
+    u64 ram_cap = 0;
+    u64 active_assets = 0;
+    u64 pending_assets = 0;
+    u64 evictions = 0;
+  };
+  Stats GetStats() const;
+
   // A generic interface to describe an asset
   // and load state
   struct AssetData
@@ -189,6 +200,15 @@ private:
 
   // A calculated amount of memory to avoid exceeding.
   u64 m_max_ram_available = 0;
+  u64 m_eviction_count = 0;
+
+  // PrimeHack for iPad: lock-free snapshot published by the video thread for UI status screens.
+  std::atomic<u64> m_stat_ram_used{0};
+  std::atomic<u64> m_stat_ram_cap{0};
+  std::atomic<u64> m_stat_active_assets{0};
+  std::atomic<u64> m_stat_pending_assets{0};
+  std::atomic<u64> m_stat_evictions{0};
+  void PublishStats();
 
   std::mutex m_dirty_mutex;
   std::set<CustomAssetLibrary::AssetID> m_dirty_assets;

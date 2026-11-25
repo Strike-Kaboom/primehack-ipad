@@ -1,5 +1,6 @@
 #include "Core/PrimeHack/Mods/FpsControls.h"
 
+#include "Core/Config/MainSettings.h"
 #include "Core/PowerPC/MMU.h"
 #include "Core/PowerPC/PowerPC.h"
 #include "Core/PrimeHack/GuestAllocator.h"
@@ -58,6 +59,7 @@ bool FpsControls::in_ridley_fight(Region active_region) {
 }
 
 void FpsControls::run_mod(Game game, Region region) {
+  freelook_ran_this_frame = false;
   switch (game) {
     case Game::MENU:
       run_mod_menu(game, region);
@@ -84,6 +86,16 @@ void FpsControls::run_mod(Game game, Region region) {
       break;
   }
 
+  // PrimeHack for iPad: if this frame did not run free-look (e.g. Morph Ball, camera lock,
+  // cutscene, or Ridley fight), cancel any in-progress Quick 180° spin and turn acceleration so
+  // leftover angle never replays when returning to first-person.
+  if (!freelook_ran_this_frame) {
+    quick_turn_frames = 0;
+    turn_accel_progress = 0.f;
+    turn_accel_sign = 0;
+    prev_quick_turn_held = CheckQuickTurn();
+  }
+
   // PrimeHack for iPad: tell the app whether the player is in control (not on the pause menu, map
   // or inventory), morph ball state, visor, beam, Charge Beam ownership, Hypermode, and low-health
   // status for DualSense adaptive triggers & lightbar.
@@ -101,12 +113,24 @@ void FpsControls::run_mod(Game game, Region region) {
       bool has_charge_beam = true;
       bool in_hypermode = false;
       bool low_health = false;
-      auto check_low_health = [this, &low_health](u32 health_addr) {
+      bool missile_empty = false;
+      bool saw_valid_health = false;
+      auto check_health = [this, &low_health, &saw_valid_health](u32 health_addr,
+                                                               bool suppress_damage = false) {
         if (health_addr != 0) {
           const float hp = readf32(health_addr);
           // std::isnormal rejects zero, NaN/Inf, and subnormals (small integers misread as floats)
           // while preserving fractional near-death energy in (0, 1) from Phazon/lava/Dark Aether.
-          low_health = std::isnormal(hp) && hp > 0.0f && hp < 30.0f;
+          if (std::isnormal(hp) && hp > 0.0f) {
+            saw_valid_health = true;
+            low_health = hp < 30.0f;
+            if (!suppress_damage && has_prev_health && !needs_view_sync &&
+                (prev_health - hp) >= 1.0f && (prev_health - hp) < 5000.0f) {
+              RecordPlayerDamage();
+            }
+            prev_health = hp;
+            has_prev_health = true;
+          }
         }
       };
 
@@ -136,8 +160,16 @@ void FpsControls::run_mod(Game game, Region region) {
         if (charge_beam != 0) {
           has_charge_beam = read32(charge_beam) != 0;
         }
+        LOOKUP_DYN(missiles);
+        LOOKUP_DYN(missiles_cap);
+        if (missiles != 0 && missiles_cap != 0) {
+          const u32 cap = read32(missiles_cap);
+          if (cap > 0 && cap <= 255) {
+            missile_empty = read32(missiles) == 0;
+          }
+        }
         LOOKUP_DYN(health);
-        check_low_health(health);
+        check_health(health);
       } else if (game == Game::PRIME_2 || game == Game::PRIME_2_GCN) {
         LOOKUP_DYN(active_visor);
         if (active_visor != 0) {
@@ -158,7 +190,7 @@ void FpsControls::run_mod(Game game, Region region) {
           }
         }
         LOOKUP_DYN(health);
-        check_low_health(health);
+        check_health(health);
       } else if (game == Game::PRIME_3 || game == Game::PRIME_3_STANDALONE) {
         LOOKUP_DYN(active_visor);
         if (active_visor != 0) {
@@ -177,8 +209,13 @@ void FpsControls::run_mod(Game game, Region region) {
             in_hypermode = (hm >= 1 && hm <= 3);
           }
           LOOKUP_DYN(health);
-          check_low_health(health);
+          // Entering Hypermode spends 100 energy intentionally; do not fire a damage thump for it.
+          check_health(health, !prev_in_hypermode && in_hypermode);
         }
+      }
+      prev_in_hypermode = in_hypermode;
+      if (!saw_valid_health) {
+        has_prev_health = false;
       }
       if (visor == PublishedVisor::Scan) {
         player_state |= kPlayerStateScanVisor;
@@ -192,9 +229,18 @@ void FpsControls::run_mod(Game game, Region region) {
       if (low_health) {
         player_state |= kPlayerStateLowHealth;
       }
+      if (missile_empty) {
+        player_state |= kPlayerStateMissileEmpty;
+      }
       player_state |= (static_cast<u32>(visor) << kPlayerStateVisorShift) & kPlayerStateVisorMask;
       player_state |= (static_cast<u32>(beam) << kPlayerStateBeamShift) & kPlayerStateBeamMask;
+    } else {
+      has_prev_health = false;
+      prev_in_hypermode = false;
     }
+  } else {
+    has_prev_health = false;
+    prev_in_hypermode = false;
   }
   PublishPlayerState(player_state);
 }
@@ -206,8 +252,13 @@ bool FpsControls::input_disabled() const {
 
 void FpsControls::calculate_pitchyaw_delta() {
   if (input_disabled()) {
+    quick_turn_frames = 0;
+    turn_accel_progress = 0.f;
+    turn_accel_sign = 0;
+    prev_quick_turn_held = false;
     return;
   }
+  freelook_ran_this_frame = true;
 
   constexpr auto yaw_clamp = [](float t) -> float {
     constexpr float PI = 3.141592654f;
@@ -217,23 +268,77 @@ void FpsControls::calculate_pitchyaw_delta() {
 
   const float compensated_sens = GetSensitivity() * kTurnrateRatio / 60.f;
 
+  // PrimeHack for iPad: Quick 180° turn (L1 + L3, edge-triggered, smooth 10-frame spin).
+  const bool quick_turn_held = CheckQuickTurn();
+  if (quick_turn_held && !prev_quick_turn_held && quick_turn_frames == 0) {
+    quick_turn_frames = 10;
+    interpolating = false;
+    turn_accel_progress = 0.f;
+  }
+  prev_quick_turn_held = quick_turn_held;
+  if (quick_turn_frames > 0) {
+    yaw = yaw_clamp(yaw + (kPi / 10.f));
+    quick_turn_frames--;
+    return;
+  }
+
   if (CheckPitchRecentre()) {
+    turn_accel_progress = 0.f;
     calculate_pitch_to_target(0.f);
     return;
   }
   interpolating = false;
 
-  pitch += static_cast<float>(GetVerticalAxis()) * compensated_sens *
-    (InvertedY() ? 1.f : -1.f);
+  const double vy = GetVerticalAxis();
+  double hx = GetHorizontalAxis();
+
+#ifdef IPHONEOS
+  // PrimeHack for iPad: optional Turn Acceleration ramp when holding full horizontal deflection.
+  const int accel_pct = std::clamp(Config::Get(Config::PRIMEHACK_IOS_TURN_ACCEL), 0, 100);
+  if (accel_pct > 0 && ControllerMode()) {
+    int h_sens = Config::Get(Config::PRIMEHACK_IOS_STICK_HORIZONTAL_SENSITIVITY);
+    if (Config::Get(Config::PRIMEHACK_IOS_PER_GAME_AIM)) {
+      const Game g = GetActiveGame();
+      if (g == Game::PRIME_1 || g == Game::PRIME_1_GCN || g == Game::PRIME_1_GCN_R1 ||
+          g == Game::PRIME_1_GCN_R2)
+        h_sens = Config::Get(Config::PRIMEHACK_IOS_MP1_H_SENS);
+      else if (g == Game::PRIME_2 || g == Game::PRIME_2_GCN)
+        h_sens = Config::Get(Config::PRIMEHACK_IOS_MP2_H_SENS);
+      else if (g == Game::PRIME_3 || g == Game::PRIME_3_STANDALONE)
+        h_sens = Config::Get(Config::PRIMEHACK_IOS_MP3_H_SENS);
+    }
+    const double threshold = 0.85 * static_cast<double>(std::clamp(h_sens, 1, 100));
+    const int sign = hx > 0.0 ? 1 : (hx < 0.0 ? -1 : 0);
+    if (sign != 0 && std::abs(hx) >= threshold) {
+      if (sign == turn_accel_sign) {
+        turn_accel_progress = std::min(1.f, turn_accel_progress + (1.f / 20.f));
+      } else {
+        turn_accel_sign = sign;
+        turn_accel_progress = 0.f;
+      }
+      hx *= (1.0 + (static_cast<double>(accel_pct) / 100.0) * static_cast<double>(turn_accel_progress));
+    } else {
+      turn_accel_progress = 0.f;
+      turn_accel_sign = 0;
+    }
+  } else {
+    turn_accel_progress = 0.f;
+    turn_accel_sign = 0;
+  }
+#endif
+
+  pitch += static_cast<float>(vy) * compensated_sens * (InvertedY() ? 1.f : -1.f);
   pitch = std::clamp(pitch, -1.52f, 1.52f);
 
-  yaw += static_cast<float>(GetHorizontalAxis()) * compensated_sens *
-    (InvertedX() ? 1.f : -1.f);
+  yaw += static_cast<float>(hx) * compensated_sens * (InvertedX() ? 1.f : -1.f);
   yaw = yaw_clamp(yaw);
 }
 
 void FpsControls::sync_view_from_game(float game_yaw, u32 pitch_addr) {
   needs_view_sync = false;
+  quick_turn_frames = 0;
+  turn_accel_progress = 0.f;
+  turn_accel_sign = 0;
   if (std::isfinite(game_yaw)) {
     yaw = game_yaw;
   }
@@ -276,6 +381,9 @@ void FpsControls::update_pitchyaw_locked() {
   pitch = asinf(std::clamp(fwd.z, -1.f, 1.f));
   pitch = std::clamp(pitch, -1.52f, 1.52f);
   needs_view_sync = false;
+  quick_turn_frames = 0;
+  turn_accel_progress = 0.f;
+  turn_accel_sign = 0;
 }
 
 void FpsControls::calculate_pitch_to_target(float target_pitch) {
@@ -333,6 +441,31 @@ void FpsControls::handle_beam_visor_switch(std::array<int, 4> const &beams,
     }
   }
 
+  LOOKUP_DYN(active_visor);
+  if (needs_beam_visor_sync && active_visor != 0) {
+    // PrimeHack for iPad: re-seed beam/visor scroll slots from live RAM after savestate loads.
+    const int live_visor_id = static_cast<int>(read32(active_visor));
+    for (int i = 0; i < 4; ++i) {
+      if (std::get<0>(visors[i]) == live_visor_id) {
+        set_current_visor_slot(i);
+        break;
+      }
+    }
+    if (has_beams) {
+      LOOKUP_DYN(current_beam);
+      if (current_beam != 0) {
+        const int live_beam_id = static_cast<int>(read32(current_beam));
+        for (int i = 0; i < 4; ++i) {
+          if (beams[i] == live_beam_id) {
+            set_current_beam_slot(i);
+            break;
+          }
+        }
+      }
+    }
+    needs_beam_visor_sync = false;
+  }
+
   if (has_beams && GetVariableManager()->get_uint(*active_guard, "switch_ready")) {
     const int beam_id = get_beam_switch(beams);
     if (beam_id != -1) {
@@ -341,7 +474,6 @@ void FpsControls::handle_beam_visor_switch(std::array<int, 4> const &beams,
     }
   }
 
-  LOOKUP_DYN(active_visor);
   if (active_visor == 0) {
     return;
   }
@@ -964,6 +1096,15 @@ void FpsControls::on_reset() {
   was_in_ridley_fight = false;
   menu_open = true;
   interpolating = false;
+  needs_beam_visor_sync = true;
+  prev_health = -1.f;
+  has_prev_health = false;
+  prev_in_hypermode = false;
+  freelook_ran_this_frame = false;
+  prev_quick_turn_held = false;
+  quick_turn_frames = 0;
+  turn_accel_progress = 0.f;
+  turn_accel_sign = 0;
 }
 
 bool FpsControls::init_mod(Game game, Region region) {
@@ -971,6 +1112,15 @@ bool FpsControls::init_mod(Game game, Region region) {
   pitch = 0;
   yaw = 0;
   needs_view_sync = true;
+  needs_beam_visor_sync = true;
+  prev_health = -1.f;
+  has_prev_health = false;
+  prev_in_hypermode = false;
+  freelook_ran_this_frame = false;
+  prev_quick_turn_held = false;
+  quick_turn_frames = 0;
+  turn_accel_progress = 0.f;
+  turn_accel_sign = 0;
 
   switch (game) {
     case Game::PRIME_1:

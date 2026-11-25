@@ -97,6 +97,7 @@ void SetLockCamera(CameraLock lock);
 CameraLock GetLockCamera();
 
 bool CheckPitchRecentre();
+bool CheckQuickTurn();
 bool ControllerMode();
 
 std::pair<std::string, std::string> GetProfiles();

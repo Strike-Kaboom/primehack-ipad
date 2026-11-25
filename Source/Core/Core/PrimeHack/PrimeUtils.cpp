@@ -34,6 +34,18 @@ void set_visor_owned(int index, bool owned) {
   visor_owned[index] = owned;
 }
 
+void set_current_beam_slot(int slot) {
+  if (slot >= 0 && slot < 4) {
+    current_beam = slot;
+  }
+}
+
+void set_current_visor_slot(int slot) {
+  if (slot >= 0 && slot < 4) {
+    current_visor = slot;
+  }
+}
+
 void reset_beam_visor_state() {
   // PrimeHack for iPad: clear per-game state across game switches and shutdown.
   current_beam = 0;

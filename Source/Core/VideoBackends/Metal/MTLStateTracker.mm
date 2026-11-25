@@ -147,8 +147,11 @@ Metal::StateTracker::Map Metal::StateTracker::AllocateForTextureUpload(size_t am
   bool needs_new = buffer.usage.PrepareForAllocation(last_draw, amt);
   if (needs_new) [[unlikely]]
   {
-    // Orphan buffer
-    size_t newsize = std::max<size_t>(buffer.usage.Size() * 2, 4096);
+    // Orphan buffer; cap growth at 64 MiB so HD texture upload bursts (e.g. savestate load)
+    // do not permanently pin a multi-hundred-MiB upload ring on iOS memory budgets.
+    constexpr size_t kMaxTextureUploadRingSize = 64 * 1024 * 1024;
+    size_t newsize = std::min(std::max<size_t>(buffer.usage.Size() * 2, 4096),
+                              kMaxTextureUploadRingSize);
     while (newsize < amt)
       newsize *= 2;
     MTLResourceOptions options =

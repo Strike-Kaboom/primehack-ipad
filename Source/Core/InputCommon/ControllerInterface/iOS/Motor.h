@@ -4,14 +4,22 @@
 
 #pragma once
 
+#ifdef __OBJC__
 #include <memory>
+#include <string>
 
 #include "InputCommon/ControllerInterface/ControllerInterface.h"
 
 @class CHHapticEngine;
+#endif
 
 namespace ciface::iOS
 {
+// PrimeHack for iPad: cancels any minimum-pulse hold so pause/stop/quit cuts rumble immediately.
+// Exposed without Objective-C types so pure C++ callers (e.g. Core.cpp) can include this header.
+void FlushRumbleImmediate();
+
+#ifdef __OBJC__
 class Motor : public Core::Device::Output
 {
 public:
@@ -29,4 +37,5 @@ private:
   const std::shared_ptr<State> m_state;
   const std::string m_name;
 };
+#endif
 }  // namespace ciface::iOS

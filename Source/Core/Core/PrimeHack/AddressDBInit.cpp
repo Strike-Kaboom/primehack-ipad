@@ -56,6 +56,8 @@ void init_db(AddressDB& addr_db) {
   // Charge Beam capacity (item 10) 0x7c -> 0x80.
   addr_db.register_dynamic_address(Game::PRIME_1, "current_beam", "powerups_array", {mrp1(0x0c)});
   addr_db.register_dynamic_address(Game::PRIME_1, "health", "powerups_array", {mrp1(0x10)});
+  addr_db.register_dynamic_address(Game::PRIME_1, "missiles", "powerups_array", {mrp1(0x4c)});
+  addr_db.register_dynamic_address(Game::PRIME_1, "missiles_cap", "powerups_array", {mrp1(0x50)});
   addr_db.register_dynamic_address(Game::PRIME_1, "charge_beam", "powerups_array", {mrp1(0x80)});
   addr_db.register_dynamic_address(Game::PRIME_1, "active_visor", "powerups_array", {mrp1(0x1c)});
 
@@ -94,6 +96,8 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "current_beam", "player_state", {mrp1(0x08)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "health", "player_state", {mrp1(0x0c)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "active_visor", "player_state", {mrp1(0x18)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN, "missiles", "player_state", {mrp1(0x48)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN, "missiles_cap", "player_state", {mrp1(0x4c)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "charge_beam", "player_state", {mrp1(0x7c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1_GCN, "world_id", "world", {mrp1(0x8)});
@@ -128,6 +132,8 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "current_beam", "player_state", {mrp1(0x08)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "health", "player_state", {mrp1(0x0c)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "active_visor", "player_state", {mrp1(0x18)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "missiles", "player_state", {mrp1(0x48)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "missiles_cap", "player_state", {mrp1(0x4c)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "charge_beam", "player_state", {mrp1(0x7c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R1, "world_id", "world", {mrp1(0x8)});
@@ -162,6 +168,8 @@ void init_db(AddressDB& addr_db) {
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "current_beam", "player_state", {mrp1(0x08)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "health", "player_state", {mrp1(0x0c)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "active_visor", "player_state", {mrp1(0x18)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "missiles", "player_state", {mrp1(0x48)});
+  addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "missiles_cap", "player_state", {mrp1(0x4c)});
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "charge_beam", "player_state", {mrp1(0x7c)});
 
   addr_db.register_dynamic_address(Game::PRIME_1_GCN_R2, "world_id", "world", {mrp1(0x8)});

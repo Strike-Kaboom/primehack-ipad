@@ -56,6 +56,7 @@ void AudioDSPChain::Configure(u32 sample_rate, u32 channels)
   m_eq_state = {};
   m_crush_hold = {};
   m_crush_counter = 0;
+  m_drc_env = 0.0f;
 
   // Coefficients depend on the sample rate: rebuild from the current parameters. Configure is not
   // called from the render thread, so the render copy adopts the snapshot directly.
@@ -138,8 +139,11 @@ AudioDSPChain::Snapshot AudioDSPChain::BuildSnapshot(const Parameters& params) c
   ComputeHighShelf(s.eq[2], sr, kHighShelfHz, params.eq_high_db);
   s.delay_frames = std::max<std::size_t>(
       1, static_cast<std::size_t>(params.delay_ms) * m_sample_rate / 1000);
+  // 8 ms attack, 120 ms release for Cabin DRC envelope follower.
+  s.drc_attack = 1.0f - std::exp(-1.0f / std::max(1.0f, 0.008f * sr));
+  s.drc_release = 1.0f - std::exp(-1.0f / std::max(1.0f, 0.120f * sr));
   s.active = params.delay_enabled || params.crush_enabled || params.eq_enabled ||
-             params.gain != 1.0f;
+             params.cabin_drc_enabled || params.gain != 1.0f;
   return s;
 }
 
@@ -190,6 +194,7 @@ void AudioDSPChain::LoadFromConfig()
   p.eq_low_db = Config::Get(Config::MAIN_AUDIO_FX_EQ_LOW_DB);
   p.eq_mid_db = Config::Get(Config::MAIN_AUDIO_FX_EQ_MID_DB);
   p.eq_high_db = Config::Get(Config::MAIN_AUDIO_FX_EQ_HIGH_DB);
+  p.cabin_drc_enabled = Config::Get(Config::MAIN_AUDIO_CABIN_DRC);
   });
 }
 #endif
@@ -219,11 +224,14 @@ void AudioDSPChain::PickUpSnapshot()
                           next.params.eq_low_db != m_live.params.eq_low_db ||
                           next.params.eq_mid_db != m_live.params.eq_mid_db ||
                           next.params.eq_high_db != m_live.params.eq_high_db;
+  const bool drc_changed = next.params.cabin_drc_enabled != m_live.params.cabin_drc_enabled;
   m_live = next;
   if (delay_changed)
     ResetDelay(m_live.delay_frames);
   if (eq_changed)
     m_eq_state = {};
+  if (drc_changed)
+    m_drc_env = 0.0f;
 }
 
 void AudioDSPChain::Process(float* interleaved, std::size_t frames)
@@ -280,6 +288,38 @@ void AudioDSPChain::Process(float* interleaved, std::size_t frames)
         frame[c] = frame[c] * (1.0f - kDelayWet) + delayed * kDelayWet;
       }
       m_delay_index = (m_delay_index + 1) % delay_frames;
+    }
+
+    if (p.cabin_drc_enabled)
+    {
+      // Linked peak envelope across all channels: -22 dB threshold, 2.5:1 ratio, +4.5 dB makeup,
+      // and a smooth soft-clip ceiling above 0.90 so sudden explosions never hard-clip.
+      constexpr float kThreshold = 0.0794328f;  // 10^(-22/20)
+      constexpr float kSlope = 0.6f;            // 1 - 1/2.5
+      constexpr float kMakeup = 1.678804f;      // 10^(+4.5/20)
+      constexpr float kCeilingKnee = 0.90f;
+      constexpr float kCeilingHeadroom = 0.09f;
+
+      float peak = 0.0f;
+      for (u32 c = 0; c < channels; ++c)
+        peak = std::max(peak, std::fabs(frame[c]));
+      const float coeff = (peak > m_drc_env) ? s.drc_attack : s.drc_release;
+      m_drc_env += coeff * (peak - m_drc_env);
+      const float comp_gain =
+          (m_drc_env > kThreshold) ? std::pow(kThreshold / m_drc_env, kSlope) : 1.0f;
+      const float total_gain = comp_gain * kMakeup;
+      for (u32 c = 0; c < channels; ++c)
+      {
+        float y = frame[c] * total_gain;
+        const float ay = std::fabs(y);
+        if (ay > kCeilingKnee)
+        {
+          y = std::copysign(
+              kCeilingKnee + kCeilingHeadroom * std::tanh((ay - kCeilingKnee) / kCeilingHeadroom),
+              y);
+        }
+        frame[c] = y;
+      }
     }
 
     if (p.gain != 1.0f)

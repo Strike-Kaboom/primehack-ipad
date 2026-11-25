@@ -25,7 +25,8 @@ bool IsHeadphonePort(NSString* port_type)
   return [port_type isEqualToString:AVAudioSessionPortHeadphones] ||
          [port_type isEqualToString:AVAudioSessionPortBluetoothA2DP] ||
          [port_type isEqualToString:AVAudioSessionPortBluetoothLE] ||
-         [port_type isEqualToString:AVAudioSessionPortBluetoothHFP];
+         [port_type isEqualToString:AVAudioSessionPortBluetoothHFP] ||
+         [port_type isEqualToString:AVAudioSessionPortUSBAudio];
 }
 
 void CallHook(bool active)

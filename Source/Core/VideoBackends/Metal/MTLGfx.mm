@@ -17,7 +17,9 @@
 #include "Common/Logging/Log.h"              // iCube: ERROR_LOG_FMT for the texture-size guard
 #include "Common/StallSignpost.h"            // iCube: ICUBE_STALL_POINT
 #include "Core/Config/GraphicsSettings.h"    // iCube FastMath: GFX_HACK_FAST_MATH
+#include "Core/Config/MainSettings.h"        // PrimeHack for iPad: PRIMEHACK_IOS_PROMOTION_PACING
 #include "Core/Core.h"                       // PrimeHack for iPad: fast-forward throttler check
+#include "Core/HW/VideoInterface.h"          // PrimeHack for iPad: game refresh rate for ProMotion pacing
 #include "Core/System.h"                     // iCube: GPU frame times -> PerformanceMetrics
 
 #include "VideoCommon/FramebufferManager.h"
@@ -814,17 +816,42 @@ void Metal::Gfx::PresentBackbuffer()
       // On the other hand, it helps Xcode's GPU captures start and stop on frame boundaries
       // which is convenient.  Put it here as a default-off config, which we can override in Xcode.
       // It also seems to improve frame pacing, so enable it by default with vsync
-      if (g_ActiveConfig.iUsePresentDrawable == TriState::On ||
+      const float emu_speed = Config::Get(Config::MAIN_EMULATION_SPEED);
+      const bool normal_speed = (emu_speed == 1.0f) && !Core::GetIsThrottlerTempDisabled();
+      const bool promotion_pacing =
+          Config::Get(Config::PRIMEHACK_IOS_PROMOTION_PACING) && normal_speed;
+      if (promotion_pacing || g_ActiveConfig.iUsePresentDrawable == TriState::On ||
           (g_ActiveConfig.iUsePresentDrawable == TriState::Auto && g_ActiveConfig.bVSyncActive))
       {
         id<MTLCommandBuffer> present_cb = g_state_tracker->GetRenderCmdBuf();
         const int frame_cap = GetUserFrameCap();
-        if (frame_cap > 0 && g_ActiveConfig.bVSyncActive && !Core::GetIsThrottlerTempDisabled())
+        bool use_min_duration = false;
+        double target_hz = 60.0;
+        if (normal_speed && (promotion_pacing || (frame_cap > 0 && g_ActiveConfig.bVSyncActive)))
+        {
+          if (frame_cap > 0)
+          {
+            target_hz = static_cast<double>(frame_cap);
+            use_min_duration = true;
+          }
+          else if (promotion_pacing)
+          {
+            const double vi_hz =
+                Core::System::GetInstance().GetVideoInterface().GetTargetRefreshRate();
+            // Only pace ~60 Hz (NTSC) titles via afterMinimumDuration: on 60/120 Hz Apple displays;
+            // PAL 50 Hz (~18 ms min_duration) would miss 16.67 ms ticks and collapse to 30/40 fps.
+            if (vi_hz >= 55.0 && vi_hz <= 65.0)
+            {
+              target_hz = vi_hz;
+              use_min_duration = true;
+            }
+          }
+        }
+        if (use_min_duration)
         {
           if (@available(iOS 15.4, tvOS 15.4, macOS 13.0, *))
           {
-            const CFTimeInterval min_duration =
-                std::max(0.001, (1.0 / static_cast<double>(frame_cap)) - 0.002);
+            const CFTimeInterval min_duration = std::max(0.001, (1.0 / target_hz) - 0.002);
             [present_cb presentDrawable:m_drawable afterMinimumDuration:min_duration];
           }
           else

@@ -390,6 +390,13 @@ bool CheckPitchRecentre()
   return wiimote->CheckPitchRecentre();
 }
 
+bool CheckQuickTurn()
+{
+  WiimoteEmu::Wiimote* wiimote = static_cast<WiimoteEmu::Wiimote*>(s_config.GetController(0));
+
+  return wiimote->CheckQuickTurn();
+}
+
 void DoState(PointerWrap& p)
 {
   for (int i = 0; i < MAX_BBMOTES; ++i)

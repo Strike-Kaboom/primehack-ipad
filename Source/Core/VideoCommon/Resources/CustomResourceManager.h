@@ -55,6 +55,8 @@ public:
   GetTextureAndSamplerFromAsset(const CustomAssetLibrary::AssetID& asset_id,
                                 std::shared_ptr<VideoCommon::CustomAssetLibrary> library);
 
+  CustomAssetCache::Stats GetAssetCacheStats() const { return m_asset_cache.GetStats(); }
+
 private:
   Resource::ResourceContext
   CreateResourceContext(const CustomAssetLibrary::AssetID& asset_id,

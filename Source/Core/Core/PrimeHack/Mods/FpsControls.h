@@ -101,7 +101,18 @@ private:
   // game's own view once before driving the camera, so a loaded state keeps the direction it was
   // saved facing instead of snapping to yaw 0 with a level pitch.
   bool needs_view_sync = true;
+  bool needs_beam_visor_sync = true;
   void sync_view_from_game(float game_yaw, u32 pitch_addr);
+
+  // PrimeHack for iPad: Damage Thump tracking, Quick 180° turn, and Turn Acceleration ramp.
+  float prev_health = -1.f;
+  bool has_prev_health = false;
+  bool prev_in_hypermode = false;
+  bool freelook_ran_this_frame = false;
+  bool prev_quick_turn_held = false;
+  int quick_turn_frames = 0;
+  float turn_accel_progress = 0.f;
+  int turn_accel_sign = 0;
 };
 
 } // namespace prime

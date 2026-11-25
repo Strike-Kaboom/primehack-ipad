@@ -434,6 +434,27 @@ extern const Info<bool> PRIMEHACK_IOS_LOCKON_FREE_AIM;
 // PrimeHack for iPad (opt-in): boot GameCube Prime 2 dual-core with SyncGPU, as Trilogy's Prime 2
 // already runs, instead of G2M.ini's single core. Read once per boot in BootManager::BootCore.
 extern const Info<bool> PRIMEHACK_IOS_GC_MP2_DUAL_CORE;
+// PrimeHack for iPad (opt-in): pace Metal presents to the game's refresh rate on 120 Hz ProMotion.
+extern const Info<bool> PRIMEHACK_IOS_PROMOTION_PACING;
+// PrimeHack for iPad: aim tuning extensions (Scan Visor scale %, outer deadzone %, turn acceleration %, Quick 180).
+extern const Info<int> PRIMEHACK_IOS_SCAN_VISOR_SENSITIVITY;
+extern const Info<int> PRIMEHACK_IOS_STICK_OUTER_DEADZONE;
+extern const Info<int> PRIMEHACK_IOS_TURN_ACCEL;
+extern const Info<bool> PRIMEHACK_IOS_QUICK_180;
+// PrimeHack for iPad: optional per-game aim profiles (Prime 1 / Prime 2 / Prime 3).
+extern const Info<bool> PRIMEHACK_IOS_PER_GAME_AIM;
+extern const Info<int> PRIMEHACK_IOS_MP1_H_SENS;
+extern const Info<int> PRIMEHACK_IOS_MP1_V_SENS;
+extern const Info<int> PRIMEHACK_IOS_MP1_DEADZONE;
+extern const Info<int> PRIMEHACK_IOS_MP1_FOV;
+extern const Info<int> PRIMEHACK_IOS_MP2_H_SENS;
+extern const Info<int> PRIMEHACK_IOS_MP2_V_SENS;
+extern const Info<int> PRIMEHACK_IOS_MP2_DEADZONE;
+extern const Info<int> PRIMEHACK_IOS_MP2_FOV;
+extern const Info<int> PRIMEHACK_IOS_MP3_H_SENS;
+extern const Info<int> PRIMEHACK_IOS_MP3_V_SENS;
+extern const Info<int> PRIMEHACK_IOS_MP3_DEADZONE;
+extern const Info<int> PRIMEHACK_IOS_MP3_FOV;
 
 // GameCube path utility functions
 
