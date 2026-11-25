@@ -286,6 +286,8 @@ const Info<bool> PRIMEHACK_IOS_INVERT_Y{{System::Main, "PrimeHack", "InvertY"}, 
 const Info<int> PRIMEHACK_IOS_STICK_DEADZONE{{System::Main, "PrimeHack", "StickDeadzone"}, 10};
 const Info<int> PRIMEHACK_IOS_AIM_CURVE{{System::Main, "PrimeHack", "AimCurve"}, 0};
 const Info<bool> PRIMEHACK_IOS_LOCKON_FREE_AIM{{System::Main, "PrimeHack", "LockOnFreeAim"}, false};
+const Info<bool> PRIMEHACK_IOS_GC_MP2_DUAL_CORE{{System::Main, "PrimeHack", "GCPrime2DualCore"},
+                                                false};
 
 GPUDeterminismMode GetGPUDeterminismMode()
 {

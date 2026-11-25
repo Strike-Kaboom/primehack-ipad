@@ -564,7 +564,11 @@ void VertexManagerBase::Flush()
   std::array<SamplerState, 8> samplers;
   if (!m_cull_all)
   {
-    if (!g_ActiveConfig.bGraphicMods)
+    // PrimeHack for iPad: graphics mods are on by default in this fork, but when no loaded mod
+    // targets draws or texture projections there is nothing to look the names up in, so skip
+    // building the per-draw texture name list (a heap string copy per texture per draw, then a
+    // formatted lookup key per name in VertexShaderManager::SetConstants).
+    if (!g_ActiveConfig.bGraphicMods || !g_graphics_mod_manager->NeedsDrawTextureNames())
     {
       for (const u32 i : used_textures)
       {

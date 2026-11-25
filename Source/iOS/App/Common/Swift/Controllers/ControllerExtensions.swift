@@ -236,6 +236,15 @@ func physicalControllerAccelWrites(x: Float, y: Float, z: Float) -> [(TCButtonTy
 private func installMotionHandler(_ c: GCController) {
   // Map controller motion (if available) to Wii accelerometer and gyro
   if #available(iOS 14.0, tvOS 14.0, *), let motion = c.motion {
+    // PrimeHack for iPad: in Controller Only mode no pad holds a touch-driven Wii Remote slot, so the
+    // handler below would drop every sample (a few hundred a second from a DualSense) after waking
+    // the main thread for it, in menus and while paused too. The core's MFi backend reads motion
+    // itself when a mapping needs it. Handlers are reinstalled on game start and on connect, which
+    // is when a change to the setting takes effect.
+    if ControllerManager.controllerOnly(), !c.isMenuRemote {
+      motion.valueChangedHandler = nil
+      return
+    }
     /// Some controllers (e.g. DualShock 4) require manual activation for motion sensors
     if motion.sensorsRequireManualActivation {
       motion.sensorsActive = true

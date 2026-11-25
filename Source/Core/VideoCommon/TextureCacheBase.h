@@ -171,6 +171,9 @@ struct TCacheEntry
 
   VideoCommon::CustomAsset::TimeType last_load_time;
   std::shared_ptr<HiresTexture> hires_texture;
+  // PrimeHack for iPad: TextureCacheBase::m_linked_assets_serial at this entry's last
+  // DidLinkedAssetsChange check of hires_texture. 0 = never checked. Not saved in states.
+  mutable u32 linked_assets_serial = 0;
 
   explicit TCacheEntry(std::unique_ptr<AbstractTexture> tex,
                        std::unique_ptr<AbstractFramebuffer> fb);
@@ -351,7 +354,7 @@ private:
 
   using TexPool = std::unordered_multimap<TextureConfig, TexPoolEntry>;
 
-  static bool DidLinkedAssetsChange(const TCacheEntry& entry);
+  bool DidLinkedAssetsChange(const TCacheEntry& entry) const;
 
   TCacheEntry* LoadImpl(u32 stage, bool force_reload);
 
@@ -432,6 +435,8 @@ private:
 
   TexPool m_texture_pool;
   u64 m_last_entry_id = 0;
+  // PrimeHack for iPad: bumped once per frame (OnFrameEnd); see DidLinkedAssetsChange. Never 0.
+  u32 m_linked_assets_serial = 1;
 
   // Backup configuration values
   struct BackupConfig

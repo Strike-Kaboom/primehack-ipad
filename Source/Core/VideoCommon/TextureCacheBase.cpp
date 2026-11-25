@@ -264,10 +264,19 @@ void TextureCacheBase::SetBackupConfig(const VideoConfig& config)
       config.graphics_mod_config ? config.graphics_mod_config->GetChangeCount() : 0;
 }
 
-bool TextureCacheBase::DidLinkedAssetsChange(const TCacheEntry& entry)
+bool TextureCacheBase::DidLinkedAssetsChange(const TCacheEntry& entry) const
 {
   if (!entry.hires_texture)
     return false;
+
+  // PrimeHack for iPad: the asset cache only loads, reloads and evicts in CustomAssetCache::Update,
+  // once per frame, so asking once per frame per entry is enough. Asking on every bind (this runs
+  // for each texture a draw uses, thousands of times a frame) cost a string-keyed std::map lookup
+  // and a priority-list node swap per custom texture per draw, on the emulation thread itself in
+  // single-core games.
+  if (entry.linked_assets_serial == m_linked_assets_serial)
+    return false;
+  entry.linked_assets_serial = m_linked_assets_serial;
 
   const auto* resource = entry.hires_texture->LoadTexture();
 
@@ -786,6 +795,11 @@ void TextureCacheBase::OnFrameEnd()
   FlushEFBCopies();
 
   Cleanup(g_presenter->FrameCount());
+
+  // A new frame: let each custom-texture entry ask the asset cache once more (0 is
+  // TCacheEntry::linked_assets_serial's "never checked" value).
+  if (++m_linked_assets_serial == 0)
+    m_linked_assets_serial = 1;
 }
 
 void TCacheEntry::DoState(PointerWrap& p)

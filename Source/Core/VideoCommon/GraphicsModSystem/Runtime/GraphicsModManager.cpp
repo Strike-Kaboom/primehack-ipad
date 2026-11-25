@@ -126,6 +126,11 @@ const std::vector<GraphicsModAction*>&
 GraphicsModManager::GetProjectionTextureActions(ProjectionType projection_type,
                                                 const std::string& texture_name) const
 {
+  // PrimeHack for iPad: nothing to find, so skip building the lookup key (this is per texture, per
+  // draw, and graphics mods are on by default in this fork).
+  if (m_projection_texture_target_to_actions.empty())
+    return m_default;
+
   const auto lookup = fmt::format("{}_{}", texture_name, static_cast<int>(projection_type));
   if (const auto it = m_projection_texture_target_to_actions.find(lookup);
       it != m_projection_texture_target_to_actions.end())

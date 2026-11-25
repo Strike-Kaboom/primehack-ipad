@@ -35,6 +35,14 @@ public:
   const std::vector<GraphicsModAction*>& GetEFBActions(const FBInfo& efb) const;
   const std::vector<GraphicsModAction*>& GetXFBActions(const FBInfo& xfb) const;
 
+  // PrimeHack for iPad: true when a loaded mod targets draws or texture-specific projections, the
+  // only lookups that use the per-draw texture name list VertexManagerBase::Flush builds.
+  bool NeedsDrawTextureNames() const
+  {
+    return !m_draw_started_target_to_actions.empty() ||
+           !m_projection_texture_target_to_actions.empty();
+  }
+
   void Load(const GraphicsModGroupConfig& config);
 
 private:

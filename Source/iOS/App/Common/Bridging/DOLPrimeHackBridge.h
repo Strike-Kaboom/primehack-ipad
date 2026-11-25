@@ -93,6 +93,12 @@ NS_SWIFT_NAME(PrimeHackBridge)
 + (BOOL)noclip;
 + (void)setNoclip:(BOOL)value;
 
+// Performance
+/// Opt-in: GameCube Prime 2 boots dual-core with SyncGPU (as Trilogy's Prime 2 does) instead of
+/// G2M.ini's single core. Read once when a game boots.
++ (BOOL)gcPrime2DualCore;
++ (void)setGcPrime2DualCore:(BOOL)value;
+
 @end
 
 NS_ASSUME_NONNULL_END

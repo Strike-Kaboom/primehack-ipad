@@ -5,6 +5,18 @@
 namespace prime {
 
 void AutoEFB::run_mod(Game game, Region) {
+  // PrimeHack for iPad: R3M.ini sets EFBToTextureEnable = False for the whole Trilogy disc (the
+  // Scan Visor fallback for Prime 2 and 3 when this mod is off). Trilogy's Prime 1 and its launcher
+  // never need EFB copies in RAM, so keep them on the fast texture-only path rather than falling
+  // back to the INI value, which made every EFB copy in Prime 1 a readback.
+  if (game == Game::PRIME_1 || game == Game::MENU) {
+    if (!GetEFBTexture()) {
+      SetEFBToTexture(true);
+      m_efb_overridden = true;
+    }
+    return;
+  }
+
   if (game != Game::PRIME_2 &&
       game != Game::PRIME_3 &&
       game != Game::PRIME_3_STANDALONE &&

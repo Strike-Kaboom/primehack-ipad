@@ -431,6 +431,9 @@ extern const Info<bool> PRIMEHACK_IOS_INVERT_Y;
 extern const Info<int> PRIMEHACK_IOS_STICK_DEADZONE;
 extern const Info<int> PRIMEHACK_IOS_AIM_CURVE;
 extern const Info<bool> PRIMEHACK_IOS_LOCKON_FREE_AIM;
+// PrimeHack for iPad (opt-in): boot GameCube Prime 2 dual-core with SyncGPU, as Trilogy's Prime 2
+// already runs, instead of G2M.ini's single core. Read once per boot in BootManager::BootCore.
+extern const Info<bool> PRIMEHACK_IOS_GC_MP2_DUAL_CORE;
 
 // GameCube path utility functions
 

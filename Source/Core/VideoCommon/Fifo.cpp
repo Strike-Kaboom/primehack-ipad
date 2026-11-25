@@ -416,13 +416,22 @@ void FifoManager::RunGpuLoop()
           {
             m_gpu_idle_polls = 0;
           }
-          else if (++m_gpu_idle_polls > GPU_IDLE_SPIN_POLLS)
+          else if ((m_gpu_idle_polls <= GPU_IDLE_SPIN_POLLS + 1 ? ++m_gpu_idle_polls : m_gpu_idle_polls) >
+                   GPU_IDLE_SPIN_POLLS)
           {
             // Let BlockingLoop park on m_new_work_event instead of an uninterruptible
             // sleep_for(100us): RunGpu() -> Wakeup() wakes the GPU thread immediately
-            // while burning zero CPU when idle.
-            if (!m_config_sync_gpu ||
-                m_sync_ticks.load(std::memory_order_relaxed) < m_config_sync_gpu_max_distance)
+            // while burning zero CPU when idle. Only after GPU_IDLE_PARK_DELAY of idleness,
+            // though: see Fifo.h for what parking between every two draws costs the CPU thread.
+            const auto now = std::chrono::steady_clock::now();
+            if (m_gpu_idle_polls == GPU_IDLE_SPIN_POLLS + 1)
+            {
+              m_gpu_idle_since = now;
+            }
+            else if (now - m_gpu_idle_since >= GPU_IDLE_PARK_DELAY &&
+                     (!m_config_sync_gpu ||
+                      m_sync_ticks.load(std::memory_order_relaxed) <
+                          m_config_sync_gpu_max_distance))
             {
               m_gpu_mainloop.AllowSleep();
             }

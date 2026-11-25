@@ -129,4 +129,7 @@ PH_BOOL(anyBeamDoors, setAnyBeamDoors, PRIMEHACK_ANYBEAM_DOOR)
 PH_BOOL(invulnerability, setInvulnerability, PRIMEHACK_INVULNERABILITY)
 PH_BOOL(noclip, setNoclip, PRIMEHACK_NOCLIP)
 
+// Performance
+PH_BOOL(gcPrime2DualCore, setGcPrime2DualCore, PRIMEHACK_IOS_GC_MP2_DUAL_CORE)
+
 @end

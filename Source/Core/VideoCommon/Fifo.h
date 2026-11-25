@@ -127,7 +127,17 @@ private:
   // GPU_IDLE_SPIN_POLLS consecutive payload iterations that drained nothing, allow
   // BlockingLoop to park on m_new_work_event. Only touched on the video thread.
   static constexpr u32 GPU_IDLE_SPIN_POLLS = 16;
+  // PrimeHack for iPad: once idle, keep polling this long before letting BlockingLoop park.
+  // Parking costs the video thread nothing, but the CPU thread's next gather-pipe burst
+  // (RunGpu -> Wakeup) then has to signal a condition variable that has a blocked waiter, a
+  // system call on the emulation thread, and the video thread only resumes after a scheduler
+  // wake. Bursts arrive microseconds apart while a frame is being submitted, so parking after a
+  // few idle polls put that cost on almost every gap between draws. Long idle stretches (the CPU
+  // thread in game logic or asleep for frame pacing, a paused game) still park. 50 us is about ten
+  // times the usual gap between draws; raising it trades video-thread heat for fewer wakes.
+  static constexpr std::chrono::microseconds GPU_IDLE_PARK_DELAY{50};
   u32 m_gpu_idle_polls = 0;
+  std::chrono::steady_clock::time_point m_gpu_idle_since{};
   Common::Event m_sync_wakeup_event;
 
   std::optional<Config::ConfigChangedCallbackID> m_config_callback_id = std::nullopt;

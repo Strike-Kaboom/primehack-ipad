@@ -170,6 +170,20 @@ bool BootCore(Core::System& system, std::unique_ptr<BootParameters> boot,
     }
   }
 
+#ifdef IPHONEOS
+  // PrimeHack for iPad (no-JIT speed, opt-in): G2M.ini runs GameCube Prime 2 single-core, upstream's
+  // stability choice, so the whole video pipeline shares the Cached Interpreter's core. Trilogy's
+  // Prime 2 already runs dual-core with SyncGPU in this fork (UpdateTrilogyGpuSync); this gives the
+  // GameCube disc the same pairing when the user asks for it. Set before System::Initialize() reads
+  // CPUThread; the CurrentRun layer ends with the game (RestoreConfig).
+  if (Config::Get(Config::PRIMEHACK_IOS_GC_MP2_DUAL_CORE) &&
+      StartUp.GetGameID().starts_with("G2M"))
+  {
+    Config::SetCurrent(Config::MAIN_CPU_THREAD, true);
+    Config::SetCurrent(Config::MAIN_SYNC_GPU, true);
+  }
+#endif
+
   system.Initialize();
 
   Core::UpdateWantDeterminism(system, /*initial*/ true);
